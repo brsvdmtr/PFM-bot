@@ -1,0 +1,282 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Enums ──────────────────────────────────────────────
+
+enum Currency {
+  RUB
+  USD
+}
+
+enum DebtType {
+  CREDIT
+  MORTGAGE
+  CREDIT_CARD
+  CAR_LOAN
+  PERSONAL_LOAN
+  OTHER
+}
+
+enum IncomeFrequency {
+  MONTHLY
+  BIWEEKLY
+  WEEKLY
+  IRREGULAR
+}
+
+enum ObligationType {
+  RENT
+  UTILITIES
+  SUBSCRIPTION
+  TELECOM
+  INSURANCE
+  ENVELOPE
+  OTHER
+}
+
+enum PeriodStatus {
+  ACTIVE
+  COMPLETED
+  DEFICIT
+}
+
+enum ExpenseSource {
+  MANUAL
+  IMPORT
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELLED
+  EXPIRED
+}
+
+// ── Core Models ────────────────────────────────────────
+
+model User {
+  id              String    @id @default(cuid())
+  telegramId      String?   @unique
+  telegramChatId  String?
+  firstName       String?
+  godMode         Boolean   @default(false)
+  onboardingDone  Boolean   @default(false)
+  timezone        String    @default("Europe/Moscow")
+  locale          String    @default("ru")
+  primaryCurrency Currency  @default(RUB)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  profile       UserProfile?
+  settings      UserSettings?
+  incomes       Income[]
+  obligations   Obligation[]
+  debts         Debt[]
+  periods       Period[]
+  expenses      Expense[]
+  emergencyFund EmergencyFund?
+  subscription  Subscription?
+  paymentEvents PaymentEvent[]
+}
+
+model UserProfile {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  displayName String?
+  avatarUrl   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserSettings {
+  id                   String   @id @default(cuid())
+  userId               String   @unique
+  morningNotifyTime    String   @default("09:00")
+  eveningNotifyTime    String   @default("21:00")
+  morningNotifyEnabled Boolean  @default(true)
+  eveningNotifyEnabled Boolean  @default(true)
+  paymentAlerts        Boolean  @default(true)
+  deficitAlerts        Boolean  @default(true)
+  weeklyDigest         Boolean  @default(false)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ── Income & Obligations ───────────────────────────────
+
+model Income {
+  id        String          @id @default(cuid())
+  userId    String
+  title     String
+  amount    Int
+  currency  Currency        @default(RUB)
+  frequency IncomeFrequency @default(MONTHLY)
+  paydays   Int[]
+  isActive  Boolean         @default(true)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Obligation {
+  id        String         @id @default(cuid())
+  userId    String
+  title     String
+  type      ObligationType
+  amount    Int
+  currency  Currency       @default(RUB)
+  dueDay    Int?
+  isActive  Boolean        @default(true)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ── Debts ──────────────────────────────────────────────
+
+model Debt {
+  id             String    @id @default(cuid())
+  userId         String
+  title          String
+  type           DebtType
+  balance        Int
+  originalAmount Int?
+  apr            Float
+  minPayment     Int
+  currency       Currency  @default(RUB)
+  dueDay         Int?
+  isFocusDebt    Boolean   @default(false)
+  isPaidOff      Boolean   @default(false)
+  paidOffAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payments DebtPayment[]
+}
+
+model DebtPayment {
+  id      String   @id @default(cuid())
+  debtId  String
+  amount  Int
+  isExtra Boolean  @default(false)
+  paidAt  DateTime @default(now())
+
+  debt Debt @relation(fields: [debtId], references: [id], onDelete: Cascade)
+}
+
+// ── Periods & Expenses ─────────────────────────────────
+
+model Period {
+  id                String       @id @default(cuid())
+  userId            String
+  startDate         DateTime
+  endDate           DateTime
+  totalIncome       Int
+  totalObligations  Int
+  totalDebtPayments Int
+  efContribution    Int
+  reserve           Int
+  s2sPeriod         Int
+  s2sDaily          Int
+  status            PeriodStatus @default(ACTIVE)
+  daysTotal         Int
+  currency          Currency     @default(RUB)
+  isProratedStart   Boolean      @default(false)
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expenses       Expense[]
+  dailySnapshots DailySnapshot[]
+
+  @@index([userId, status])
+}
+
+model Expense {
+  id        String        @id @default(cuid())
+  userId    String
+  periodId  String
+  amount    Int
+  currency  Currency      @default(RUB)
+  note      String?
+  source    ExpenseSource @default(MANUAL)
+  spentAt   DateTime      @default(now())
+  createdAt DateTime      @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  period Period @relation(fields: [periodId], references: [id], onDelete: Cascade)
+
+  @@index([periodId, spentAt])
+}
+
+model DailySnapshot {
+  id            String   @id @default(cuid())
+  periodId      String
+  date          DateTime
+  s2sPlanned    Int
+  s2sActual     Int
+  totalExpenses Int
+  isOverspent   Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  period Period @relation(fields: [periodId], references: [id], onDelete: Cascade)
+
+  @@unique([periodId, date])
+}
+
+// ── Emergency Fund ─────────────────────────────────────
+
+model EmergencyFund {
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  currentAmount Int      @default(0)
+  targetMonths  Int      @default(3)
+  currency      Currency @default(RUB)
+  updatedAt     DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ── Billing ────────────────────────────────────────────
+
+model Subscription {
+  id                 String             @id @default(cuid())
+  userId             String             @unique
+  planCode           String             @default("PRO")
+  status             SubscriptionStatus @default(ACTIVE)
+  starsPrice         Int
+  telegramChargeId   String?
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  cancelledAt        DateTime?
+  cancelAtPeriodEnd  Boolean            @default(false)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PaymentEvent {
+  id                      String   @id @default(cuid())
+  userId                  String
+  subscriptionId          String?
+  telegramPaymentChargeId String   @unique
+  totalAmount             Int
+  currency                String   @default("XTR")
+  eventType               String
+  createdAt               DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}

@@ -1,0 +1,19 @@
+FROM node:20-alpine AS base
+RUN corepack enable && corepack prepare pnpm@9 --activate
+WORKDIR /app
+
+# Install dependencies
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
+COPY packages/shared/package.json packages/shared/
+COPY apps/bot/package.json apps/bot/
+RUN pnpm install --frozen-lockfile || pnpm install
+
+# Copy source
+COPY packages/shared/ packages/shared/
+COPY apps/bot/ apps/bot/
+COPY tsconfig.base.json ./
+
+# Build
+RUN cd apps/bot && pnpm build
+
+CMD ["node", "apps/bot/dist/index.js"]

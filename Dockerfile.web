@@ -1,0 +1,21 @@
+FROM node:20-alpine AS base
+RUN corepack enable && corepack prepare pnpm@9 --activate
+WORKDIR /app
+
+# Install dependencies
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
+COPY packages/shared/package.json packages/shared/
+COPY apps/web/package.json apps/web/
+RUN pnpm install --frozen-lockfile || pnpm install
+
+# Copy source
+COPY packages/shared/ packages/shared/
+COPY apps/web/ apps/web/
+COPY tsconfig.base.json ./
+
+# Build
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN cd apps/web && pnpm build
+
+EXPOSE 3000
+CMD ["pnpm", "--filter", "@pfm/web", "start"]

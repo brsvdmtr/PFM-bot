@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5433:5432"
+    volumes:
+      - pfm_pg_dev:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-pfm}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-pfm_secret}
+      - POSTGRES_DB=${POSTGRES_DB:-pfm}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pfm}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pfm_pg_dev:
