@@ -1,0 +1,65 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+      BOT_TOKEN: ${BOT_TOKEN}
+      MINI_APP_URL: ${MINI_APP_URL}
+      API_PORT: 3002
+      ADMIN_KEY: ${ADMIN_KEY}
+      NODE_ENV: production
+      GOD_MODE_TELEGRAM_IDS: ${GOD_MODE_TELEGRAM_IDS}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3002:3002"
+
+  bot:
+    build:
+      context: .
+      dockerfile: apps/bot/Dockerfile
+    restart: unless-stopped
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      MINI_APP_URL: ${MINI_APP_URL}
+      API_BASE_URL: http://api:3002
+      ADMIN_KEY: ${ADMIN_KEY}
+      NODE_ENV: production
+    depends_on:
+      - api
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: https://mytodaylimit.ru/api
+      NODE_ENV: production
+      PORT: 3003
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:3003:3003"
+
+volumes:
+  postgres_data:

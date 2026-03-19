@@ -2,8 +2,9 @@
   "name": "@pfm/db",
   "version": "0.0.1",
   "private": true,
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
   "scripts": {
+    "build": "tsc",
     "generate": "prisma generate",
     "migrate": "prisma migrate dev",
     "push": "prisma db push",
@@ -13,6 +14,7 @@
     "@prisma/client": "^6.5.0"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "prisma": "^6.5.0",
     "typescript": "^5.7.0"
   }

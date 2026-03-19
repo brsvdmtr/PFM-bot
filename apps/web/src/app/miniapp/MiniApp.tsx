@@ -44,9 +44,14 @@ type Screen =
   | 'dashboard'
   | 'add-expense'
   | 'history'
-  | 'settings';
+  | 'debts'
+  | 'settings'
+  | 'pro'
+  | 'period-summary'
+  | 'incomes'
+  | 'obligations';
 
-type NavTab = 'dashboard' | 'history' | 'settings';
+type NavTab = 'dashboard' | 'history' | 'debts' | 'settings';
 type S2SColor = 'green' | 'orange' | 'red';
 
 interface TgUser { id: number; first_name: string; last_name?: string; username?: string; language_code?: string; }
@@ -54,13 +59,35 @@ interface Debt { id: string; title: string; apr: number; balance: number; minPay
 interface Expense { id: string; amount: number; note?: string; spentAt: string; }
 interface DashboardData {
   onboardingDone: boolean;
-  s2sToday: number; s2sDaily: number;
+  s2sToday: number; s2sDaily: number; s2sStatus: string;
   daysLeft: number; daysTotal: number;
   periodStart: string; periodEnd: string;
+  periodSpent: number; s2sPeriod: number;
   todayExpenses: Expense[]; todayTotal: number;
   focusDebt: Debt | null;
+  debts: Debt[];
   emergencyFund: { currentAmount: number; targetAmount: number } | null;
   currency: string;
+}
+
+interface PeriodSummaryData {
+  id: string;
+  startDate: string; endDate: string; daysTotal: number;
+  s2sPeriod: number; s2sDaily: number;
+  totalSpent: number; saved: number; overspentDays: number;
+  currency: string;
+  topExpenses: { amount: number; note?: string; spentAt: string }[];
+}
+
+interface AvalanchePlanItem {
+  debtId: string; title: string; balance: number; apr: number;
+  minPayment: number; isFocus: boolean; order: number;
+  estimatedMonths: number; totalInterest: number;
+}
+interface AvalanchePlan {
+  items: AvalanchePlanItem[]; totalDebt: number;
+  totalMinPayments: number; estimatedDebtFreeMonths: number;
+  estimatedTotalInterest: number;
 }
 
 // ── API ──────────────────────────────────────────────────────────────────────
@@ -69,17 +96,21 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3002';
 
 function useApi() {
   const initDataRef = useRef<string>('');
+  const devMode = useRef(false);
+
   const api = useCallback(async (path: string, options?: RequestInit) => {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...(options?.headers as Record<string, string>),
     };
     if (initDataRef.current) headers['X-TG-INIT-DATA'] = initDataRef.current;
+    if (devMode.current) headers['X-TG-DEV'] = '12345';
     const res = await fetch(`${API_URL}${path}`, { ...options, headers });
     if (!res.ok) throw new Error(`API ${res.status}`);
     return res.json();
   }, []);
-  return { api, initDataRef };
+
+  return { api, initDataRef, devMode };
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -106,7 +137,7 @@ function colorOf(c: S2SColor) {
 function periodLabel(start: string, end: string) {
   const s = new Date(start);
   const e = new Date(end);
-  const mo = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const mo = ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];
   return `${mo[s.getMonth()]} ${s.getDate()} → ${mo[e.getMonth()]} ${e.getDate()}`;
 }
 
@@ -128,10 +159,19 @@ function groupByDay(expenses: Expense[]) {
 
 function dayLabel(d: Date) {
   const today = new Date();
-  if (d.toDateString() === today.toDateString()) return 'Today';
+  if (d.toDateString() === today.toDateString()) return 'Сегодня';
   const yest = new Date(today); yest.setDate(yest.getDate() - 1);
-  if (d.toDateString() === yest.toDateString()) return 'Yesterday';
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  if (d.toDateString() === yest.toDateString()) return 'Вчера';
+  const mo = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
+  return `${d.getDate()} ${mo[d.getMonth()]}`;
+}
+
+function debtTypeLabel(type: string) {
+  const map: Record<string, string> = {
+    CREDIT_CARD: 'Кредитка', CREDIT: 'Кредит', MORTGAGE: 'Ипотека',
+    CAR_LOAN: 'Автокредит', PERSONAL_LOAN: 'Займ', OTHER: 'Другое',
+  };
+  return map[type] || type;
 }
 
 // ── Sub-components ───────────────────────────────────────────────────────────
@@ -142,12 +182,12 @@ function Spinner() {
   );
 }
 
-function PrimaryBtn({ children, onClick, disabled }: { children: React.ReactNode; onClick: () => void; disabled?: boolean }) {
+function PrimaryBtn({ children, onClick, disabled, style }: { children: React.ReactNode; onClick: () => void; disabled?: boolean; style?: React.CSSProperties }) {
   return (
     <button
       onClick={onClick}
       disabled={disabled}
-      style={{ width: '100%', padding: '15px 0', background: disabled ? C.elevated : `linear-gradient(135deg, ${C.accent}, ${C.accentDim})`, border: 'none', borderRadius: 10, color: disabled ? C.textMuted : '#fff', fontSize: 16, fontWeight: 600, fontFamily: 'inherit', cursor: disabled ? 'not-allowed' : 'pointer', boxShadow: disabled ? 'none' : `0 4px 20px ${C.accentGlow}` }}
+      style={{ width: '100%', padding: '15px 0', background: disabled ? C.elevated : `linear-gradient(135deg, ${C.accent}, ${C.accentDim})`, border: 'none', borderRadius: 10, color: disabled ? C.textMuted : '#fff', fontSize: 16, fontWeight: 600, fontFamily: 'inherit', cursor: disabled ? 'not-allowed' : 'pointer', boxShadow: disabled ? 'none' : `0 4px 20px ${C.accentGlow}`, ...style }}
     >
       {children}
     </button>
@@ -196,14 +236,15 @@ function ProgressBar({ value, max, color = C.accent }: { value: number; max: num
 
 function BottomNav({ active, onTab, onAdd }: { active: NavTab; onTab: (t: NavTab) => void; onAdd: () => void }) {
   const items: { id: NavTab | 'add'; icon: string; label: string }[] = [
-    { id: 'dashboard', icon: '⊙', label: 'Home' },
-    { id: 'history', icon: '☰', label: 'History' },
+    { id: 'dashboard', icon: '⊙', label: 'Главная' },
+    { id: 'history', icon: '☰', label: 'История' },
     { id: 'add', icon: '+', label: '' },
-    { id: 'settings', icon: '⚙', label: 'Settings' },
+    { id: 'debts', icon: '💳', label: 'Долги' },
+    { id: 'settings', icon: '⚙', label: 'Ещё' },
   ];
 
   return (
-    <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, background: C.bgSecondary, borderTop: `1px solid ${C.borderSubtle}`, display: 'flex', justifyContent: 'space-around', alignItems: 'flex-start', padding: '8px 0', paddingBottom: 'max(8px, env(safe-area-inset-bottom))' }}>
+    <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, background: C.bgSecondary, borderTop: `1px solid ${C.borderSubtle}`, display: 'flex', justifyContent: 'space-around', alignItems: 'flex-start', padding: '8px 0', paddingBottom: 'max(8px, env(safe-area-inset-bottom))', zIndex: 100 }}>
       {items.map((item) => {
         if (item.id === 'add') {
           return (
@@ -217,7 +258,7 @@ function BottomNav({ active, onTab, onAdd }: { active: NavTab; onTab: (t: NavTab
         }
         const isActive = active === item.id;
         return (
-          <button key={item.id} onClick={() => onTab(item.id as NavTab)} style={{ background: 'none', border: 'none', color: isActive ? C.accentLight : C.textMuted, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, cursor: 'pointer', fontSize: 10, fontWeight: 500, fontFamily: 'inherit', padding: '4px 16px' }}>
+          <button key={item.id} onClick={() => onTab(item.id as NavTab)} style={{ background: 'none', border: 'none', color: isActive ? C.accentLight : C.textMuted, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, cursor: 'pointer', fontSize: 10, fontWeight: 500, fontFamily: 'inherit', padding: '4px 12px' }}>
             <span style={{ fontSize: 20 }}>{item.icon}</span>
             {item.label}
           </button>
@@ -256,7 +297,6 @@ function OnbIncome({ onNext }: { onNext: (data: { amount: number; paydays: numbe
     const n = parseInt(amount.replace(/\D/g, ''), 10);
     if (!n || n <= 0) return;
     const days = twoPaydays ? [...new Set([...payday, ...payday2])].sort((a, b) => a - b) : payday;
-    // store in kopecks/cents
     onNext({ amount: n * 100, paydays: days, currency });
   };
 
@@ -295,7 +335,7 @@ function OnbIncome({ onNext }: { onNext: (data: { amount: number; paydays: numbe
         <label style={{ display: 'block', fontSize: 13, color: C.textSec, marginBottom: 8 }}>День зарплаты</label>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {payOptions.map((d) => (
-            <button key={d} onClick={() => setPayday([d])} style={{ padding: '10px 16px', borderRadius: 24, background: payday.includes(d) && !twoPaydays ? C.accentBgStrong : C.surface, border: `1px solid ${payday.includes(d) && !twoPaydays ? C.accent : C.border}`, color: payday.includes(d) && !twoPaydays ? C.accentLight : C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>
+            <button key={d} onClick={() => { setPayday([d]); setTwoPaydays(false); }} style={{ padding: '10px 16px', borderRadius: 24, background: payday.includes(d) && !twoPaydays ? C.accentBgStrong : C.surface, border: `1px solid ${payday.includes(d) && !twoPaydays ? C.accent : C.border}`, color: payday.includes(d) && !twoPaydays ? C.accentLight : C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>
               {d}
             </button>
           ))}
@@ -453,7 +493,7 @@ function OnbEF({ onNext }: { onNext: (amount: number) => void }) {
 function OnbResult({ s2sDaily, currency, onDone }: { s2sDaily: number; currency: string; onDone: () => void }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', background: C.bg, padding: '0 24px', textAlign: 'center' }}>
-      <p style={{ fontSize: 14, color: C.textSec, marginBottom: 8 }}>🎉 Всё готово! Ваш Safe to Spend:</p>
+      <p style={{ fontSize: 14, color: C.textSec, marginBottom: 8 }}>Всё готово! Ваш Safe to Spend:</p>
       <div style={{ fontSize: 56, fontWeight: 800, letterSpacing: -2, color: C.green, marginBottom: 8 }}>{fmt(s2sDaily, currency)}</div>
       <p style={{ fontSize: 16, color: C.textSec, marginBottom: 8 }}>в день</p>
       <p style={{ fontSize: 13, color: C.textTertiary, marginBottom: 40, maxWidth: 300, lineHeight: 1.6 }}>Тратьте в пределах этой суммы каждый день, и вы выберетесь из долгов быстрее, чем думаете.</p>
@@ -466,17 +506,27 @@ function OnbResult({ s2sDaily, currency, onDone }: { s2sDaily: number; currency:
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 
-function Dashboard({ data, onAddExpense }: { data: DashboardData; onAddExpense: () => void }) {
+function Dashboard({ data, onAddExpense, onOpenDebts, onOpenSummary, showSummaryBanner }: { data: DashboardData; onAddExpense: () => void; onOpenDebts: () => void; onOpenSummary?: () => void; showSummaryBanner?: boolean }) {
   const color = s2sColor(data.s2sToday, data.s2sDaily);
   const mainColor = colorOf(color);
   const efPct = data.emergencyFund && data.emergencyFund.targetAmount > 0
     ? Math.min(100, Math.round((data.emergencyFund.currentAmount / data.emergencyFund.targetAmount) * 100))
     : 0;
-
   const periodElapsed = data.daysTotal - data.daysLeft;
+  const periodPct = data.s2sPeriod > 0 ? Math.min(100, Math.round((data.periodSpent / data.s2sPeriod) * 100)) : 0;
 
   return (
     <div style={{ background: C.bg, minHeight: '100vh', padding: '20px 16px', paddingBottom: 90 }}>
+
+      {/* Period summary banner */}
+      {showSummaryBanner && onOpenSummary && (
+        <div onClick={onOpenSummary} style={{ background: C.accentBg, border: `1px solid ${C.accent}40`, borderRadius: 12, padding: '12px 16px', marginBottom: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.accentLight }}>🔄 Период завершён</div>
+            <div style={{ fontSize: 12, color: C.textSec, marginTop: 2 }}>Посмотреть итоги прошлого периода →</div>
+          </div>
+        </div>
+      )}
 
       {/* Greeting */}
       <p style={{ fontSize: 13, color: C.textSec, marginBottom: 2 }}>Добрый день,</p>
@@ -489,14 +539,20 @@ function Dashboard({ data, onAddExpense }: { data: DashboardData; onAddExpense: 
       </div>
 
       {/* S2S Card */}
-      <div style={{ background: 'linear-gradient(145deg, #1E1535, #1A1028)', border: `1px solid rgba(139,92,246,0.25)`, borderRadius: 16, padding: '22px 20px', marginBottom: 14, position: 'relative', overflow: 'hidden' }}>
+      <div style={{ background: 'linear-gradient(145deg, #1E1535, #1A1028)', border: '1px solid rgba(139,92,246,0.25)', borderRadius: 16, padding: '22px 20px', marginBottom: 14, position: 'relative', overflow: 'hidden' }}>
         <div style={{ position: 'absolute', top: '-50%', right: '-20%', width: 200, height: 200, background: 'radial-gradient(circle, rgba(139,92,246,0.15), transparent 70%)', pointerEvents: 'none' }} />
-        <p style={{ fontSize: 12, color: C.textSec, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 8 }}>⊙ SAFE TO SPEND TODAY</p>
+        <p style={{ fontSize: 12, color: C.textSec, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 8 }}>SAFE TO SPEND TODAY</p>
         <p style={{ fontSize: 48, fontWeight: 800, letterSpacing: -2, lineHeight: 1, color: mainColor, marginBottom: 4 }}>{fmt(data.s2sToday, data.currency)}</p>
         <p style={{ fontSize: 13, color: C.textTertiary, marginBottom: 16 }}>из дневного лимита {fmt(data.s2sDaily, data.currency)}</p>
-        <div style={{ borderTop: `1px solid rgba(139,92,246,0.15)`, paddingTop: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+        {data.s2sStatus === 'OVERSPENT' && (
+          <div style={{ background: C.redBg, borderRadius: 8, padding: '8px 12px', marginBottom: 12 }}>
+            <p style={{ fontSize: 13, color: C.red, fontWeight: 600 }}>Перерасход на {fmt(data.todayTotal - data.s2sDaily, data.currency)}</p>
+            <p style={{ fontSize: 12, color: C.textTertiary }}>Завтра лимит уменьшится</p>
+          </div>
+        )}
+        <div style={{ borderTop: '1px solid rgba(139,92,246,0.15)', paddingTop: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
           <span style={{ fontSize: 13, color: C.textSec }}>Осталось в периоде</span>
-          <span style={{ fontSize: 18, fontWeight: 700, color: C.green }}>{fmt(data.s2sDaily * data.daysLeft - data.todayTotal, data.currency)}</span>
+          <span style={{ fontSize: 18, fontWeight: 700, color: C.green }}>{fmt(Math.max(0, data.s2sPeriod - data.periodSpent), data.currency)}</span>
         </div>
       </div>
 
@@ -506,44 +562,56 @@ function Dashboard({ data, onAddExpense }: { data: DashboardData; onAddExpense: 
           <span style={{ width: 36, height: 36, borderRadius: 10, background: C.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>+</span>
           Добавить расход
         </button>
-        <button style={{ background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 12, padding: '14px 12px', display: 'flex', alignItems: 'center', gap: 10, color: C.text, fontSize: 14, fontWeight: 500, fontFamily: 'inherit', cursor: 'pointer' }}>
-          <span style={{ width: 36, height: 36, borderRadius: 10, background: C.greenBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>↕</span>
-          Разбивка
+        <button onClick={onOpenDebts} style={{ background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 12, padding: '14px 12px', display: 'flex', alignItems: 'center', gap: 10, color: C.text, fontSize: 14, fontWeight: 500, fontFamily: 'inherit', cursor: 'pointer' }}>
+          <span style={{ width: 36, height: 36, borderRadius: 10, background: C.orangeBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>💳</span>
+          Долги
         </button>
       </div>
 
       {/* Emergency Fund */}
-      {data.emergencyFund && (
+      {data.emergencyFund && data.emergencyFund.targetAmount > 0 && (
         <Card>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>🛡 Подушка безопасности</span>
+            <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>Подушка безопасности</span>
             <span style={{ fontSize: 13, color: C.textSec }}>{fmt(data.emergencyFund.currentAmount, data.currency)} / {fmt(data.emergencyFund.targetAmount, data.currency)}</span>
           </div>
           <ProgressBar value={data.emergencyFund.currentAmount} max={data.emergencyFund.targetAmount} color={C.accent} />
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textTertiary, marginTop: 8 }}>
             <span>{efPct}%</span>
-            <span>цель: 3 месяца обязательных</span>
+            <span>цель: 3 мес. обязательных</span>
           </div>
         </Card>
       )}
 
-      {/* Focus Debt */}
-      {data.focusDebt && (
+      {/* Debts summary */}
+      {data.debts && data.debts.length > 0 && (
         <Card>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-            <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>🎯 Фокус-долг (Лавина)</span>
-            <span style={{ fontSize: 11, background: C.accentBg, color: C.accentLight, padding: '3px 8px', borderRadius: 10, fontWeight: 600 }}>APR {(data.focusDebt.apr * 100).toFixed(1)}%</span>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>Долги (Лавина)</span>
+            <span style={{ fontSize: 11, background: C.accentBg, color: C.accentLight, padding: '3px 8px', borderRadius: 10, fontWeight: 600 }}>{data.debts.length} активн.</span>
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>
-              <p style={{ fontSize: 14, fontWeight: 500, color: C.text, marginBottom: 3, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ width: 8, height: 8, borderRadius: '50%', background: C.accent, display: 'inline-block', boxShadow: `0 0 8px ${C.accentGlow}` }} />
-                {data.focusDebt.title}
-              </p>
-              <p style={{ fontSize: 12, color: C.textTertiary }}>мин. платёж {fmt(data.focusDebt.minPayment, data.currency)}/мес</p>
+          {data.debts.slice(0, 3).map((d) => (
+            <div key={d.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: `1px solid ${C.borderSubtle}` }}>
+              <div>
+                <p style={{ fontSize: 14, fontWeight: 500, color: C.text, marginBottom: 2, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {d.isFocusDebt && <span style={{ width: 8, height: 8, borderRadius: '50%', background: C.accent, display: 'inline-block', boxShadow: `0 0 8px ${C.accentGlow}` }} />}
+                  {d.title}
+                </p>
+                <p style={{ fontSize: 12, color: C.textTertiary }}>
+                  APR {(d.apr * 100).toFixed(1)}%{d.isFocusDebt ? ' · Фокус' : ''}
+                </p>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <p style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{fmt(d.balance, data.currency)}</p>
+                <p style={{ fontSize: 12, color: C.textTertiary }}>мин {fmt(d.minPayment, data.currency)}</p>
+              </div>
             </div>
-            <p style={{ fontSize: 16, fontWeight: 700, color: C.text }}>{fmt(data.focusDebt.balance, data.currency)}</p>
-          </div>
+          ))}
+          {data.debts.length > 3 && (
+            <button onClick={onOpenDebts} style={{ width: '100%', padding: '10px 0', background: 'none', border: 'none', color: C.accentLight, fontSize: 13, fontWeight: 500, cursor: 'pointer', marginTop: 8, fontFamily: 'inherit' }}>
+              Показать все ({data.debts.length})
+            </button>
+          )}
         </Card>
       )}
 
@@ -563,16 +631,16 @@ function Dashboard({ data, onAddExpense }: { data: DashboardData; onAddExpense: 
         </Card>
       )}
 
-      {/* Period progress */}
+      {/* Period spending progress */}
       <Card>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-          <span style={{ fontSize: 14, fontWeight: 600 }}>Период</span>
-          <span style={{ fontSize: 13, color: C.textSec }}>осталось {data.daysLeft} дн.</span>
+          <span style={{ fontSize: 14, fontWeight: 600 }}>Расходы за период</span>
+          <span style={{ fontSize: 13, color: C.textSec }}>{fmt(data.periodSpent, data.currency)} / {fmt(data.s2sPeriod, data.currency)}</span>
         </div>
-        <ProgressBar value={periodElapsed} max={data.daysTotal} color={C.green} />
+        <ProgressBar value={data.periodSpent} max={data.s2sPeriod} color={periodPct > 80 ? C.red : periodPct > 50 ? C.orange : C.green} />
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textTertiary, marginTop: 8 }}>
-          <span>день {periodElapsed + 1}</span>
-          <span>{Math.round((periodElapsed / data.daysTotal) * 100)}% прошло</span>
+          <span>{periodPct}% потрачено</span>
+          <span>{data.daysLeft} дн. осталось</span>
         </div>
       </Card>
     </div>
@@ -594,6 +662,7 @@ function AddExpense({ s2sToday, currency, onSave, onBack }: { s2sToday: number; 
     if (key === '.' && input.includes('.')) return;
     if (input === '0' && key !== '.') { setInput(key); return; }
     if (input.includes('.') && input.split('.')[1].length >= 2) return;
+    if (input.length >= 9) return;
     setInput((p) => p + key);
   };
 
@@ -614,7 +683,7 @@ function AddExpense({ s2sToday, currency, onSave, onBack }: { s2sToday: number; 
       </div>
 
       <div style={{ textAlign: 'center', padding: '32px 20px 16px' }}>
-        <p style={{ fontSize: 16, color: C.textTertiary, marginBottom: 6 }}>₽</p>
+        <p style={{ fontSize: 16, color: C.textTertiary, marginBottom: 6 }}>{currency === 'USD' ? '$' : '₽'}</p>
         <p style={{ fontSize: 52, fontWeight: 800, letterSpacing: -2, color: C.text, lineHeight: 1 }}>{parseFloat(input).toLocaleString('ru-RU', { maximumFractionDigits: 2 })}</p>
         <p style={{ fontSize: 14, color: C.textSec, marginTop: 10 }}>
           Останется сегодня: <span style={{ color: remaining > 0 ? C.green : C.red, fontWeight: 600 }}>{fmt(remaining, currency)}</span>
@@ -645,13 +714,30 @@ function AddExpense({ s2sToday, currency, onSave, onBack }: { s2sToday: number; 
 
 // ── History ──────────────────────────────────────────────────────────────────
 
-function History({ api, currency }: { api: (path: string, opts?: RequestInit) => Promise<any>; currency: string }) {
+function History({ api, currency, onRefresh }: { api: (path: string, opts?: RequestInit) => Promise<any>; currency: string; onRefresh: () => void }) {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    setLoading(true);
     api('/tg/expenses').then((r) => { setExpenses(r.expenses || []); setLoading(false); }).catch(() => setLoading(false));
   }, [api]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleDelete = async (id: string) => {
+    setDeletingId(id);
+    try {
+      await api(`/tg/expenses/${id}`, { method: 'DELETE' });
+      setExpenses((prev) => prev.filter((e) => e.id !== id));
+      onRefresh();
+    } catch {
+      // ignore
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   const groups = groupByDay(expenses);
   const total = expenses.reduce((s, e) => s + e.amount, 0);
@@ -687,7 +773,14 @@ function History({ api, currency }: { api: (path: string, opts?: RequestInit) =>
                 <p style={{ fontSize: 14, fontWeight: 500, color: C.text, marginBottom: 2 }}>{e.note || 'Расход'}</p>
                 <p style={{ fontSize: 12, color: C.textTertiary }}>{new Date(e.spentAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</p>
               </div>
-              <span style={{ fontSize: 15, fontWeight: 600, color: C.red }}>-{fmt(e.amount, currency)}</span>
+              <span style={{ fontSize: 15, fontWeight: 600, color: C.red, marginRight: 8 }}>-{fmt(e.amount, currency)}</span>
+              <button
+                onClick={() => handleDelete(e.id)}
+                disabled={deletingId === e.id}
+                style={{ background: C.redBg, border: 'none', borderRadius: 8, padding: '6px 10px', color: C.red, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', opacity: deletingId === e.id ? 0.5 : 1 }}
+              >
+                ✕
+              </button>
             </div>
           ))}
         </div>
@@ -696,9 +789,261 @@ function History({ api, currency }: { api: (path: string, opts?: RequestInit) =>
   );
 }
 
+// ── Debts Screen ─────────────────────────────────────────────────────────────
+
+function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: RequestInit) => Promise<any>; currency: string; onRefresh: () => void }) {
+  const [debts, setDebts] = useState<Debt[]>([]);
+  const [plan, setPlan] = useState<AvalanchePlan | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+  const [newDebt, setNewDebt] = useState({ title: '', type: 'CREDIT_CARD', balance: '', apr: '', minPayment: '' });
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [d, p] = await Promise.all([
+        api('/tg/debts'),
+        api('/tg/debts/avalanche-plan'),
+      ]);
+      setDebts(d);
+      setPlan(p);
+    } catch {}
+    setLoading(false);
+  }, [api]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleAdd = async () => {
+    if (!newDebt.title || !newDebt.balance || !newDebt.minPayment) return;
+    setSaving(true);
+    try {
+      await api('/tg/debts', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: newDebt.title, type: newDebt.type,
+          balance: parseFloat(newDebt.balance) * 100,
+          apr: parseFloat(newDebt.apr || '0') / 100,
+          minPayment: parseInt(newDebt.minPayment, 10) * 100,
+        }),
+      });
+      setShowAdd(false);
+      setNewDebt({ title: '', type: 'CREDIT_CARD', balance: '', apr: '', minPayment: '' });
+      await load();
+      onRefresh();
+    } catch {}
+    setSaving(false);
+  };
+
+  const handleDelete = async (id: string) => {
+    await api(`/tg/debts/${id}`, { method: 'DELETE' });
+    await load();
+    onRefresh();
+  };
+
+  const totalDebt = debts.reduce((s, d) => s + d.balance, 0);
+  const totalMin = debts.reduce((s, d) => s + d.minPayment, 0);
+
+  const types = [
+    { v: 'CREDIT_CARD', l: 'Кредитка' }, { v: 'CREDIT', l: 'Кредит' },
+    { v: 'MORTGAGE', l: 'Ипотека' }, { v: 'CAR_LOAN', l: 'Автокредит' },
+    { v: 'PERSONAL_LOAN', l: 'Займ' }, { v: 'OTHER', l: 'Другое' },
+  ];
+
+  return (
+    <div style={{ background: C.bg, minHeight: '100vh', padding: '20px 16px', paddingBottom: 90 }}>
+      <p style={{ fontSize: 22, fontWeight: 700, marginBottom: 16, color: C.text }}>Долги</p>
+
+      {loading && <div style={{ textAlign: 'center', paddingTop: 40 }}><Spinner /></div>}
+
+      {!loading && debts.length === 0 && !showAdd && (
+        <div style={{ textAlign: 'center', paddingTop: 60, color: C.textTertiary }}>
+          <p style={{ fontSize: 48, marginBottom: 12 }}>🎉</p>
+          <p style={{ fontSize: 16, fontWeight: 600, color: C.green, marginBottom: 8 }}>Долгов нет!</p>
+          <p style={{ fontSize: 13 }}>Так держать</p>
+        </div>
+      )}
+
+      {!loading && debts.length > 0 && (
+        <>
+          {/* Summary */}
+          <Card style={{ background: 'linear-gradient(145deg, #1E1535, #1A1028)', border: '1px solid rgba(139,92,246,0.25)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+              <div>
+                <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 4 }}>Общий долг</p>
+                <p style={{ fontSize: 24, fontWeight: 800, color: C.text }}>{fmt(totalDebt, currency)}</p>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 4 }}>Мин. платежи/мес</p>
+                <p style={{ fontSize: 18, fontWeight: 700, color: C.orange }}>{fmt(totalMin, currency)}</p>
+              </div>
+            </div>
+            {plan && plan.estimatedDebtFreeMonths > 0 && plan.estimatedDebtFreeMonths < 600 && (
+              <div style={{ borderTop: '1px solid rgba(139,92,246,0.15)', paddingTop: 10, marginTop: 8 }}>
+                <p style={{ fontSize: 13, color: C.textSec }}>
+                  Свобода от долгов: ~{plan.estimatedDebtFreeMonths} мес. · Переплата: {fmt(plan.estimatedTotalInterest, currency)}
+                </p>
+              </div>
+            )}
+          </Card>
+
+          {/* Debt list */}
+          {debts.map((d, i) => (
+            <Card key={d.id} style={d.isFocusDebt ? { border: `1px solid ${C.accent}`, borderLeft: `3px solid ${C.accent}` } : {}}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 3, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {d.isFocusDebt && <span style={{ width: 8, height: 8, borderRadius: '50%', background: C.accent, display: 'inline-block', boxShadow: `0 0 8px ${C.accentGlow}` }} />}
+                    {d.title}
+                  </p>
+                  <p style={{ fontSize: 12, color: C.textTertiary }}>{debtTypeLabel(d.type)} · APR {(d.apr * 100).toFixed(1)}%</p>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {d.isFocusDebt && <span style={{ fontSize: 10, background: C.accentBg, color: C.accentLight, padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>ФОКУС</span>}
+                  <button onClick={() => handleDelete(d.id)} style={{ background: C.redBg, border: 'none', borderRadius: 6, padding: '4px 8px', color: C.red, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>✕</button>
+                </div>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <div>
+                  <p style={{ fontSize: 20, fontWeight: 700, color: C.text }}>{fmt(d.balance, currency)}</p>
+                  <p style={{ fontSize: 12, color: C.textTertiary }}>остаток</p>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <p style={{ fontSize: 16, fontWeight: 600, color: C.textSec }}>{fmt(d.minPayment, currency)}</p>
+                  <p style={{ fontSize: 12, color: C.textTertiary }}>мин/мес</p>
+                </div>
+              </div>
+              {plan && plan.items[i] && (
+                <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderSubtle}`, display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textTertiary }}>
+                  <span>~{plan.items[i].estimatedMonths} мес. до погашения</span>
+                  <span>переплата {fmt(plan.items[i].totalInterest, currency)}</span>
+                </div>
+              )}
+            </Card>
+          ))}
+        </>
+      )}
+
+      {/* Add debt form */}
+      {showAdd && (
+        <Card>
+          <p style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Новый долг</p>
+          <input value={newDebt.title} onChange={(e) => setNewDebt({ ...newDebt, title: e.target.value })} placeholder="Название" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', marginBottom: 8, boxSizing: 'border-box' }} />
+          <select value={newDebt.type} onChange={(e) => setNewDebt({ ...newDebt, type: e.target.value })} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px', color: C.textSec, fontSize: 13, fontFamily: 'inherit', outline: 'none', marginBottom: 8 }}>
+            {types.map((t) => <option key={t.v} value={t.v}>{t.l}</option>)}
+          </select>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 12 }}>
+            <input type="number" value={newDebt.balance} onChange={(e) => setNewDebt({ ...newDebt, balance: e.target.value })} placeholder="Остаток" style={{ background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 13, fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box' }} />
+            <input type="number" value={newDebt.apr} onChange={(e) => setNewDebt({ ...newDebt, apr: e.target.value })} placeholder="Ставка %" style={{ background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 13, fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box' }} />
+            <input type="number" value={newDebt.minPayment} onChange={(e) => setNewDebt({ ...newDebt, minPayment: e.target.value })} placeholder="Мин. пл." style={{ background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 13, fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box' }} />
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <PrimaryBtn onClick={handleAdd} disabled={saving} style={{ flex: 1 }}>
+              {saving ? '...' : 'Добавить'}
+            </PrimaryBtn>
+            <button onClick={() => setShowAdd(false)} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>Отмена</button>
+          </div>
+        </Card>
+      )}
+
+      {!showAdd && !loading && (
+        <button onClick={() => setShowAdd(true)} style={{ width: '100%', padding: '16px 0', background: 'transparent', border: `1px dashed ${C.border}`, borderRadius: 10, color: C.accent, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer', marginTop: 8 }}>
+          + Добавить долг
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── PRO Paywall ──────────────────────────────────────────────────────────────
+
+function ProPaywall({ onBack, api }: { onBack: () => void; api: (path: string, opts?: RequestInit) => Promise<any> }) {
+  const [loading, setLoading] = useState(false);
+  const [paid, setPaid] = useState(false);
+  const [err, setErr] = useState('');
+
+  const features = [
+    { icon: '📊', title: 'Еженедельный дайджест', desc: 'Аналитика трат, тренды и прогресс по долгам' },
+    { icon: '⏰', title: 'Своё время уведомлений', desc: 'Настройте утреннее S2S и вечернее напоминание' },
+    { icon: '📈', title: 'Расширенная аналитика', desc: 'Графики, сравнение периодов, категории трат' },
+    { icon: '📤', title: 'Экспорт данных', desc: 'Скачайте историю расходов в CSV' },
+    { icon: '🚀', title: 'Приоритетная поддержка', desc: 'Быстрые ответы в выделенном канале' },
+  ];
+
+  const handleSubscribe = async () => {
+    const tg = (window as any).Telegram?.WebApp;
+    if (!tg?.openInvoice) {
+      setErr('Оплата доступна только в Telegram');
+      return;
+    }
+    setLoading(true);
+    setErr('');
+    try {
+      const { invoiceUrl } = await api('/tg/billing/pro/checkout', { method: 'POST' });
+      tg.openInvoice(invoiceUrl, (status: string) => {
+        setLoading(false);
+        if (status === 'paid') {
+          setPaid(true);
+        } else if (status === 'failed') {
+          setErr('Ошибка оплаты. Попробуйте ещё раз.');
+        }
+        // 'cancelled' — просто закрыли, ничего не делаем
+      });
+    } catch {
+      setLoading(false);
+      setErr('Не удалось создать счёт. Попробуйте позже.');
+    }
+  };
+
+  if (paid) {
+    return (
+      <div style={{ background: C.bg, minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '0 24px', textAlign: 'center' }}>
+        <div style={{ fontSize: 64, marginBottom: 20 }}>🎉</div>
+        <h2 style={{ fontSize: 24, fontWeight: 800, color: C.text, marginBottom: 12 }}>PRO активирован!</h2>
+        <p style={{ fontSize: 15, color: C.textSec, lineHeight: 1.6, marginBottom: 36 }}>Спасибо за поддержку! Все PRO функции уже доступны.</p>
+        <PrimaryBtn onClick={onBack}>Отлично!</PrimaryBtn>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: C.bg, minHeight: '100vh', padding: '20px 16px', paddingBottom: 40 }}>
+      <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.textSec, fontSize: 20, cursor: 'pointer', marginBottom: 16 }}>←</button>
+
+      <div style={{ textAlign: 'center', marginBottom: 32 }}>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 16px', background: C.accentBgStrong, border: `1px solid ${C.accent}`, borderRadius: 24, fontSize: 14, fontWeight: 700, color: C.accentLight, marginBottom: 16 }}>PRO</div>
+        <h2 style={{ fontSize: 22, fontWeight: 700, color: C.text, marginBottom: 8, lineHeight: 1.3 }}>Возьмите финансы под полный контроль</h2>
+        <p style={{ fontSize: 14, color: C.textSec, lineHeight: 1.5 }}>Автоматизация, аналитика и продвинутые сценарии</p>
+      </div>
+
+      {features.map((f, i) => (
+        <div key={i} style={{ display: 'flex', gap: 12, padding: '14px 0', alignItems: 'flex-start' }}>
+          <div style={{ width: 36, height: 36, borderRadius: 10, background: C.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>{f.icon}</div>
+          <div>
+            <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 2 }}>{f.title}</p>
+            <p style={{ fontSize: 13, color: C.textTertiary, lineHeight: 1.4 }}>{f.desc}</p>
+          </div>
+        </div>
+      ))}
+
+      <div style={{ textAlign: 'center', margin: '24px 0' }}>
+        <p style={{ fontSize: 36, fontWeight: 800, color: C.text }}>⭐ 100</p>
+        <p style={{ fontSize: 14, color: C.textTertiary }}>Telegram Stars / месяц</p>
+      </div>
+
+      {err && <p style={{ color: C.red, fontSize: 13, textAlign: 'center', marginBottom: 12 }}>{err}</p>}
+
+      <PrimaryBtn onClick={handleSubscribe} disabled={loading}>
+        {loading ? 'Открываем счёт...' : 'Подписаться за 100 Stars'}
+      </PrimaryBtn>
+      <SecondaryBtn onClick={onBack}>Позже</SecondaryBtn>
+    </div>
+  );
+}
+
 // ── Settings ─────────────────────────────────────────────────────────────────
 
-function Settings({ api }: { api: (path: string, opts?: RequestInit) => Promise<any> }) {
+function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations }: { api: (path: string, opts?: RequestInit) => Promise<any>; onOpenPro: () => void; onOpenIncomes: () => void; onOpenObligations: () => void }) {
   const [settings, setSettings] = useState<any>(null);
   const [plan, setPlan] = useState<any>(null);
 
@@ -720,24 +1065,43 @@ function Settings({ api }: { api: (path: string, opts?: RequestInit) => Promise<
         <Card style={{ marginBottom: 20, background: plan.plan === 'PRO' ? 'linear-gradient(145deg, #1E1535, #1A1028)' : C.surface, border: `1px solid ${plan.plan === 'PRO' ? C.accent : C.borderSubtle}` }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
-              <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 2 }}>{plan.plan === 'PRO' ? '✨ PRO план' : 'FREE план'}</p>
+              <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 2 }}>{plan.plan === 'PRO' ? 'PRO план' : 'FREE план'}</p>
               <p style={{ fontSize: 12, color: C.textSec }}>{plan.plan === 'PRO' ? 'Активна подписка' : 'Обновитесь до PRO'}</p>
             </div>
             {plan.plan === 'FREE' && (
-              <button style={{ padding: '8px 16px', background: `linear-gradient(135deg, ${C.accent}, ${C.accentDim})`, border: 'none', borderRadius: 8, color: '#fff', fontSize: 13, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}>⭐ PRO</button>
+              <button onClick={onOpenPro} style={{ padding: '8px 16px', background: `linear-gradient(135deg, ${C.accent}, ${C.accentDim})`, border: 'none', borderRadius: 8, color: '#fff', fontSize: 13, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}>PRO</button>
             )}
           </div>
         </Card>
       )}
 
+      {/* Budget management links */}
+      <p style={{ fontSize: 12, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 10 }}>Бюджет</p>
+      {[
+        { label: 'Доходы', icon: '💰', desc: 'Зарплата и другие поступления', onClick: onOpenIncomes },
+        { label: 'Обязательства', icon: '📋', desc: 'Аренда, ЖКХ, подписки', onClick: onOpenObligations },
+      ].map((item) => (
+        <div key={item.label} onClick={item.onClick} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 10, padding: '14px 16px', marginBottom: 2, cursor: 'pointer' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ fontSize: 20 }}>{item.icon}</span>
+            <div>
+              <p style={{ fontSize: 14, color: C.text }}>{item.label}</p>
+              <p style={{ fontSize: 12, color: C.textTertiary }}>{item.desc}</p>
+            </div>
+          </div>
+          <span style={{ color: C.textMuted, fontSize: 18 }}>›</span>
+        </div>
+      ))}
+      <div style={{ marginBottom: 16 }} />
+
       {settings && (
         <>
           <p style={{ fontSize: 12, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 10 }}>Уведомления</p>
           {[
-            { key: 'morningNotifyEnabled', label: '🌅 Утреннее S2S', desc: settings.morningNotifyTime },
-            { key: 'eveningNotifyEnabled', label: '🌙 Вечерний напоминатель', desc: settings.eveningNotifyTime },
-            { key: 'paymentAlerts', label: '💳 Напоминания о платежах', desc: 'за день до' },
-            { key: 'deficitAlerts', label: '⚠️ Дефицит бюджета', desc: 'когда перерасход' },
+            { key: 'morningNotifyEnabled', label: 'Утреннее S2S', desc: settings.morningNotifyTime },
+            { key: 'eveningNotifyEnabled', label: 'Вечернее напоминание', desc: settings.eveningNotifyTime },
+            { key: 'paymentAlerts', label: 'Напоминания о платежах', desc: 'за день до' },
+            { key: 'deficitAlerts', label: 'Дефицит бюджета', desc: 'когда перерасход' },
           ].map(({ key, label, desc }) => (
             <div key={key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 10, padding: '14px 16px', marginBottom: 2 }}>
               <div>
@@ -758,6 +1122,289 @@ function Settings({ api }: { api: (path: string, opts?: RequestInit) => Promise<
   );
 }
 
+// ── Incomes Screen ───────────────────────────────────────────────────────────
+
+interface Income {
+  id: string; title: string; amount: number; currency: string;
+  frequency: string; paydays: number[];
+}
+
+const FREQ_LABELS: Record<string, string> = {
+  MONTHLY: 'Ежемесячно', BIWEEKLY: 'Раз в 2 недели', WEEKLY: 'Еженедельно', IRREGULAR: 'Нерегулярно',
+};
+
+function IncomesScreen({ api, onBack, onChanged }: { api: (p: string, o?: RequestInit) => Promise<any>; onBack: () => void; onChanged: () => void }) {
+  const [incomes, setIncomes] = useState<Income[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [title, setTitle] = useState('');
+  const [amount, setAmount] = useState('');
+  const [payday, setPayday] = useState(15);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(() => {
+    api('/tg/incomes').then(setIncomes).finally(() => setLoading(false));
+  }, [api]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleAdd = async () => {
+    if (!title.trim() || !amount) return;
+    setSaving(true);
+    try {
+      await api('/tg/incomes', {
+        method: 'POST',
+        body: JSON.stringify({ title: title.trim(), amount: parseFloat(amount) * 100, paydays: [payday], currency: 'RUB' }),
+      });
+      await api('/tg/periods/recalculate', { method: 'POST', body: '{}' }).catch(() => {});
+      setTitle(''); setAmount(''); setPayday(15); setShowForm(false);
+      load(); onChanged();
+    } finally { setSaving(false); }
+  };
+
+  const handleDelete = async (id: string) => {
+    await api(`/tg/incomes/${id}`, { method: 'DELETE' });
+    await api('/tg/periods/recalculate', { method: 'POST', body: '{}' }).catch(() => {});
+    load(); onChanged();
+  };
+
+  const payOptions = [1, 5, 10, 15, 20, 25];
+
+  return (
+    <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px 40px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button onClick={onBack} style={{ background: C.surface, border: 'none', borderRadius: 10, color: C.textSec, fontSize: 20, width: 40, height: 40, cursor: 'pointer', fontFamily: 'inherit' }}>←</button>
+          <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, margin: 0 }}>Доходы</h2>
+        </div>
+        <button onClick={() => setShowForm(!showForm)} style={{ padding: '8px 16px', background: showForm ? C.surface : `linear-gradient(135deg, ${C.accent}, ${C.accentDim})`, border: 'none', borderRadius: 10, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+          {showForm ? 'Отмена' : '+ Добавить'}
+        </button>
+      </div>
+
+      {showForm && (
+        <Card style={{ marginBottom: 16 }}>
+          <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 16 }}>Новый доход</p>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Название (напр. Зарплата)" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
+          <input value={amount} onChange={(e) => setAmount(e.target.value)} type="number" placeholder="Сумма в месяц (₽)" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
+          <p style={{ fontSize: 12, color: C.textSec, marginBottom: 8 }}>День зарплаты</p>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+            {payOptions.map((d) => (
+              <button key={d} onClick={() => setPayday(d)} style={{ padding: '8px 14px', borderRadius: 20, background: payday === d ? C.accentBgStrong : C.elevated, border: `1px solid ${payday === d ? C.accent : C.border}`, color: payday === d ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>{d}</button>
+            ))}
+          </div>
+          <PrimaryBtn onClick={handleAdd} disabled={saving || !title.trim() || !amount}>
+            {saving ? 'Сохранение...' : 'Сохранить'}
+          </PrimaryBtn>
+        </Card>
+      )}
+
+      {loading ? (
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: 40 }}><Spinner /></div>
+      ) : incomes.length === 0 ? (
+        <div style={{ textAlign: 'center', color: C.textSec, marginTop: 60 }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>💰</div>
+          <p>Нет источников дохода</p>
+        </div>
+      ) : (
+        incomes.map((inc) => (
+          <Card key={inc.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 3 }}>{inc.title}</p>
+              <p style={{ fontSize: 13, color: C.textSec }}>{fmt(inc.amount, inc.currency)} / мес · {FREQ_LABELS[inc.frequency] || inc.frequency}</p>
+              <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 2 }}>Зарплата: {(inc.paydays as number[]).join(', ')} числа</p>
+            </div>
+            <button onClick={() => handleDelete(inc.id)} style={{ background: C.redBg, border: 'none', borderRadius: 8, color: C.red, fontSize: 18, width: 36, height: 36, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}>✕</button>
+          </Card>
+        ))
+      )}
+    </div>
+  );
+}
+
+// ── Obligations Screen ────────────────────────────────────────────────────────
+
+interface Obligation {
+  id: string; title: string; type: string; amount: number; currency: string; dueDay?: number;
+}
+
+const OB_TYPES = [
+  { value: 'RENT', label: 'Аренда' },
+  { value: 'UTILITIES', label: 'ЖКХ' },
+  { value: 'SUBSCRIPTION', label: 'Подписка' },
+  { value: 'TELECOM', label: 'Связь' },
+  { value: 'INSURANCE', label: 'Страховка' },
+  { value: 'OTHER', label: 'Другое' },
+];
+
+function ObligationsScreen({ api, onBack, onChanged }: { api: (p: string, o?: RequestInit) => Promise<any>; onBack: () => void; onChanged: () => void }) {
+  const [obligations, setObligations] = useState<Obligation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [title, setTitle] = useState('');
+  const [amount, setAmount] = useState('');
+  const [type, setType] = useState('OTHER');
+  const [dueDay, setDueDay] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(() => {
+    api('/tg/obligations').then(setObligations).finally(() => setLoading(false));
+  }, [api]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleAdd = async () => {
+    if (!title.trim() || !amount) return;
+    setSaving(true);
+    try {
+      await api('/tg/obligations', {
+        method: 'POST',
+        body: JSON.stringify({ title: title.trim(), amount: parseFloat(amount) * 100, type, dueDay: dueDay ? parseInt(dueDay) : undefined }),
+      });
+      await api('/tg/periods/recalculate', { method: 'POST', body: '{}' }).catch(() => {});
+      setTitle(''); setAmount(''); setType('OTHER'); setDueDay(''); setShowForm(false);
+      load(); onChanged();
+    } finally { setSaving(false); }
+  };
+
+  const handleDelete = async (id: string) => {
+    await api(`/tg/obligations/${id}`, { method: 'DELETE' });
+    await api('/tg/periods/recalculate', { method: 'POST', body: '{}' }).catch(() => {});
+    load(); onChanged();
+  };
+
+  const obTypeLabel = (t: string) => OB_TYPES.find((x) => x.value === t)?.label || t;
+
+  return (
+    <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px 40px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button onClick={onBack} style={{ background: C.surface, border: 'none', borderRadius: 10, color: C.textSec, fontSize: 20, width: 40, height: 40, cursor: 'pointer', fontFamily: 'inherit' }}>←</button>
+          <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, margin: 0 }}>Обязательства</h2>
+        </div>
+        <button onClick={() => setShowForm(!showForm)} style={{ padding: '8px 16px', background: showForm ? C.surface : `linear-gradient(135deg, ${C.accent}, ${C.accentDim})`, border: 'none', borderRadius: 10, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+          {showForm ? 'Отмена' : '+ Добавить'}
+        </button>
+      </div>
+
+      {showForm && (
+        <Card style={{ marginBottom: 16 }}>
+          <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 16 }}>Новое обязательство</p>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Название (напр. Аренда квартиры)" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
+          <input value={amount} onChange={(e) => setAmount(e.target.value)} type="number" placeholder="Сумма в месяц (₽)" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
+          <p style={{ fontSize: 12, color: C.textSec, marginBottom: 8 }}>Категория</p>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+            {OB_TYPES.map((t) => (
+              <button key={t.value} onClick={() => setType(t.value)} style={{ padding: '7px 14px', borderRadius: 20, background: type === t.value ? C.accentBgStrong : C.elevated, border: `1px solid ${type === t.value ? C.accent : C.border}`, color: type === t.value ? C.accentLight : C.textSec, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer' }}>{t.label}</button>
+            ))}
+          </div>
+          <input value={dueDay} onChange={(e) => setDueDay(e.target.value)} type="number" placeholder="День списания (необязательно)" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 14, outline: 'none', boxSizing: 'border-box' }} />
+          <PrimaryBtn onClick={handleAdd} disabled={saving || !title.trim() || !amount}>
+            {saving ? 'Сохранение...' : 'Сохранить'}
+          </PrimaryBtn>
+        </Card>
+      )}
+
+      {loading ? (
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: 40 }}><Spinner /></div>
+      ) : obligations.length === 0 ? (
+        <div style={{ textAlign: 'center', color: C.textSec, marginTop: 60 }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>📋</div>
+          <p>Нет обязательных расходов</p>
+        </div>
+      ) : (
+        obligations.map((ob) => (
+          <Card key={ob.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 3 }}>{ob.title}</p>
+              <p style={{ fontSize: 13, color: C.textSec }}>{fmt(ob.amount, ob.currency || 'RUB')} / мес · {obTypeLabel(ob.type)}</p>
+              {ob.dueDay && <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 2 }}>Списание: {ob.dueDay} числа</p>}
+            </div>
+            <button onClick={() => handleDelete(ob.id)} style={{ background: C.redBg, border: 'none', borderRadius: 8, color: C.red, fontSize: 18, width: 36, height: 36, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}>✕</button>
+          </Card>
+        ))
+      )}
+    </div>
+  );
+}
+
+// ── Period Summary ───────────────────────────────────────────────────────────
+
+function PeriodSummary({ data, onClose }: { data: PeriodSummaryData; onClose: () => void }) {
+  const { currency } = data;
+  const saved = data.saved;
+  const isSaved = saved >= 0;
+  const pct = data.s2sPeriod > 0 ? Math.min(100, Math.round((data.totalSpent / data.s2sPeriod) * 100)) : 0;
+
+  const mo = ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];
+  const s = new Date(data.startDate);
+  const e = new Date(data.endDate);
+  const periodLabel = `${mo[s.getMonth()]} ${s.getDate()} — ${mo[e.getMonth()]} ${e.getDate()}`;
+
+  const barColor = pct > 100 ? C.red : pct > 80 ? C.orange : C.green;
+
+  return (
+    <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px 40px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 28 }}>
+        <button onClick={onClose} style={{ background: C.surface, border: 'none', borderRadius: 10, color: C.textSec, fontSize: 20, width: 40, height: 40, cursor: 'pointer', fontFamily: 'inherit' }}>←</button>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, margin: 0 }}>Итоги периода</h2>
+      </div>
+
+      <p style={{ fontSize: 13, color: C.textSec, marginBottom: 20, marginTop: -16 }}>{periodLabel} · {data.daysTotal} дней</p>
+
+      {/* Result banner */}
+      <div style={{ background: isSaved ? C.greenBg : C.redBg, border: `1px solid ${isSaved ? C.greenDim : C.red}40`, borderRadius: 16, padding: '20px 18px', marginBottom: 16, textAlign: 'center' }}>
+        <div style={{ fontSize: 40, marginBottom: 8 }}>{isSaved ? '🎉' : '😬'}</div>
+        <div style={{ fontSize: 14, color: C.textSec, marginBottom: 4 }}>
+          {isSaved ? 'Сэкономили' : 'Перерасход'}
+        </div>
+        <div style={{ fontSize: 28, fontWeight: 800, color: isSaved ? C.green : C.red }}>
+          {fmt(Math.abs(saved), currency)}
+        </div>
+      </div>
+
+      {/* Stats grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 }}>
+        {[
+          { label: 'Бюджет периода', value: fmt(data.s2sPeriod, currency), color: C.text },
+          { label: 'Потрачено', value: fmt(data.totalSpent, currency), color: pct > 100 ? C.red : C.text },
+          { label: 'Дн. лимит был', value: fmt(data.s2sDaily, currency), color: C.text },
+          { label: 'Дней с перерасх.', value: `${data.overspentDays}`, color: data.overspentDays > 0 ? C.orange : C.green },
+        ].map((stat) => (
+          <Card key={stat.label} style={{ marginBottom: 0, padding: '14px 14px' }}>
+            <div style={{ fontSize: 11, color: C.textSec, marginBottom: 4 }}>{stat.label}</div>
+            <div style={{ fontSize: 17, fontWeight: 700, color: stat.color }}>{stat.value}</div>
+          </Card>
+        ))}
+      </div>
+
+      {/* Spend progress */}
+      <Card>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+          <span style={{ fontSize: 13, color: C.textSec }}>Израсходовано бюджета</span>
+          <span style={{ fontSize: 13, fontWeight: 600, color: barColor }}>{pct}%</span>
+        </div>
+        <ProgressBar value={data.totalSpent} max={data.s2sPeriod} color={barColor} />
+      </Card>
+
+      {/* Top expenses */}
+      {data.topExpenses.length > 0 && (
+        <Card>
+          <div style={{ fontSize: 13, color: C.textSec, marginBottom: 12 }}>Крупные траты</div>
+          {data.topExpenses.map((e, i) => (
+            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: i < data.topExpenses.length - 1 ? 10 : 0, marginBottom: i < data.topExpenses.length - 1 ? 10 : 0, borderBottom: i < data.topExpenses.length - 1 ? `1px solid ${C.borderSubtle}` : 'none' }}>
+              <span style={{ fontSize: 14, color: C.text }}>{e.note || 'Без комментария'}</span>
+              <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{fmt(e.amount, currency)}</span>
+            </div>
+          ))}
+        </Card>
+      )}
+
+      <PrimaryBtn onClick={onClose}>Перейти к новому периоду</PrimaryBtn>
+    </div>
+  );
+}
+
 // ── Main App ─────────────────────────────────────────────────────────────────
 
 export default function MiniApp() {
@@ -766,27 +1413,35 @@ export default function MiniApp() {
   const [error, setError] = useState('');
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [onbResult, setOnbResult] = useState<{ s2sDaily: number; currency: string } | null>(null);
-  const { api, initDataRef } = useApi();
+  const [periodSummary, setPeriodSummary] = useState<PeriodSummaryData | null>(null);
+  const [showSummaryBanner, setShowSummaryBanner] = useState(false);
+  const { api, initDataRef, devMode } = useApi();
 
   const loadDashboard = useCallback(async () => {
     const data = await api('/tg/dashboard');
     setDashboard(data);
+    // Check if there's a recent completed period to show summary banner
+    api('/tg/periods/last-completed').then((summary: PeriodSummaryData | null) => {
+      if (summary) {
+        setPeriodSummary(summary);
+        // Show banner only if period ended within last 3 days
+        const endDate = new Date(summary.endDate);
+        const diffDays = (Date.now() - endDate.getTime()) / (1000 * 60 * 60 * 24);
+        if (diffDays <= 3) setShowSummaryBanner(true);
+      }
+    }).catch(() => {});
     return data;
   }, [api]);
 
   useEffect(() => {
     const tg = (window as any).Telegram?.WebApp;
     if (!tg) {
-      // Dev mode: check API with dev bypass header
-      const devApi = (path: string, opts?: RequestInit) =>
-        fetch(`${API_URL}${path}`, {
-          ...opts,
-          headers: { 'Content-Type': 'application/json', 'X-TG-DEV': '12345', ...(opts?.headers as any) },
-        }).then((r) => r.json());
+      // Dev mode
+      devMode.current = true;
 
-      devApi('/tg/onboarding/status').then((d) => {
+      api('/tg/onboarding/status').then((d) => {
         if (d.onboardingDone) {
-          devApi('/tg/dashboard').then((dash) => { setDashboard(dash); setScreen('dashboard'); }).catch(() => setScreen('dashboard'));
+          loadDashboard().then(() => setScreen('dashboard')).catch(() => setScreen('dashboard'));
         } else {
           setScreen('onboarding-welcome');
         }
@@ -806,15 +1461,12 @@ export default function MiniApp() {
         setScreen('onboarding-welcome');
       }
     }).catch((e) => { setError(String(e)); setScreen('error'); });
-  }, [api, initDataRef, loadDashboard]);
+  }, [api, initDataRef, devMode, loadDashboard]);
 
   // ── Onboarding handlers ──────────────────────────────────────────────────
 
-  const [onbData, setOnbData] = useState<any>({});
-
   const handleIncome = async (data: any) => {
     await api('/tg/onboarding/income', { method: 'POST', body: JSON.stringify(data) });
-    setOnbData((p: any) => ({ ...p, income: data }));
     setScreen('onboarding-obligations');
   };
 
@@ -860,14 +1512,16 @@ export default function MiniApp() {
 
   if (screen === 'loading') return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', background: C.bg, gap: 16 }}>
+      <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
       <Spinner />
       <p style={{ color: C.textSec, fontSize: 14 }}>Загрузка...</p>
     </div>
   );
 
   if (screen === 'error') return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: C.bg }}>
-      <p style={{ color: C.red, fontSize: 16, textAlign: 'center', padding: 24 }}>{error || 'Ошибка загрузки'}</p>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', background: C.bg, gap: 16, padding: 24 }}>
+      <p style={{ color: C.red, fontSize: 16, textAlign: 'center' }}>{error || 'Ошибка загрузки'}</p>
+      <PrimaryBtn onClick={() => window.location.reload()} style={{ maxWidth: 200 }}>Повторить</PrimaryBtn>
     </div>
   );
 
@@ -887,15 +1541,51 @@ export default function MiniApp() {
     />
   );
 
+  if (screen === 'pro') return <ProPaywall onBack={() => { setScreen('settings'); setNavTab('settings'); }} api={api} />;
+
+  if (screen === 'incomes') return (
+    <IncomesScreen
+      api={api}
+      onBack={() => { setScreen('settings'); setNavTab('settings'); }}
+      onChanged={loadDashboard}
+    />
+  );
+
+  if (screen === 'obligations') return (
+    <ObligationsScreen
+      api={api}
+      onBack={() => { setScreen('settings'); setNavTab('settings'); }}
+      onChanged={loadDashboard}
+    />
+  );
+
+  if (screen === 'period-summary' && periodSummary) return (
+    <PeriodSummary
+      data={periodSummary}
+      onClose={() => { setShowSummaryBanner(false); setScreen('dashboard'); setNavTab('dashboard'); }}
+    />
+  );
+
   // Screens with bottom nav
   return (
     <div style={{ background: C.bg, minHeight: '100vh' }}>
-      {screen === 'dashboard' && dashboard && <Dashboard data={dashboard} onAddExpense={() => setScreen('add-expense')} />}
+      <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+
+      {screen === 'dashboard' && dashboard && (
+        <Dashboard
+          data={dashboard}
+          onAddExpense={() => setScreen('add-expense')}
+          onOpenDebts={() => { setScreen('debts'); setNavTab('debts'); }}
+          onOpenSummary={periodSummary ? () => setScreen('period-summary') : undefined}
+          showSummaryBanner={showSummaryBanner}
+        />
+      )}
       {screen === 'dashboard' && !dashboard && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh' }}><Spinner /></div>
       )}
-      {screen === 'history' && <History api={api} currency={dashboard?.currency ?? 'RUB'} />}
-      {screen === 'settings' && <Settings api={api} />}
+      {screen === 'history' && <History api={api} currency={dashboard?.currency ?? 'RUB'} onRefresh={loadDashboard} />}
+      {screen === 'debts' && <DebtsScreen api={api} currency={dashboard?.currency ?? 'RUB'} onRefresh={loadDashboard} />}
+      {screen === 'settings' && <Settings api={api} onOpenPro={() => setScreen('pro')} onOpenIncomes={() => setScreen('incomes')} onOpenObligations={() => setScreen('obligations')} />}
 
       <BottomNav
         active={navTab}

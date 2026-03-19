@@ -3,7 +3,7 @@ import cors from 'cors';
 import crypto from 'crypto';
 import { prisma } from '@pfm/db';
 import { calculateS2S, calculatePeriodBounds } from './engine';
-import { determineFocusDebt } from './avalanche';
+import { determineFocusDebt, buildAvalanchePlan } from './avalanche';
 
 // ── Types ──────────────────────────────────────────────
 
@@ -161,7 +161,7 @@ tg.get('/onboarding/status', async (req: AuthenticatedRequest, res) => {
 tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
   const userId = req.userId!;
 
-  const [user, activePeriod, todayExpenses] = await Promise.all([
+  const [user, activePeriod, todayExpenses, periodExpenses] = await Promise.all([
     prisma.user.findUnique({
       where: { id: userId },
       include: {
@@ -182,6 +182,11 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
       },
       orderBy: { spentAt: 'desc' },
     }),
+    // Total expenses for the entire period (for carry-over calc)
+    prisma.expense.aggregate({
+      where: { userId, period: { status: 'ACTIVE' } },
+      _sum: { amount: true },
+    }),
   ]);
 
   if (!user || !activePeriod) {
@@ -191,6 +196,8 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
       s2sDaily: 0,
       daysLeft: 0,
       daysTotal: 0,
+      periodSpent: 0,
+      s2sPeriod: 0,
       todayExpenses: [],
       focusDebt: null,
       emergencyFund: null,
@@ -199,19 +206,38 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
   }
 
   const todayTotal = todayExpenses.reduce((sum, e) => sum + e.amount, 0);
+  const totalPeriodSpent = periodExpenses._sum.amount ?? 0;
   const now = new Date();
   const daysLeft = Math.max(1, Math.ceil((activePeriod.endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
+
+  // Dynamic S2S with carry-over: recalculate daily from remaining budget
+  const periodRemaining = Math.max(0, activePeriod.s2sPeriod - totalPeriodSpent);
+  const dynamicS2sDaily = Math.max(0, Math.round(periodRemaining / daysLeft));
+  const s2sToday = Math.max(0, dynamicS2sDaily - todayTotal);
+
+  // S2S status color
+  let s2sStatus: 'OK' | 'WARNING' | 'OVERSPENT' | 'DEFICIT' = 'OK';
+  if (activePeriod.s2sPeriod <= 0) {
+    s2sStatus = 'DEFICIT';
+  } else if (todayTotal > dynamicS2sDaily) {
+    s2sStatus = 'OVERSPENT';
+  } else if (dynamicS2sDaily > 0 && s2sToday / dynamicS2sDaily <= 0.3) {
+    s2sStatus = 'WARNING';
+  }
 
   const focusDebt = user.debts.find((d) => d.isFocusDebt) ?? user.debts[0] ?? null;
 
   res.json({
     onboardingDone: user.onboardingDone,
-    s2sToday: Math.max(0, activePeriod.s2sDaily - todayTotal),
-    s2sDaily: activePeriod.s2sDaily,
+    s2sToday,
+    s2sDaily: dynamicS2sDaily,
+    s2sStatus,
     daysLeft,
     daysTotal: activePeriod.daysTotal,
     periodStart: activePeriod.startDate,
     periodEnd: activePeriod.endDate,
+    periodSpent: totalPeriodSpent,
+    s2sPeriod: activePeriod.s2sPeriod,
     todayExpenses,
     todayTotal,
     focusDebt: focusDebt
@@ -220,9 +246,19 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
           title: focusDebt.title,
           apr: focusDebt.apr,
           balance: focusDebt.balance,
+          minPayment: focusDebt.minPayment,
           type: focusDebt.type,
         }
       : null,
+    debts: user.debts.map((d) => ({
+      id: d.id,
+      title: d.title,
+      apr: d.apr,
+      balance: d.balance,
+      minPayment: d.minPayment,
+      type: d.type,
+      isFocusDebt: d.isFocusDebt,
+    })),
     emergencyFund: user.emergencyFund
       ? {
           currentAmount: user.emergencyFund.currentAmount,
@@ -536,6 +572,204 @@ tg.post('/onboarding/complete', async (req: AuthenticatedRequest, res) => {
   });
 });
 
+// ── Periods ──────────────────────────────────────────────
+
+// Last completed period summary
+tg.get('/periods/last-completed', async (req: AuthenticatedRequest, res) => {
+  const userId = req.userId!;
+
+  const period = await prisma.period.findFirst({
+    where: { userId, status: 'COMPLETED' },
+    orderBy: { endDate: 'desc' },
+    include: { dailySnapshots: true },
+  });
+
+  if (!period) {
+    res.json(null);
+    return;
+  }
+
+  const [totalSpentAgg, topExpenses] = await Promise.all([
+    prisma.expense.aggregate({
+      where: { periodId: period.id },
+      _sum: { amount: true },
+    }),
+    prisma.expense.findMany({
+      where: { periodId: period.id },
+      orderBy: { amount: 'desc' },
+      take: 5,
+    }),
+  ]);
+
+  const totalSpent = totalSpentAgg._sum.amount ?? 0;
+  const saved = period.s2sPeriod - totalSpent;
+  const overspentDays = period.dailySnapshots.filter((s) => s.isOverspent).length;
+
+  res.json({
+    id: period.id,
+    startDate: period.startDate,
+    endDate: period.endDate,
+    daysTotal: period.daysTotal,
+    s2sPeriod: period.s2sPeriod,
+    s2sDaily: period.s2sDaily,
+    totalSpent,
+    saved,
+    overspentDays,
+    currency: period.currency,
+    topExpenses: topExpenses.map((e) => ({ amount: e.amount, note: e.note, spentAt: e.spentAt })),
+  });
+});
+
+tg.get('/periods/current', async (req: AuthenticatedRequest, res) => {
+  const period = await prisma.period.findFirst({
+    where: { userId: req.userId!, status: 'ACTIVE' },
+    include: { expenses: { orderBy: { spentAt: 'desc' } } },
+  });
+  res.json(period);
+});
+
+tg.post('/periods/recalculate', async (req: AuthenticatedRequest, res) => {
+  const userId = req.userId!;
+
+  const [incomes, obligations, debts, ef] = await Promise.all([
+    prisma.income.findMany({ where: { userId, isActive: true } }),
+    prisma.obligation.findMany({ where: { userId, isActive: true } }),
+    prisma.debt.findMany({ where: { userId, isPaidOff: false } }),
+    prisma.emergencyFund.findUnique({ where: { userId } }),
+  ]);
+
+  const activePeriod = await prisma.period.findFirst({
+    where: { userId, status: 'ACTIVE' },
+  });
+
+  if (!activePeriod || incomes.length === 0) {
+    res.status(400).json({ error: 'No active period or income' });
+    return;
+  }
+
+  const totalExpenses = await prisma.expense.aggregate({
+    where: { periodId: activePeriod.id },
+    _sum: { amount: true },
+  });
+
+  const today = new Date();
+  const s2sResult = calculateS2S({
+    incomes: incomes.map((inc) => ({ amount: inc.amount, paydays: inc.paydays as number[] })),
+    obligations: obligations.map((o) => ({ amount: o.amount })),
+    debts: debts.map((d) => ({
+      id: d.id, balance: d.balance, apr: d.apr,
+      minPayment: d.minPayment, isFocusDebt: d.isFocusDebt,
+    })),
+    emergencyFund: { currentAmount: ef?.currentAmount ?? 0, targetMonths: ef?.targetMonths ?? 3 },
+    periodStartDate: activePeriod.startDate,
+    periodEndDate: activePeriod.endDate,
+    today,
+    totalExpensesInPeriod: totalExpenses._sum.amount ?? 0,
+    todayExpenses: 0,
+    isProratedStart: activePeriod.isProratedStart,
+    fullPeriodDays: activePeriod.daysTotal,
+  });
+
+  await prisma.period.update({
+    where: { id: activePeriod.id },
+    data: {
+      totalIncome: s2sResult.totalIncome,
+      totalObligations: s2sResult.totalObligations,
+      totalDebtPayments: s2sResult.totalDebtPayments,
+      efContribution: s2sResult.efContribution,
+      reserve: s2sResult.reserve,
+      s2sPeriod: s2sResult.s2sPeriod,
+      s2sDaily: s2sResult.s2sDaily,
+    },
+  });
+
+  res.json({ ok: true, s2s: s2sResult });
+});
+
+// ── Incomes CRUD ─────────────────────────────────────────
+
+tg.get('/incomes', async (req: AuthenticatedRequest, res) => {
+  const incomes = await prisma.income.findMany({
+    where: { userId: req.userId! },
+    orderBy: { createdAt: 'desc' },
+  });
+  res.json(incomes);
+});
+
+tg.post('/incomes', async (req: AuthenticatedRequest, res) => {
+  const { title, amount, paydays, currency = 'RUB', frequency = 'MONTHLY' } = req.body;
+  if (!title || !amount || !paydays) {
+    res.status(400).json({ error: 'title, amount, paydays required' });
+    return;
+  }
+  const income = await prisma.income.create({
+    data: {
+      userId: req.userId!, title,
+      amount: Math.round(amount), paydays,
+      currency: currency as any, frequency: frequency as any,
+    },
+  });
+  res.status(201).json(income);
+});
+
+tg.patch('/incomes/:id', async (req: AuthenticatedRequest, res) => {
+  const id = req.params.id as string;
+  const income = await prisma.income.findFirst({ where: { id, userId: req.userId! } });
+  if (!income) { res.status(404).json({ error: 'Not found' }); return; }
+  const updated = await prisma.income.update({ where: { id }, data: req.body });
+  res.json(updated);
+});
+
+tg.delete('/incomes/:id', async (req: AuthenticatedRequest, res) => {
+  const id = req.params.id as string;
+  const income = await prisma.income.findFirst({ where: { id, userId: req.userId! } });
+  if (!income) { res.status(404).json({ error: 'Not found' }); return; }
+  await prisma.income.delete({ where: { id } });
+  res.json({ ok: true });
+});
+
+// ── Obligations CRUD ─────────────────────────────────────
+
+tg.get('/obligations', async (req: AuthenticatedRequest, res) => {
+  const obligations = await prisma.obligation.findMany({
+    where: { userId: req.userId! },
+    orderBy: { createdAt: 'desc' },
+  });
+  res.json(obligations);
+});
+
+tg.post('/obligations', async (req: AuthenticatedRequest, res) => {
+  const { title, type = 'OTHER', amount, dueDay } = req.body;
+  if (!title || !amount) {
+    res.status(400).json({ error: 'title, amount required' });
+    return;
+  }
+  const obligation = await prisma.obligation.create({
+    data: {
+      userId: req.userId!, title,
+      type: type as any, amount: Math.round(amount),
+      dueDay: dueDay ?? null,
+    },
+  });
+  res.status(201).json(obligation);
+});
+
+tg.patch('/obligations/:id', async (req: AuthenticatedRequest, res) => {
+  const id = req.params.id as string;
+  const ob = await prisma.obligation.findFirst({ where: { id, userId: req.userId! } });
+  if (!ob) { res.status(404).json({ error: 'Not found' }); return; }
+  const updated = await prisma.obligation.update({ where: { id }, data: req.body });
+  res.json(updated);
+});
+
+tg.delete('/obligations/:id', async (req: AuthenticatedRequest, res) => {
+  const id = req.params.id as string;
+  const ob = await prisma.obligation.findFirst({ where: { id, userId: req.userId! } });
+  if (!ob) { res.status(404).json({ error: 'Not found' }); return; }
+  await prisma.obligation.delete({ where: { id } });
+  res.json({ ok: true });
+});
+
 // ── Debts ───────────────────────────────────────────────
 
 tg.get('/debts', async (req: AuthenticatedRequest, res) => {
@@ -575,12 +809,103 @@ tg.post('/debts', async (req: AuthenticatedRequest, res) => {
   res.status(201).json(debt);
 });
 
+tg.patch('/debts/:id', async (req: AuthenticatedRequest, res) => {
+  const id = req.params.id as string;
+  const debt = await prisma.debt.findFirst({ where: { id, userId: req.userId! } });
+  if (!debt) { res.status(404).json({ error: 'Not found' }); return; }
+  const allowed = ['title', 'type', 'balance', 'apr', 'minPayment', 'dueDay'];
+  const data: Record<string, any> = {};
+  for (const key of allowed) {
+    if (key in req.body) data[key] = req.body[key];
+  }
+  const updated = await prisma.debt.update({ where: { id }, data });
+  res.json(updated);
+});
+
 tg.delete('/debts/:id', async (req: AuthenticatedRequest, res) => {
   const id = req.params.id as string;
   const debt = await prisma.debt.findFirst({ where: { id, userId: req.userId! } });
   if (!debt) { res.status(404).json({ error: 'Not found' }); return; }
   await prisma.debt.delete({ where: { id: debt.id } });
+
+  // If deleted debt was focus, assign new focus
+  if (debt.isFocusDebt) {
+    const allDebts = await prisma.debt.findMany({ where: { userId: req.userId!, isPaidOff: false }, orderBy: { apr: 'desc' } });
+    if (allDebts.length > 0) {
+      const focusId = determineFocusDebt(allDebts.map((d) => ({ id: d.id, title: d.title, balance: d.balance, apr: d.apr, minPayment: d.minPayment, type: d.type })));
+      if (focusId) await prisma.debt.update({ where: { id: focusId }, data: { isFocusDebt: true } });
+    }
+  }
+
   res.json({ ok: true });
+});
+
+// Debt payment
+tg.post('/debts/:id/payment', async (req: AuthenticatedRequest, res) => {
+  const id = req.params.id as string;
+  const { amount, isExtra = false } = req.body;
+
+  const debt = await prisma.debt.findFirst({ where: { id, userId: req.userId! } });
+  if (!debt) { res.status(404).json({ error: 'Not found' }); return; }
+  if (!amount || amount <= 0) { res.status(400).json({ error: 'Invalid amount' }); return; }
+
+  const paymentAmount = Math.round(amount);
+  const newBalance = Math.max(0, debt.balance - paymentAmount);
+
+  const [payment] = await Promise.all([
+    prisma.debtPayment.create({
+      data: { debtId: id, amount: paymentAmount, isExtra },
+    }),
+    prisma.debt.update({
+      where: { id },
+      data: {
+        balance: newBalance,
+        isPaidOff: newBalance === 0,
+        paidOffAt: newBalance === 0 ? new Date() : null,
+        isFocusDebt: newBalance === 0 ? false : debt.isFocusDebt,
+      },
+    }),
+  ]);
+
+  // If debt is paid off, reassign focus
+  if (newBalance === 0) {
+    const remaining = await prisma.debt.findMany({
+      where: { userId: req.userId!, isPaidOff: false },
+      orderBy: { apr: 'desc' },
+    });
+    if (remaining.length > 0) {
+      const focusId = determineFocusDebt(remaining.map((d) => ({ id: d.id, title: d.title, balance: d.balance, apr: d.apr, minPayment: d.minPayment, type: d.type })));
+      if (focusId) {
+        await prisma.debt.updateMany({ where: { userId: req.userId! }, data: { isFocusDebt: false } });
+        await prisma.debt.update({ where: { id: focusId }, data: { isFocusDebt: true } });
+      }
+    }
+  }
+
+  res.json({ ok: true, payment, newBalance });
+});
+
+// Avalanche plan
+tg.get('/debts/avalanche-plan', async (req: AuthenticatedRequest, res) => {
+  const userId = req.userId!;
+  const debts = await prisma.debt.findMany({
+    where: { userId, isPaidOff: false },
+    orderBy: { apr: 'desc' },
+  });
+
+  const activePeriod = await prisma.period.findFirst({
+    where: { userId, status: 'ACTIVE' },
+  });
+
+  // Estimate monthly extra from current period
+  const monthlyExtra = activePeriod ? Math.round(activePeriod.s2sPeriod * 0.10 / (activePeriod.daysTotal / 30)) : 0;
+
+  const plan = buildAvalanchePlan(
+    debts.map((d) => ({ id: d.id, title: d.title, balance: d.balance, apr: d.apr, minPayment: d.minPayment, type: d.type })),
+    monthlyExtra
+  );
+
+  res.json(plan);
 });
 
 // ── Expenses (history) ─────────────────────────────────
@@ -648,12 +973,80 @@ tg.get('/me/plan', async (req: AuthenticatedRequest, res) => {
   });
 });
 
+// ── Billing ─────────────────────────────────────────────
+
+tg.post('/billing/pro/checkout', async (req: AuthenticatedRequest, res) => {
+  const userId = req.userId!;
+
+  if (!BOT_TOKEN) {
+    res.status(503).json({ error: 'Bot token not configured' });
+    return;
+  }
+
+  // Check not already PRO
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { subscription: true },
+  });
+
+  const isPro =
+    user?.godMode ||
+    (user?.subscription?.status === 'ACTIVE' && (user.subscription.currentPeriodEnd ?? new Date(0)) > new Date());
+
+  if (isPro) {
+    res.status(400).json({ error: 'Already PRO' });
+    return;
+  }
+
+  // Create Telegram Stars invoice link
+  const tgRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/createInvoiceLink`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: 'PFM PRO',
+      description: 'Месячная подписка: аналитика, уведомления, экспорт данных',
+      payload: `pro_${userId}`,
+      currency: 'XTR',       // Telegram Stars
+      prices: [{ label: 'PFM PRO (1 месяц)', amount: 100 }],
+    }),
+  });
+
+  if (!tgRes.ok) {
+    const err = await tgRes.json().catch(() => ({}));
+    console.error('[PFM API] createInvoiceLink error:', err);
+    res.status(502).json({ error: 'Failed to create invoice' });
+    return;
+  }
+
+  const tgData = (await tgRes.json()) as { ok: boolean; result?: string };
+  if (!tgData.ok || !tgData.result) {
+    res.status(502).json({ error: 'Invalid Telegram response' });
+    return;
+  }
+
+  res.json({ invoiceUrl: tgData.result });
+});
+
 app.use('/tg', tg);
 
 // ── Internal Routes ────────────────────────────────────
 
 const internal = express.Router();
 internal.use(internalAuth);
+
+// Store chat ID for notifications
+internal.post('/store-chat-id', async (req, res) => {
+  const { telegramId, chatId } = req.body;
+  if (!telegramId || !chatId) {
+    res.status(400).json({ error: 'telegramId and chatId required' });
+    return;
+  }
+  await prisma.user.updateMany({
+    where: { telegramId: String(telegramId) },
+    data: { telegramChatId: String(chatId) },
+  });
+  res.json({ ok: true });
+});
 
 internal.post('/activate-subscription', async (req, res) => {
   const { telegramId, chargeId, amount } = req.body;
@@ -706,4 +1099,7 @@ app.use('/internal', internal);
 
 app.listen(PORT, () => {
   console.log(`[PFM API] Running on port ${PORT}`);
+
+  // Start cron jobs after server is up
+  import('./cron').catch((err) => console.error('[PFM API] Failed to start cron:', err));
 });

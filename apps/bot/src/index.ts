@@ -1,5 +1,13 @@
 import { Telegraf } from 'telegraf';
 
+// ── Types ─────────────────────────────────────────────
+
+interface DashboardResponse {
+  onboardingDone: boolean;
+  s2sToday: number; s2sDaily: number; s2sStatus: string;
+  daysLeft: number; currency: string;
+}
+
 // ── Config ─────────────────────────────────────────────
 
 const BOT_TOKEN = process.env.BOT_TOKEN || '';
@@ -86,14 +94,52 @@ bot.start(async (ctx) => {
 
 bot.command('today', async (ctx) => {
   try {
-    // TODO: implement when dashboard API is ready
-    await ctx.reply('💰 Откройте Mini App для просмотра Safe to Spend', {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: 'Открыть PFM 💰', web_app: { url: MINI_APP_URL } }],
-        ],
+    // Find user by telegram ID via internal endpoint
+    const res = await fetch(`${API_BASE_URL}/tg/dashboard`, {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-TG-DEV': String(ctx.from.id),
       },
     });
+
+    if (!res.ok) throw new Error('API error');
+    const data = (await res.json()) as DashboardResponse;
+
+    if (!data.onboardingDone) {
+      await ctx.reply('Сначала пройдите настройку в Mini App 👇', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: 'Открыть PFM 💰', web_app: { url: MINI_APP_URL } }],
+          ],
+        },
+      });
+      return;
+    }
+
+    const s2s = (data.s2sToday / 100).toLocaleString('ru-RU', { maximumFractionDigits: 0 });
+    const daily = (data.s2sDaily / 100).toLocaleString('ru-RU', { maximumFractionDigits: 0 });
+    const sym = data.currency === 'USD' ? '$' : '₽';
+    const daysLeft = data.daysLeft;
+
+    let emoji = '🟢';
+    if (data.s2sStatus === 'OVERSPENT') emoji = '🔴';
+    else if (data.s2sStatus === 'WARNING') emoji = '🟡';
+    else if (data.s2sStatus === 'DEFICIT') emoji = '🔴';
+
+    await ctx.reply(
+      `${emoji} *Safe to Spend сегодня:*\n\n` +
+      `*${s2s} ${sym}*\n` +
+      `из дневного лимита ${daily} ${sym}\n\n` +
+      `📅 Осталось дней в периоде: ${daysLeft}`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: 'Открыть PFM 💰', web_app: { url: MINI_APP_URL } }],
+          ],
+        },
+      }
+    );
   } catch (err) {
     console.error('[PFM Bot] /today error:', err);
     await ctx.reply('Произошла ошибка. Попробуйте позже.');
@@ -104,21 +150,72 @@ bot.command('today', async (ctx) => {
 
 bot.command('spend', async (ctx) => {
   const text = ctx.message.text.replace('/spend', '').trim();
-  const amount = parseFloat(text);
+  const parts = text.split(/\s+/);
+  const amount = parseFloat(parts[0]);
+  const note = parts.slice(1).join(' ') || undefined;
 
-  if (!text || isNaN(amount) || amount <= 0) {
-    await ctx.reply('Использование: /spend 500\n(сумма в рублях)');
+  if (!parts[0] || isNaN(amount) || amount <= 0) {
+    await ctx.reply('Использование: /spend 500 обед\n(сумма в рублях, заметка опционально)');
     return;
   }
 
-  // TODO: implement when expense API is wired
-  await ctx.reply(`✅ Расход ${amount} ₽ записан.\nОткройте PFM для деталей.`, {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: 'Открыть PFM 💰', web_app: { url: MINI_APP_URL } }],
-      ],
-    },
-  });
+  try {
+    const amountKop = Math.round(amount * 100);
+
+    // Create expense via API
+    const res = await fetch(`${API_BASE_URL}/tg/expenses`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-TG-DEV': String(ctx.from.id),
+      },
+      body: JSON.stringify({ amount: amountKop, note }),
+    });
+
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      if (err.error === 'No active period. Complete onboarding first.') {
+        await ctx.reply('Сначала пройдите настройку в Mini App 👇', {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: 'Открыть PFM 💰', web_app: { url: MINI_APP_URL } }],
+            ],
+          },
+        });
+        return;
+      }
+      throw new Error('API error');
+    }
+
+    // Get updated S2S
+    const dashRes = await fetch(`${API_BASE_URL}/tg/dashboard`, {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-TG-DEV': String(ctx.from.id),
+      },
+    });
+    const data = (await dashRes.json()) as DashboardResponse;
+
+    const s2s = (data.s2sToday / 100).toLocaleString('ru-RU', { maximumFractionDigits: 0 });
+    const sym = data.currency === 'USD' ? '$' : '₽';
+
+    const noteText = note ? ` (${note})` : '';
+    await ctx.reply(
+      `✅ Расход ${amount} ${sym}${noteText} записан.\n\n` +
+      `Осталось сегодня: *${s2s} ${sym}*`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: 'Открыть PFM 💰', web_app: { url: MINI_APP_URL } }],
+          ],
+        },
+      }
+    );
+  } catch (err) {
+    console.error('[PFM Bot] /spend error:', err);
+    await ctx.reply('Произошла ошибка. Попробуйте позже.');
+  }
 });
 
 // ── /help ──────────────────────────────────────────────
