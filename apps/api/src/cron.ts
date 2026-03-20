@@ -307,9 +307,9 @@ cron.schedule('5 0 * * *', async () => {
         const { incomes, obligations, debts, emergencyFund: ef } = user;
         if (incomes.length === 0) continue;
 
-        // Calculate new period bounds
-        const paydays = incomes[0].paydays as number[];
-        const bounds = calculatePeriodBounds(paydays, now);
+        // Calculate new period bounds using ALL paydays from all incomes
+        const allPaydays = [...new Set(incomes.flatMap((i: any) => i.paydays as number[]))].sort((a: number, b: number) => a - b);
+        const bounds = calculatePeriodBounds(allPaydays, now);
 
         // Calculate S2S for new period
         const s2sResult = calculateS2S({

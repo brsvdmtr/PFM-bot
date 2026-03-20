@@ -48,6 +48,10 @@ function validateTelegramInitData(initData: string): TelegramUser | null {
 
     if (computed !== hash) return null;
 
+    // Reject stale initData (older than 1 hour)
+    const authDate = parseInt(params.get('auth_date') || '0', 10);
+    if (authDate && Date.now() / 1000 - authDate > 3600) return null;
+
     const userStr = params.get('user');
     if (!userStr) return null;
     return JSON.parse(userStr) as TelegramUser;
@@ -124,7 +128,12 @@ async function ensureUser(req: AuthenticatedRequest, _res: Response, next: NextF
 // ── App ────────────────────────────────────────────────
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: process.env.NODE_ENV === 'production'
+    ? [process.env.MINI_APP_URL?.replace('/miniapp', '') || 'https://mytodaylimit.ru', 'https://mytodaylimit.ru']
+    : true,
+  credentials: false,
+}));
 app.use(express.json());
 
 // ── Health ─────────────────────────────────────────────
