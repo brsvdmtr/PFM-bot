@@ -49,7 +49,8 @@ type Screen =
   | 'pro'
   | 'period-summary'
   | 'incomes'
-  | 'obligations';
+  | 'obligations'
+  | 'paydays';
 
 type NavTab = 'dashboard' | 'history' | 'debts' | 'settings';
 type S2SColor = 'green' | 'orange' | 'red';
@@ -1043,7 +1044,7 @@ function ProPaywall({ onBack, api }: { onBack: () => void; api: (path: string, o
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 
-function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations }: { api: (path: string, opts?: RequestInit) => Promise<any>; onOpenPro: () => void; onOpenIncomes: () => void; onOpenObligations: () => void }) {
+function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPaydays }: { api: (path: string, opts?: RequestInit) => Promise<any>; onOpenPro: () => void; onOpenIncomes: () => void; onOpenObligations: () => void; onOpenPaydays: () => void }) {
   const [settings, setSettings] = useState<any>(null);
   const [plan, setPlan] = useState<any>(null);
 
@@ -1078,6 +1079,7 @@ function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations }: { api: (
       {/* Budget management links */}
       <p style={{ fontSize: 12, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 10 }}>Бюджет</p>
       {[
+        { label: 'Даты зарплаты', icon: '📅', desc: 'Когда приходят деньги', onClick: onOpenPaydays },
         { label: 'Доходы', icon: '💰', desc: 'Зарплата и другие поступления', onClick: onOpenIncomes },
         { label: 'Обязательства', icon: '📋', desc: 'Аренда, ЖКХ, подписки', onClick: onOpenObligations },
       ].map((item) => (
@@ -1117,6 +1119,114 @@ function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations }: { api: (
             </div>
           ))}
         </>
+      )}
+    </div>
+  );
+}
+
+// ── Paydays Screen ───────────────────────────────────────────────────────────
+
+function PaydaysScreen({ api, onBack, onChanged }: { api: (p: string, o?: RequestInit) => Promise<any>; onBack: () => void; onChanged: () => void }) {
+  const [incomes, setIncomes] = useState<any[]>([]);
+  const [edits, setEdits] = useState<Record<string, { payday: number; twoPaydays: boolean; payday2: number }>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const payOptions = [1, 5, 10, 15, 20, 25];
+
+  useEffect(() => {
+    api('/tg/incomes').then((data) => {
+      setIncomes(data);
+      const init: Record<string, { payday: number; twoPaydays: boolean; payday2: number }> = {};
+      for (const inc of data) {
+        const days = (inc.paydays as number[]) ?? [15];
+        init[inc.id] = {
+          payday: days[0] ?? 15,
+          twoPaydays: days.length >= 2,
+          payday2: days[1] ?? (payOptions.find(d => d !== days[0]) ?? 1),
+        };
+      }
+      setEdits(init);
+    }).finally(() => setLoading(false));
+  }, [api]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      for (const inc of incomes) {
+        const e = edits[inc.id];
+        if (!e) continue;
+        const paydays = e.twoPaydays
+          ? [...new Set([e.payday, e.payday2])].sort((a, b) => a - b)
+          : [e.payday];
+        await api(`/tg/incomes/${inc.id}`, { method: 'PATCH', body: JSON.stringify({ paydays }) });
+      }
+      await api('/tg/periods/recalculate', { method: 'POST', body: '{}' }).catch(() => {});
+      onChanged();
+      onBack();
+    } finally { setSaving(false); }
+  };
+
+  const upd = (id: string, patch: Partial<{ payday: number; twoPaydays: boolean; payday2: number }>) =>
+    setEdits(prev => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+
+  return (
+    <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px 40px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
+        <button onClick={onBack} style={{ background: C.surface, border: 'none', borderRadius: 10, color: C.textSec, fontSize: 20, width: 40, height: 40, cursor: 'pointer', fontFamily: 'inherit' }}>←</button>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, margin: 0 }}>Даты зарплаты</h2>
+      </div>
+      <p style={{ fontSize: 13, color: C.textSec, marginBottom: 20 }}>Укажите, в какие дни вы получаете деньги. Это влияет на расчёт дневного лимита.</p>
+
+      {loading ? (
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: 40 }}><Spinner /></div>
+      ) : incomes.length === 0 ? (
+        <Card><p style={{ color: C.textSec, fontSize: 14, textAlign: 'center' }}>Нет доходов. Сначала добавьте доход в разделе «Доходы».</p></Card>
+      ) : (
+        incomes.map((inc) => {
+          const e = edits[inc.id];
+          if (!e) return null;
+          return (
+            <Card key={inc.id} style={{ marginBottom: 12 }}>
+              <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 4 }}>{inc.title}</p>
+              <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 14 }}>{fmt(inc.amount, inc.currency)} / мес</p>
+
+              <p style={{ fontSize: 12, color: C.textSec, marginBottom: 8 }}>День зарплаты</p>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                {payOptions.map((d) => (
+                  <button key={d} onClick={() => upd(inc.id, { payday: d })}
+                    style={{ padding: '8px 14px', borderRadius: 20, background: e.payday === d ? C.accentBgStrong : C.elevated, border: `1px solid ${e.payday === d ? C.accent : C.border}`, color: e.payday === d ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>
+                    {d}
+                  </button>
+                ))}
+                <button
+                  onClick={() => { const on = !e.twoPaydays; upd(inc.id, { twoPaydays: on, payday2: on ? (payOptions.find(d => d !== e.payday) ?? 1) : e.payday2 }); }}
+                  style={{ padding: '8px 14px', borderRadius: 20, background: e.twoPaydays ? C.accentBgStrong : C.elevated, border: `1px solid ${e.twoPaydays ? C.accent : C.border}`, color: e.twoPaydays ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>
+                  2 раза
+                </button>
+              </div>
+
+              {e.twoPaydays && (
+                <div style={{ marginTop: 4 }}>
+                  <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 8 }}>Второй день зарплаты:</p>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {payOptions.map((d) => (
+                      <button key={d} onClick={() => upd(inc.id, { payday2: d })}
+                        style={{ padding: '8px 14px', borderRadius: 20, background: e.payday2 === d ? C.accentBgStrong : C.elevated, border: `1px solid ${e.payday2 === d ? C.accent : C.border}`, color: e.payday2 === d ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>
+                        {d}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </Card>
+          );
+        })
+      )}
+
+      {incomes.length > 0 && (
+        <PrimaryBtn onClick={handleSave} disabled={saving} style={{ marginTop: 8 }}>
+          {saving ? 'Сохранение...' : 'Сохранить и пересчитать'}
+        </PrimaryBtn>
       )}
     </div>
   );
@@ -1573,6 +1683,14 @@ export default function MiniApp() {
     />
   );
 
+  if (screen === 'paydays') return (
+    <PaydaysScreen
+      api={api}
+      onBack={() => { setScreen('settings'); setNavTab('settings'); }}
+      onChanged={loadDashboard}
+    />
+  );
+
   if (screen === 'period-summary' && periodSummary) return (
     <PeriodSummary
       data={periodSummary}
@@ -1599,7 +1717,7 @@ export default function MiniApp() {
       )}
       {screen === 'history' && <History api={api} currency={dashboard?.currency ?? 'RUB'} onRefresh={loadDashboard} />}
       {screen === 'debts' && <DebtsScreen api={api} currency={dashboard?.currency ?? 'RUB'} onRefresh={loadDashboard} />}
-      {screen === 'settings' && <Settings api={api} onOpenPro={() => setScreen('pro')} onOpenIncomes={() => setScreen('incomes')} onOpenObligations={() => setScreen('obligations')} />}
+      {screen === 'settings' && <Settings api={api} onOpenPro={() => setScreen('pro')} onOpenIncomes={() => setScreen('incomes')} onOpenObligations={() => setScreen('obligations')} onOpenPaydays={() => setScreen('paydays')} />}
 
       <BottomNav
         active={navTab}
