@@ -231,7 +231,7 @@ Honest assessment compared to state before this session:
 - docs/architecture/ARCHITECTURE.md: Written as new canonical location (moved from docs/ARCHITECTURE.md).
 - docs/architecture/adr-001 through adr-007: Written as new canonical location (moved from docs/adr/).
 - docs/ARCHITECTURE.md: Now a redirect stub to architecture/ARCHITECTURE.md.
-- docs/adr/*: Now redirect stubs to architecture/adr-*.
+- docs/adr/*: Deleted 2026-03-20 after ADR consolidation. Canonical location is docs/architecture/adr-*.
 - docs/security/security-privacy-checklist.md: Reformatted to per-item structured entries. Added SEC-006 through SEC-014. Auth matrix preserved.
 - docs/security/privacy-policy-draft.md: Restructured. Added /deletedata callout (GAP-008). Added analytics and server logs sections.
 - docs/ops/ops-index.md: Rewritten to reflect current ops topology and runbook structure.
