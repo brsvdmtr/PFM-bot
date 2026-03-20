@@ -2,71 +2,60 @@
 title: "Bug Report Template"
 document_type: Template
 status: Active
-source_of_truth: "YES — for all bug reports on PFM Bot"
-verified_against_code: Yes
+source_of_truth: NO
+verified_against_code: N/A
 last_updated: "2026-03-20"
-related_docs:
-  - logic-issue-template.md
-  - ../ops/runbook-rollback.md
-  - ../ops/runbook-deploy.md
 ---
 
 # Bug Report
 
-**Date**:
-**Reporter**:
-**Severity**: Critical / High / Medium / Low
-**Affected area**: API / Bot / Mini App / Cron / Formula / DB
-
----
-
 ## Summary
+[One sentence description of the bug]
 
-[One-line description of the problem]
+## Metadata
 
----
+| Field | Value |
+|-------|-------|
+| Date reported | YYYY-MM-DD |
+| Reporter | |
+| Severity | P0 / P1 / P2 / P3 |
+| Affects | logic / ui / notification / auth / billing / ops |
+| Is regression | Yes / No / Unknown |
+| Reproducibility | Always / Intermittent / Once |
 
-## Context
+## User Context
 
-- **Commit Hash**: (run on server: `git -C /srv/pfm log --oneline -1`)
-- **User Telegram ID**:
-- **User Period ID**: (find in DB: `SELECT id FROM "Period" WHERE "userId"='...' AND status='ACTIVE'`)
-- **Timezone**: (user's IANA timezone: `SELECT timezone FROM "User" WHERE "telegramId"='...'`)
-- **Reproducibility**: Always / Sometimes / Once
+| Field | Value |
+|-------|-------|
+| telegramId | |
+| userId (DB) | |
+| periodId (active) | |
+| Release / commit | `git -C /srv/pfm log --oneline -1` |
+| User timezone | e.g. "Europe/Moscow" |
 
----
-
-## Impact
-
-- **Users affected**: Single / Multiple / All
-- **Business impact**: Wrong calculation / Missing notification / Auth failure / Other
-- **Regression**: Yes / No / Unknown
-
----
+## Business Impact
+[What is the user unable to do? Is a financial number wrong? Is there data loss risk?]
 
 ## Steps to Reproduce
 
-1.
-2.
-3.
-
----
+1. ...
+2. ...
+3. ...
 
 ## Expected Behavior
-
 [What should happen]
 
----
-
 ## Actual Behavior
-
 [What actually happens]
 
----
-
 ## Evidence
+[Screenshots, API responses, log excerpts, DB query results]
 
-[Screenshot / log output / curl response]
+```sql
+-- Useful diagnostic queries:
+SELECT * FROM "Period" WHERE "userId" = 'xxx' AND status = 'ACTIVE';
+SELECT SUM(amount) FROM "Expense" WHERE "periodId" = 'yyy';
+```
 
 ```bash
 # Example curl to reproduce:
@@ -75,33 +64,17 @@ curl -X GET https://mytodaylimit.ru/api/tg/dashboard \
   -H "Content-Type: application/json"
 ```
 
----
+## Diagnosis Notes
+[Initial analysis, suspected cause]
 
-## Environment
+Common locations:
+- `apps/api/src/engine.ts` — S2S calculation, period bounds
+- `apps/api/src/avalanche.ts` — debt avalanche plan
+- `apps/api/src/cron.ts` — period rollover, daily snapshot, notifications
+- `apps/api/src/index.ts` — route handlers, auth middleware
 
-- Platform: iOS Telegram / Android Telegram / Desktop Telegram / Web Telegram
-- Telegram version:
-- Commit on server: (run: `git -C /srv/pfm log --oneline -1`)
-
----
-
-## Root Cause (fill if known)
-
-[Which file / function contains the bug. E.g.: `apps/api/src/engine.ts` line 108, `daysLeft` calculation]
-
----
-
-## Proposed Fix
-
-[Describe the fix. Include a code snippet if known.]
-
----
-
-## Related Code
-
-- File:
-- Line:
-- Function:
+## Fix Notes
+[How it was fixed, commit hash, related docs updated]
 
 ---
 
@@ -122,4 +95,6 @@ curl -X GET https://mytodaylimit.ru/api/tg/dashboard \
   docker compose logs --tail=100 bot
   ```
 - [ ] Confirmed fix does not break formula unit tests
-- [ ] If logic-affecting: completed Logic-Affecting Release checklist in release-rules.md
+- [ ] If logic-affecting: use logic-issue-template.md instead of or in addition to this template
+- [ ] If logic-affecting: completed Logic-Affecting Release checklist in ops/release-rules.md
+- [ ] technical-debt-register.md updated if a new gap was discovered
