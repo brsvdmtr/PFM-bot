@@ -893,6 +893,7 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
   const [showAdd, setShowAdd] = useState(false);
   const [newDebt, setNewDebt] = useState({ title: '', type: 'CREDIT_CARD', balance: '', apr: '', minPayment: '', dueDay: '' });
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -911,22 +912,32 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
 
   const handleAdd = async () => {
     if (!newDebt.title || !newDebt.balance || !newDebt.minPayment) return;
+    setSaveError('');
+    const balanceRub = parseFloat(newDebt.balance);
+    if (isNaN(balanceRub) || balanceRub <= 0) { setSaveError('Укажите корректный остаток'); return; }
+    if (balanceRub > 21_474_836) { setSaveError('Максимальный остаток 21 474 836 ₽'); return; }
+    const minPay = parseInt(newDebt.minPayment, 10);
+    if (isNaN(minPay) || minPay <= 0) { setSaveError('Укажите корректный минимальный платёж'); return; }
+    const aprPct = parseFloat(newDebt.apr || '0');
     setSaving(true);
     try {
       await api('/tg/debts', {
         method: 'POST',
         body: JSON.stringify({
           title: newDebt.title, type: newDebt.type,
-          balance: parseFloat(newDebt.balance) * 100,
-          apr: parseFloat(newDebt.apr || '0') / 100,
-          minPayment: parseInt(newDebt.minPayment, 10) * 100,
+          balance: Math.round(balanceRub * 100),
+          apr: aprPct / 100,
+          minPayment: Math.round(minPay * 100),
           dueDay: newDebt.dueDay ? parseInt(newDebt.dueDay) : undefined,
         }),
       });
       setShowAdd(false);
+      setSaveError('');
       setNewDebt({ title: '', type: 'CREDIT_CARD', balance: '', apr: '', minPayment: '', dueDay: '' });
       await Promise.all([load(), onRefresh()]);
-    } catch {}
+    } catch (err: any) {
+      setSaveError(err?.message || 'Ошибка сохранения. Проверьте данные.');
+    }
     setSaving(false);
   };
 
@@ -1043,11 +1054,14 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
               style={{ width: '100%', background: C.elevated, border: `1px solid ${C.orange}60`, borderRadius: 8, padding: '10px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }}
             />
           </div>
+          {saveError && (
+            <p style={{ fontSize: 13, color: C.red, background: C.redBg, borderRadius: 8, padding: '10px 12px', marginBottom: 10 }}>⚠ {saveError}</p>
+          )}
           <div style={{ display: 'flex', gap: 8 }}>
             <PrimaryBtn onClick={handleAdd} disabled={saving} style={{ flex: 1 }}>
               {saving ? '...' : 'Добавить'}
             </PrimaryBtn>
-            <button onClick={() => setShowAdd(false)} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>Отмена</button>
+            <button onClick={() => { setShowAdd(false); setSaveError(''); }} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>Отмена</button>
           </div>
         </Card>
       )}
@@ -1268,26 +1282,37 @@ function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPayd
 
 function PaydaysScreen({ api, onBack, onChanged }: { api: (p: string, o?: RequestInit) => Promise<any>; onBack: () => void; onChanged: () => void }) {
   const [incomes, setIncomes] = useState<any[]>([]);
-  const [edits, setEdits] = useState<Record<string, { payday: number; twoPaydays: boolean; payday2: number }>>({});
+  const [edits, setEdits] = useState<Record<string, { payday: number; customPayday: string; twoPaydays: boolean; payday2: number; customPayday2: string }>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const payOptions = [1, 5, 10, 15, 20, 25];
 
-  useEffect(() => {
+  const loadIncomes = () => {
     api('/tg/incomes').then((data) => {
       setIncomes(data);
-      const init: Record<string, { payday: number; twoPaydays: boolean; payday2: number }> = {};
+      const init: Record<string, { payday: number; customPayday: string; twoPaydays: boolean; payday2: number; customPayday2: string }> = {};
       for (const inc of data) {
         const days = (inc.paydays as number[]) ?? [15];
         init[inc.id] = {
           payday: days[0] ?? 15,
+          customPayday: String(days[0] ?? 15),
           twoPaydays: days.length >= 2,
           payday2: days[1] ?? (payOptions.find(d => d !== days[0]) ?? 1),
+          customPayday2: String(days[1] ?? (payOptions.find(d => d !== days[0]) ?? 1)),
         };
       }
       setEdits(init);
     }).finally(() => setLoading(false));
-  }, [api]);
+  };
+
+  useEffect(() => { loadIncomes(); }, [api]);
+
+  const handleDeleteIncome = async (id: string) => {
+    await api(`/tg/incomes/${id}`, { method: 'DELETE' });
+    await api('/tg/periods/recalculate', { method: 'POST', body: '{}' }).catch(() => {});
+    onChanged();
+    loadIncomes();
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -1295,9 +1320,11 @@ function PaydaysScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
       for (const inc of incomes) {
         const e = edits[inc.id];
         if (!e) continue;
+        const day1 = parseInt(e.customPayday, 10) || e.payday;
+        const day2 = parseInt(e.customPayday2, 10) || e.payday2;
         const paydays = e.twoPaydays
-          ? [...new Set([e.payday, e.payday2])].sort((a, b) => a - b)
-          : [e.payday];
+          ? [...new Set([day1, day2])].filter(d => d >= 1 && d <= 31).sort((a, b) => a - b)
+          : [day1];
         await api(`/tg/incomes/${inc.id}`, { method: 'PATCH', body: JSON.stringify({ paydays }) });
       }
       await api('/tg/periods/recalculate', { method: 'POST', body: '{}' }).catch(() => {});
@@ -1306,7 +1333,7 @@ function PaydaysScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
     } finally { setSaving(false); }
   };
 
-  const upd = (id: string, patch: Partial<{ payday: number; twoPaydays: boolean; payday2: number }>) =>
+  const upd = (id: string, patch: Partial<{ payday: number; customPayday: string; twoPaydays: boolean; payday2: number; customPayday2: string }>) =>
     setEdits(prev => ({ ...prev, [id]: { ...prev[id], ...patch } }));
 
   return (
@@ -1325,36 +1352,61 @@ function PaydaysScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
         incomes.map((inc) => {
           const e = edits[inc.id];
           if (!e) return null;
+          const day1 = parseInt(e.customPayday, 10) || e.payday;
+          const day2 = parseInt(e.customPayday2, 10) || e.payday2;
           return (
             <Card key={inc.id} style={{ marginBottom: 12 }}>
-              <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 4 }}>{inc.title}</p>
-              <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 14 }}>{fmt(inc.amount, inc.currency)} / мес</p>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
+                <div>
+                  <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 2 }}>{inc.title}</p>
+                  <p style={{ fontSize: 12, color: C.textTertiary }}>{fmt(inc.amount, inc.currency)} / мес</p>
+                </div>
+                <button
+                  onClick={() => handleDeleteIncome(inc.id)}
+                  style={{ background: C.redBg, border: 'none', borderRadius: 8, color: C.red, fontSize: 16, width: 32, height: 32, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}
+                  title="Удалить источник дохода"
+                >✕</button>
+              </div>
 
-              <p style={{ fontSize: 12, color: C.textSec, marginBottom: 8 }}>День зарплаты</p>
+              <p style={{ fontSize: 12, color: C.textSec, marginBottom: 8, marginTop: 12 }}>День зарплаты</p>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
                 {payOptions.map((d) => (
-                  <button key={d} onClick={() => upd(inc.id, { payday: d })}
-                    style={{ padding: '8px 14px', borderRadius: 20, background: e.payday === d ? C.accentBgStrong : C.elevated, border: `1px solid ${e.payday === d ? C.accent : C.border}`, color: e.payday === d ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>
+                  <button key={d} onClick={() => upd(inc.id, { payday: d, customPayday: String(d) })}
+                    style={{ padding: '8px 14px', borderRadius: 20, background: day1 === d ? C.accentBgStrong : C.elevated, border: `1px solid ${day1 === d ? C.accent : C.border}`, color: day1 === d ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>
                     {d}
                   </button>
                 ))}
+                <input
+                  type="number" min={1} max={31}
+                  value={e.customPayday}
+                  onChange={(ev) => upd(inc.id, { customPayday: ev.target.value })}
+                  placeholder="др."
+                  style={{ width: 52, padding: '8px 8px', borderRadius: 20, background: !payOptions.includes(day1) ? C.accentBgStrong : C.elevated, border: `1px solid ${!payOptions.includes(day1) ? C.accent : C.border}`, color: C.text, fontSize: 13, fontFamily: 'inherit', outline: 'none', textAlign: 'center' }}
+                />
                 <button
-                  onClick={() => { const on = !e.twoPaydays; upd(inc.id, { twoPaydays: on, payday2: on ? (payOptions.find(d => d !== e.payday) ?? 1) : e.payday2 }); }}
+                  onClick={() => upd(inc.id, { twoPaydays: !e.twoPaydays })}
                   style={{ padding: '8px 14px', borderRadius: 20, background: e.twoPaydays ? C.accentBgStrong : C.elevated, border: `1px solid ${e.twoPaydays ? C.accent : C.border}`, color: e.twoPaydays ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>
-                  2 раза
+                  {e.twoPaydays ? '− убрать 2-й' : '+ 2-й день'}
                 </button>
               </div>
 
               {e.twoPaydays && (
-                <div style={{ marginTop: 4 }}>
+                <div style={{ marginTop: 4, padding: '12px', background: C.elevated, borderRadius: 10 }}>
                   <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 8 }}>Второй день зарплаты:</p>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     {payOptions.map((d) => (
-                      <button key={d} onClick={() => upd(inc.id, { payday2: d })}
-                        style={{ padding: '8px 14px', borderRadius: 20, background: e.payday2 === d ? C.accentBgStrong : C.elevated, border: `1px solid ${e.payday2 === d ? C.accent : C.border}`, color: e.payday2 === d ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>
+                      <button key={d} onClick={() => upd(inc.id, { payday2: d, customPayday2: String(d) })}
+                        style={{ padding: '8px 14px', borderRadius: 20, background: day2 === d ? C.accentBgStrong : C.elevated, border: `1px solid ${day2 === d ? C.accent : C.border}`, color: day2 === d ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>
                         {d}
                       </button>
                     ))}
+                    <input
+                      type="number" min={1} max={31}
+                      value={e.customPayday2}
+                      onChange={(ev) => upd(inc.id, { customPayday2: ev.target.value })}
+                      placeholder="др."
+                      style={{ width: 52, padding: '8px 8px', borderRadius: 20, background: !payOptions.includes(day2) ? C.accentBgStrong : C.elevated, border: `1px solid ${!payOptions.includes(day2) ? C.accent : C.border}`, color: C.text, fontSize: 13, fontFamily: 'inherit', outline: 'none', textAlign: 'center' }}
+                    />
                   </div>
                 </div>
               )}
