@@ -75,8 +75,18 @@ docker compose up -d --build api
 
 ## Known Open Issues
 
-- No rate limiting (TD-001, P1) — API can be flooded
-- No user data deletion command (TD-007, P1) — GDPR right to erasure not yet implemented
-- Trigger payday not persisted (GAP-001, P1) — payday changes affect current period retroactively
+This is a summary of currently open issues. It is **not** the complete list.
 
-Full list: [docs/delivery/technical-debt-register.md](./docs/delivery/technical-debt-register.md)
+**P1 — Fix soon:**
+- **TD-001** No rate limiting — API can be flooded by any valid client
+- **TD-007 / GAP-008** No user data deletion — GDPR right to erasure not implemented
+- **GAP-001** Trigger payday not persisted in Period — payday changes affect current period retroactively
+- **TD-009 / GAP-003** Notification dedup is in-memory — duplicate notifications sent after container restart
+- **TD-005** Production Dockerfile uses `prisma db push` — should use `prisma migrate deploy` (confirmed)
+
+**P2 — Fix eventually:**
+- **GAP-004 / TD-003** Period rollover fires at 00:05 UTC, not user's local midnight — affects non-Moscow timezones
+- **GAP-007** EF contribution silently changes daily limit when target is changed — no UI feedback
+- **GAP-012** `s2sDaily` means two different things in code — naming ambiguity
+
+Full canonical list: [docs/delivery/technical-debt-register.md](./docs/delivery/technical-debt-register.md) | [docs/product/gap-analysis.md](./docs/product/gap-analysis.md)

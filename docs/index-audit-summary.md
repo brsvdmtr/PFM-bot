@@ -17,21 +17,37 @@ last_updated: "2026-03-20"
 
 **What was audited**: All documentation files in `docs/` plus root `README.md`.
 
-**Scope**:
-- Security documents (security-privacy-checklist.md, privacy-policy-draft.md)
-- Delivery templates (bug-report-template.md, logic-issue-template.md, technical-debt-register.md)
-- Index and registry files (index.md, index-audit-summary.md)
-- Root README.md (created new)
+> **Two types of unresolved items exist in this document. They are different:**
+>
+> - **Audit Findings (AU-*)** — documentation-level gaps: unverified claims, missing placeholders, drift between docs and code, docs not yet code-verified. These do not require code changes — they require verification, doc updates, or confirmation.
+> - **Product / Tech Gaps** — real open issues in the product, code, or infrastructure. These require code changes. See `docs/index.md § Known Gaps` and `docs/product/gap-analysis.md` for the canonical list.
+>
+> Do not conflate AU-* findings with product gaps. They have different owners and resolution paths.
+
+**Scope — what was rebuilt**:
+- All 28+ documentation files rewritten or written fresh (see Section 3)
+- Root README.md created (did not previously exist)
+- ADRs consolidated from `docs/adr/` → `docs/architecture/`
+- `docs/adr/` has been deleted (2026-03-20) — contained only redirect stubs
 
 **Verification approach**: Documents checked against:
 1. Actual auth implementation (HMAC-SHA256 algorithm, auth_date check, CORS config)
 2. Known code fixes on 2026-03-20 (commit 2679697: CORS restriction, auth_date TTL)
 3. Technical debt register for open gaps
+4. Direct code inspection of: cron.ts schedules, index.ts route handlers, Dockerfile entrypoint
 
-**What was NOT done in this audit**:
-- Running the API against each route to verify response shapes (requires live environment)
-- Verifying production env vars (ADMIN_KEY strength, log content)
-- Auditing all `console.error` call sites for PII leakage
+### What this session did NOT re-audit
+
+The following document groups were **rewritten for structure and content** but were **not individually re-verified against running code**. Claims in these files are based on code review at the time of writing, not live API testing:
+
+- `docs/product/*` — feature status, UI copy, FAQ answers
+- `docs/system/*` — formula steps, invariant list, income semantics
+- `docs/api/*` — route descriptions, response shapes (partial verification only)
+- `docs/ops/*` — runbook commands, cron schedules (cron times verified; full procedure not smoke-tested)
+- `docs/architecture/*` — ARCHITECTURE.md has known drift risk (see AU-009)
+
+**No document in this corpus should be treated as fully verified against a live running environment.**
+All `Verified` claims in individual documents refer to code-level verification (reading source files), not live API testing.
 
 ---
 
@@ -39,11 +55,13 @@ last_updated: "2026-03-20"
 
 | Category | Count |
 |----------|-------|
-| Total docs in registry | 43 (including all architecture/adr files and README) |
+| Total docs in registry | 36 (docs/adr/ deleted; redirect stubs removed) |
 | New this session | README.md |
-| Substantially rewritten this session | ~28 files (all agents ran) |
-| Deprecated / moved (structural) | 2 (docs/ARCHITECTURE.md → redirect stub; docs/adr/* → redirect stubs) |
-| Open unresolved items | 10 (same list) |
+| Substantially rewritten this session | ~28 files |
+| Deleted (structural cleanup) | docs/adr/ — 7 redirect stubs deleted 2026-03-20 |
+| Remaining redirect stub | docs/ARCHITECTURE.md → docs/architecture/ARCHITECTURE.md |
+| Open product/tech gaps | 9 open (see docs/index.md § Known Gaps) |
+| Open audit findings (AU-*) | 8 open, 2 closed |
 
 ---
 
@@ -92,45 +110,52 @@ last_updated: "2026-03-20"
 
 ---
 
-## 4. Unresolved Items
+## 4. Audit Findings (AU-*)
 
-Items identified during the audit that require follow-up:
+> **What these are**: documentation-level gaps — unverified claims, placeholders, drift between docs and code.
+> These are NOT product gaps. They do not require code changes.
+> For product/tech open issues, see `docs/index.md § Known Gaps`.
 
-| ID | Document | Item | Priority |
-|----|----------|------|----------|
-| AU-001 | api/api-v1.md | `GET /tg/me/profile` exact fields not verified against code | Low |
-| AU-002 | security/security-privacy-checklist.md | ADMIN_KEY value not verified in prod | Medium |
-| AU-003 | security/security-privacy-checklist.md | Log PII audit not completed | Medium |
-| AU-004 | security/privacy-policy-draft.md | Contact placeholder (email/Telegram) not filled in | Low |
-| AU-005 | api/api-v1.md | Error `code` field not yet implemented in API | Medium |
-| AU-006 | api/api-v1.md | No idempotency key for `POST /tg/expenses` | Medium |
-| AU-007 | all route docs | No rate limiting — open security gap (TD-001) | High |
-| AU-008 | delivery/technical-debt-register.md | TD-005 (prisma db push vs migrate deploy) not verified against Dockerfile | Low |
-| AU-009 | architecture/ARCHITECTURE.md | Not revised in this session — likely has drift from CORS fix, auth_date fix, payday editor | Medium |
-| AU-010 | ops/production-checklist.md | Not reviewed — may not reflect 2026-03-20 fixes | Low |
+### Open Audit Findings
+
+| ID | Document | Finding | Priority | Status |
+|----|----------|---------|----------|--------|
+| AU-002 | security/security-privacy-checklist.md | ADMIN_KEY value not verified in prod — requires `grep ADMIN_KEY /srv/pfm/.env` | Medium | open |
+| AU-003 | security/security-privacy-checklist.md | Log PII audit not completed — requires reading all `console.error` call sites | Medium | open |
+| AU-004 | security/privacy-policy-draft.md | Contact placeholder (email/Telegram handle) not filled in | Low | open |
+| AU-005 | api/api-v1.md | Error `code` field documented in spec but not yet implemented in API code | Medium | open |
+| AU-006 | api/api-v1.md | No idempotency key for `POST /tg/expenses` — documented as missing, no fix yet | Medium | open |
+| AU-007 | all route docs | Rate limiting (TD-001) is a product gap AND affects doc accuracy — routes documented without rate limit | High | open (product fix needed) |
+| AU-009 | architecture/ARCHITECTURE.md | Drift risk — written 2026-03-20 but not verified for CORS fix, auth_date fix, and payday editor additions | Medium | open |
+| AU-010 | ops/production-checklist.md | Not smoke-tested against live production config | Low | open |
+
+### Closed Audit Findings
+
+| ID | Finding | Resolution | Closed |
+|----|---------|------------|--------|
+| AU-001 | `GET /tg/me/profile` exact fields not verified | Verified against index.ts:343-349 — returns User + profile + subscription | 2026-03-20 |
+| AU-008 | TD-005 (prisma db push vs migrate deploy) not verified | Verified against Dockerfile — confirmed `db push --accept-data-loss` in production | 2026-03-20 |
 
 ---
 
 ## 5. Structural Changes
 
-### ADR directory consolidation
+### ADR directory consolidation — COMPLETED
 
 **Before**: ADRs lived in two locations:
-- `docs/adr/` (original)
-- `docs/architecture/` (newer, created as part of architecture docs)
+- `docs/adr/` (original location, 7 files)
+- `docs/architecture/` (canonical location, created as part of architecture docs rebuild)
 
-**Current state**: `docs/adr/` files are redirect stubs only — each is a 3-line redirect notice pointing to the canonical file in `docs/architecture/`. They do not contain outdated content. They can be cleaned up at any time with no content loss.
+**Action taken**: `docs/adr/` **deleted** (2026-03-20). No content was lost — the directory contained only redirect stubs pointing to `docs/architecture/`. Canonical ADR files are and remain in `docs/architecture/`.
 
-**Canonical location**: `docs/architecture/` — all index.md links point here.
-
-**Action needed**: Low priority. Delete `docs/adr/` redirect stubs when convenient. No content is at risk.
+**Canonical location**: `docs/architecture/adr-001` through `adr-007`. This is the only location. There is no duplicate.
 
 ### ARCHITECTURE.md location
 
 **Before**: `docs/ARCHITECTURE.md`
 **After**: `docs/architecture/ARCHITECTURE.md`
 
-Root `docs/ARCHITECTURE.md` may still exist as a stale copy. The canonical location is `docs/architecture/ARCHITECTURE.md`.
+`docs/ARCHITECTURE.md` remains as a one-liner redirect stub. The canonical document is `docs/architecture/ARCHITECTURE.md`. No ambiguity — when editing architecture, update `docs/architecture/ARCHITECTURE.md`.
 
 ### README.md
 
@@ -181,17 +206,25 @@ Honest assessment compared to state before this session:
 
 Honest remaining gaps after this session:
 
-| Item | Priority | Effort |
-|------|----------|--------|
-| Implement rate limiting (TD-001) | P1 | Low — add express-rate-limit |
-| Implement /delete user data (TD-007) | P1 | Medium — bot command + API endpoint |
-| Fix TD-005: change Dockerfile to use prisma migrate deploy | P1 | Trivial — confirmed open bug |
-| Verify ADMIN_KEY in prod (AU-002) | P1 | 5 min — `grep ADMIN_KEY /srv/pfm/.env` |
-| Audit console.error for PII (AU-003) | P2 | Medium — read all error logging |
-| Revise architecture/ARCHITECTURE.md (AU-009) | P2 | Low — update CORS, auth_date, payday editor |
-| Fill contact placeholder in privacy policy (AU-004) | P2 | Trivial |
-| Clean up docs/adr/ redirect stubs | P3 | Trivial — stubs only, no content at risk |
-| Implement error codes in API (AU-005) | P2 | Medium |
-| Add idempotency key for POST /tg/expenses (AU-006) | P2 | Medium |
-| Implement notification dedup in DB (TD-009) | P1 | Medium |
-| Persist triggerPayday in Period table (GAP-001) | P1 | Medium |
+**Product / tech gaps (require code changes):**
+
+| Item | ID | Priority | Effort |
+|------|----|----------|--------|
+| Implement rate limiting | TD-001 | P1 | Low — add express-rate-limit |
+| Implement /delete user data | TD-007 / GAP-008 | P1 | Medium — bot command + API endpoint |
+| Fix Dockerfile: prisma migrate deploy | TD-005 | P1 | Trivial — confirmed open bug |
+| Persist triggerPayday in Period table | GAP-001 | P1 | Medium — schema migration |
+| Implement notification dedup in DB | TD-009 / GAP-003 | P1 | Medium — NotificationLog table |
+| Fix period rollover for non-UTC users | GAP-004 / TD-003 | P2 | Large — per-user timezone scheduling |
+| Add before/after UI on EF target change | GAP-007 | P2 | Small — UI only |
+
+**Audit findings (require verification/doc updates, not code changes):**
+
+| Item | ID | Priority | Effort |
+|------|----|----------|--------|
+| Verify ADMIN_KEY non-default in prod | AU-002 | P1 | 5 min — `grep ADMIN_KEY /srv/pfm/.env` |
+| Audit console.error for PII leakage | AU-003 | P2 | Medium — read all error logging |
+| Revise architecture/ARCHITECTURE.md for drift | AU-009 | P2 | Low — update CORS, auth_date, payday editor |
+| Fill contact placeholder in privacy policy | AU-004 | P2 | Trivial |
+| Implement error codes in API (or remove from spec) | AU-005 | P2 | Medium |
+| Add idempotency key for POST /tg/expenses | AU-006 | P2 | Medium |

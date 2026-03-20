@@ -114,20 +114,30 @@ Specific claims in documents that have not been verified against running code:
 
 ---
 
-## Known Gaps (Top Priority)
+## Known Gaps (Product / Tech / Security)
 
-| ID | Title | Priority | Status |
-|----|-------|----------|--------|
-| TD-001 | No rate limiting on API | P1 | open |
-| TD-007 / GAP-008 | /delete user data not implemented | P1 | open |
-| GAP-001 / TD-011 | Trigger payday not persisted in Period | P1 | open |
-| GAP-003 / TD-009 | Notification dedup lost on container restart | P1 | open |
-| GAP-004 / TD-003 | Period rollover timing off by UTC offset | P2 | open |
-| GAP-007 | EF contribution not resuming after target change | P2 | open |
-| TD-C002 | CORS open to all origins | P0 | FIXED 2026-03-20 |
-| TD-C003 | auth_date not validated (replay attack) | P0 | FIXED 2026-03-20 |
-| TD-C001 | Cron rollover used incomes[0].paydays | P1 | FIXED 2026-03-20 |
-| GAP-011 | Duplicate incomes on onboarding re-run | — | FIXED 2026-03-20 |
+> **What this is**: real open issues in the product, codebase, or infrastructure.
+> These require code changes or ops actions to resolve.
+> **This is not the same as Audit Findings** — see `docs/index-audit-summary.md` for unverified doc claims and documentation-level gaps.
+>
+> Canonical detail: [docs/product/gap-analysis.md](./product/gap-analysis.md) | [docs/delivery/technical-debt-register.md](./delivery/technical-debt-register.md)
+
+| ID | Title | Priority | Status | Canonical doc |
+|----|-------|----------|--------|---------------|
+| TD-001 | No rate limiting on API | P1 | open | technical-debt-register |
+| TD-007 / GAP-008 | /delete user data not implemented | P1 | open | gap-analysis + technical-debt-register |
+| TD-005 | Dockerfile uses `prisma db push` in production | P1 | open (confirmed) | technical-debt-register |
+| GAP-001 | Trigger payday not persisted in Period | P1 | open | gap-analysis |
+| TD-009 / GAP-003 | Notification dedup lost on container restart | P1 | open | gap-analysis + technical-debt-register |
+| GAP-004 / TD-003 | Period rollover timing off by UTC offset | P2 | open | gap-analysis |
+| GAP-007 | EF contribution silently changes limit on target change | P2 | open | gap-analysis |
+| GAP-012 | `s2sDaily` naming ambiguity (snapshot vs live) | P2 | open | gap-analysis |
+| GAP-013 | `emergencyFund.targetAmount` derived, not stored | P2 | open | gap-analysis |
+| TD-C002 | CORS open to all origins | P0 | **FIXED 2026-03-20** | technical-debt-register |
+| TD-C003 | auth_date not validated (replay attack) | P0 | **FIXED 2026-03-20** | technical-debt-register |
+| TD-C001 | Cron rollover used incomes[0].paydays | P1 | **FIXED 2026-03-20** | technical-debt-register |
+| TD-008 | s2sActual could be negative in DailySnapshot | P2 | **FIXED 2026-03-20** | technical-debt-register |
+| GAP-011 | Duplicate incomes on onboarding re-run | — | **FIXED 2026-03-20** | gap-analysis |
 
 ---
 
@@ -135,7 +145,7 @@ Specific claims in documents that have not been verified against running code:
 
 | Old path | New path | Reason |
 |----------|----------|--------|
-| docs/ARCHITECTURE.md | docs/architecture/ARCHITECTURE.md | Moved to architecture/ subfolder |
-| docs/adr/* | docs/architecture/adr-* | ADRs co-located with architecture docs |
+| docs/ARCHITECTURE.md | docs/architecture/ARCHITECTURE.md | Now redirect stub — canonical is architecture/ |
+| docs/adr/\* (deleted) | docs/architecture/adr-\* | Deleted 2026-03-20 — contained only redirect stubs |
 
-Note: `docs/adr/` files are redirect stubs only (3-line redirect notices). Canonical ADR files are in `docs/architecture/`. When editing ADRs, always update `docs/architecture/`.
+**Canonical ADR location**: `docs/architecture/`. No duplicate paths exist. `docs/adr/` has been deleted.
