@@ -925,16 +925,14 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
       });
       setShowAdd(false);
       setNewDebt({ title: '', type: 'CREDIT_CARD', balance: '', apr: '', minPayment: '', dueDay: '' });
-      await load();
-      onRefresh();
+      await Promise.all([load(), onRefresh()]);
     } catch {}
     setSaving(false);
   };
 
   const handleDelete = async (id: string) => {
     await api(`/tg/debts/${id}`, { method: 'DELETE' });
-    await load();
-    onRefresh();
+    await Promise.all([load(), onRefresh()]);
   };
 
   const totalDebt = debts.reduce((s, d) => s + d.balance, 0);
@@ -1170,11 +1168,11 @@ function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPayd
   };
 
   const handleCashSave = async () => {
-    const amount = parseInt(cashInput.replace(/\D/g, ''), 10);
-    if (isNaN(amount) || amount < 0) return;
+    const rubles = parseInt(cashInput.replace(/\D/g, ''), 10);
+    if (isNaN(rubles) || rubles < 0) return;
     setCashSaving(true);
     try {
-      await api('/tg/cash-anchor', { method: 'POST', body: JSON.stringify({ currentCash: amount }) });
+      await api('/tg/cash-anchor', { method: 'POST', body: JSON.stringify({ currentCash: rubles * 100 }) });
       setCashDone(true);
       onRefresh?.();
       setTimeout(() => { setCashModal(false); setCashDone(false); setCashInput(''); }, 1200);
