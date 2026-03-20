@@ -2109,7 +2109,10 @@ paths:
       description: |
         Upserts Subscription (status=ACTIVE, currentPeriodEnd = now + 30 days).
         Creates PaymentEvent record.
+        Internal route — requires X-Internal-Key. Never proxied externally by nginx.
       operationId: activateSubscription
+      x-stability: stable
+      x-internal-only: true
       tags: [Internal]
       security:
         - InternalKey: []
