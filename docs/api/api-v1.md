@@ -174,6 +174,7 @@ Each endpoint group is assigned a stability level:
 | `/tg/incomes` (CRUD) | Stable |
 | `/tg/obligations` (CRUD) | Stable |
 | `/tg/debts` (CRUD + payment) | Stable |
+| `/tg/cash-anchor` | Provisional |
 | `/tg/billing/pro/checkout` | Provisional |
 | `/tg/debts/avalanche-plan` | Provisional |
 | `/tg/periods/last-completed` | Needs Verification — some edge cases (overspentDays calculation) not fully confirmed |
@@ -711,6 +712,20 @@ If the user has no active period, all numeric fields are 0 and all arrays are em
     targetAmount: number;       // kopecks — obligations_sum × targetMonths
   } | null;
   currency: Currency;
+
+  // Cash Anchor Live Window fields (v2, 2026-03-20)
+  cashOnHand: number | null;          // kopecks — user's cash anchor. null if not set
+  cashAnchorAt: string | null;        // ISO 8601 — when cash anchor was last set
+  lastIncomeDate: string | null;      // ISO 8601 — last actual payday (work-calendar adjusted)
+  nextIncomeDate: string | null;      // ISO 8601 — next actual payday (work-calendar adjusted)
+  nextIncomeAmount: number;           // kopecks — expected next income
+  daysToNextIncome: number | null;    // days until next income; null if no anchor
+  reservedUpcoming: number;           // kopecks — sum reserved for obligations+debts in current window
+  reservedUpcomingObligations: number;  // kopecks — reserved for obligations only
+  reservedUpcomingDebtPayments: number; // kopecks — reserved for debt min payments only
+  windowStart: string;                // ISO 8601 — effective window start (cashAnchorAt or periodStart)
+  windowEnd: string;                  // ISO 8601 — effective window end (nextIncomeDate or periodEnd)
+  usesLiveWindow: boolean;            // true when cash anchor model is active
 }
 ```
 
@@ -726,6 +741,36 @@ If the user has no active period, all numeric fields are 0 and all arrays are em
 **Notes:**
 - `daysLeft` uses `max(1, ceil((endDate - now) / 86400000))`
 - `s2sDaily` in the response is `dynamicS2sDaily` (carry-over adjusted), NOT `Period.s2sDaily`
+
+---
+
+### POST /tg/cash-anchor
+
+**Stability:** Provisional
+**Auth:** x-tg-init-data
+
+Updates the current cash anchor for the active period. The system uses the provided amount as the real-world cash balance at the time of the call, and computes the live S2S from that anchor forward. See [Cash Anchor Live Window](../system/formulas-and-calculation-policy.md#15-cash-anchor-live-window-v2) for full semantics.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `currentCash` | Int (kopecks) | Yes | Current cash in minor units. Pass `0` to indicate no cash remaining. |
+
+**Response 200:**
+```typescript
+{
+  ok: true;
+  cashAnchorAmount: number;     // kopecks — stored anchor value
+  cashAnchorAt: string;         // ISO 8601 — timestamp of this anchor
+  nextIncomeDate: string | null; // ISO 8601 — next payday (work-calendar adjusted)
+  nextIncomeAmount: number;     // kopecks — expected next income
+}
+```
+
+**Errors:**
+- `400` — `currentCash` missing or not a valid non-negative integer
+- `400 {"error": "No active period. Complete onboarding first."}` — no ACTIVE period found
 
 ---
 
@@ -1287,7 +1332,7 @@ Behavior:
 | ID | Route | Caveat |
 |----|-------|--------|
 | KC-001 | `GET /tg/expenses` | Scoped to active period if one exists. Returns all expenses if no active period. All-time history across multiple periods is not exposed. |
-| KC-002 | `PATCH /tg/debts/:id` | Does NOT trigger period recalculation. Call `POST /tg/periods/recalculate` manually after changes that affect S2S. |
+| KC-002 | `PATCH /tg/debts/:id`, `POST /tg/debts/:id/payment`, `DELETE /tg/debts/:id` | Auto-triggers period recalculation as of v2 (2026-03-20). Manual call to `POST /tg/periods/recalculate` is no longer required after debt mutations. |
 | KC-003 | `PATCH /tg/incomes/:id` | Does NOT trigger period recalculation. Call `POST /tg/periods/recalculate` manually after changes that affect S2S. |
 | KC-004 | `POST /tg/onboarding/income` | Replace semantics — deletes ALL existing incomes first. Not an append operation. |
 | KC-005 | `POST /tg/onboarding/complete` | Closes any existing ACTIVE period before creating the new one. The old period is marked COMPLETED. |

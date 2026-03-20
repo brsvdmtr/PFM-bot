@@ -40,6 +40,7 @@ type Screen =
   | 'onboarding-obligations'
   | 'onboarding-debts'
   | 'onboarding-ef'
+  | 'onboarding-cash'
   | 'onboarding-result'
   | 'dashboard'
   | 'add-expense'
@@ -69,6 +70,19 @@ interface DashboardData {
   debts: Debt[];
   emergencyFund: { currentAmount: number; targetAmount: number } | null;
   currency: string;
+  // New fields
+  cashOnHand?: number | null;
+  cashAnchorAt?: string | null;
+  lastIncomeDate?: string | null;
+  nextIncomeDate?: string | null;
+  nextIncomeAmount?: number;
+  daysToNextIncome?: number | null;
+  reservedUpcoming?: number;
+  reservedUpcomingObligations?: number;
+  reservedUpcomingDebtPayments?: number;
+  windowStart?: string;
+  windowEnd?: string;
+  usesLiveWindow?: boolean;
 }
 
 interface PeriodSummaryData {
@@ -305,8 +319,8 @@ function OnbIncome({ onNext }: { onNext: (data: { amount: number; paydays: numbe
 
   return (
     <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px' }}>
-      <OnbProgress step={0} />
-      <p style={{ fontSize: 12, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>Шаг 1 из 5</p>
+      <OnbProgress step={0} total={6} />
+      <p style={{ fontSize: 12, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>Шаг 1 из 6</p>
       <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8, color: C.text }}>Сколько вы зарабатываете?</h2>
       <p style={{ color: C.textSec, fontSize: 14, lineHeight: 1.5, marginBottom: 28 }}>Введите чистый доход после налогов. Это основа для расчёта вашего дневного лимита.</p>
 
@@ -383,8 +397,8 @@ function OnbObligations({ onNext, onSkip }: { onNext: (data: any[]) => void; onS
 
   return (
     <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px' }}>
-      <OnbProgress step={1} />
-      <p style={{ fontSize: 12, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>Шаг 2 из 5</p>
+      <OnbProgress step={1} total={6} />
+      <p style={{ fontSize: 12, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>Шаг 2 из 6</p>
       <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8, color: C.text }}>Обязательные расходы</h2>
       <p style={{ color: C.textSec, fontSize: 14, lineHeight: 1.5, marginBottom: 24 }}>Аренда, коммуналка, связь — то, что вы платите каждый месяц независимо.</p>
 
@@ -434,8 +448,8 @@ function OnbDebts({ onNext, onSkip }: { onNext: (data: any[]) => void; onSkip: (
 
   return (
     <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px', paddingBottom: 40 }}>
-      <OnbProgress step={2} />
-      <p style={{ fontSize: 12, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>Шаг 3 из 5</p>
+      <OnbProgress step={2} total={6} />
+      <p style={{ fontSize: 12, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>Шаг 3 из 6</p>
       <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8, color: C.text }}>Ваши долги</h2>
       <p style={{ color: C.textSec, fontSize: 14, lineHeight: 1.5, marginBottom: 24 }}>Добавьте все активные долги. Мы используем стратегию Лавины — сначала высокий процент.</p>
 
@@ -475,8 +489,8 @@ function OnbEF({ onNext }: { onNext: (amount: number) => void }) {
   const [amount, setAmount] = useState('0');
   return (
     <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px' }}>
-      <OnbProgress step={3} />
-      <p style={{ fontSize: 12, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>Шаг 4 из 5</p>
+      <OnbProgress step={3} total={6} />
+      <p style={{ fontSize: 12, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>Шаг 4 из 6</p>
       <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8, color: C.text }}>Подушка безопасности</h2>
       <p style={{ color: C.textSec, fontSize: 14, lineHeight: 1.5, marginBottom: 28 }}>Сколько у вас уже отложено на чёрный день? Цель — 3 месяца обязательных расходов.</p>
 
@@ -487,6 +501,49 @@ function OnbEF({ onNext }: { onNext: (amount: number) => void }) {
       </div>
 
       <PrimaryBtn onClick={() => onNext(Math.round(parseFloat(amount || '0') * 100))}>Продолжить</PrimaryBtn>
+    </div>
+  );
+}
+
+function OnbCash({ onNext, onSkip }: { onNext: (currentCash: number) => void; onSkip: () => void }) {
+  const [amount, setAmount] = useState('');
+  return (
+    <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px' }}>
+      <OnbProgress step={4} total={6} />
+      <p style={{ fontSize: 12, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>Шаг 5 из 6</p>
+      <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8, color: C.text }}>Сколько сейчас на руках?</h2>
+      <p style={{ color: C.textSec, fontSize: 14, lineHeight: 1.5, marginBottom: 28 }}>
+        Укажите, сколько денег у вас сейчас на счёте или в кармане. Без этого бот не сможет точно посчитать, сколько можно тратить каждый день до следующей зарплаты.
+      </p>
+
+      <div style={{ background: C.accentBg, border: `1px solid ${C.accent}40`, borderRadius: 12, padding: '12px 16px', marginBottom: 24 }}>
+        <p style={{ fontSize: 13, color: C.accentLight, lineHeight: 1.5 }}>
+          💡 Введите реальный остаток — именно от этой суммы мы посчитаем ваш дневной лимит. Данные хранятся только на вашем аккаунте.
+        </p>
+      </div>
+
+      <div style={{ marginBottom: 24 }}>
+        <label style={{ display: 'block', fontSize: 13, color: C.textSec, marginBottom: 8 }}>Сумма сейчас (₽)</label>
+        <input
+          type="number"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          placeholder="50 000"
+          style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: '14px 16px', color: C.text, fontSize: 18, fontWeight: 600, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }}
+        />
+        <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 8 }}>Введите 0, если деньги ещё не пришли — бот пересчитает после первой зарплаты</p>
+      </div>
+
+      <PrimaryBtn
+        onClick={() => {
+          const n = parseFloat(amount || '0');
+          onNext(Math.round(Math.max(0, n) * 100));
+        }}
+        disabled={amount === ''}
+      >
+        Продолжить
+      </PrimaryBtn>
+      <SecondaryBtn onClick={onSkip}>Пропустить — добавлю позже</SecondaryBtn>
     </div>
   );
 }
@@ -533,10 +590,33 @@ function Dashboard({ data, onAddExpense, onOpenDebts, onOpenSummary, showSummary
       <p style={{ fontSize: 13, color: C.textSec, marginBottom: 2 }}>Добрый день,</p>
       <p style={{ fontSize: 22, fontWeight: 700, marginBottom: 16, color: C.text }}>Safe to Spend</p>
 
-      {/* Period bar */}
-      <div style={{ background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 10, padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-        <span style={{ fontSize: 13, color: C.textSec }}>{periodLabel(data.periodStart, data.periodEnd)}</span>
-        <span style={{ fontSize: 13, fontWeight: 600, color: C.accentLight }}>День {periodElapsed + 1} из {data.daysTotal}</span>
+      {/* Period context bar */}
+      <div style={{ background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 10, padding: '10px 14px', marginBottom: 14 }}>
+        {data.usesLiveWindow && data.nextIncomeDate ? (
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <span style={{ fontSize: 13, color: C.textSec }}>До следующей выплаты</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: C.accentLight }}>
+                {data.daysToNextIncome != null ? `${data.daysToNextIncome} дн.` : '—'}
+              </span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 12, color: C.textTertiary }}>
+                {data.lastIncomeDate ? `${new Date(data.lastIncomeDate).getDate()} ${['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'][new Date(data.lastIncomeDate).getMonth()]}` : '—'}
+                {' → '}
+                {data.nextIncomeDate ? `${new Date(data.nextIncomeDate).getDate()} ${['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'][new Date(data.nextIncomeDate).getMonth()]}` : '—'}
+              </span>
+              {data.nextIncomeAmount != null && data.nextIncomeAmount > 0 && (
+                <span style={{ fontSize: 12, color: C.green, fontWeight: 600 }}>+{fmt(data.nextIncomeAmount, data.currency)}</span>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: 13, color: C.textSec }}>{periodLabel(data.periodStart, data.periodEnd)}</span>
+            <span style={{ fontSize: 13, fontWeight: 600, color: C.accentLight }}>День {periodElapsed + 1} из {data.daysTotal}</span>
+          </div>
+        )}
       </div>
 
       {/* S2S Card */}
@@ -555,6 +635,20 @@ function Dashboard({ data, onAddExpense, onOpenDebts, onOpenSummary, showSummary
           <span style={{ fontSize: 13, color: C.textSec }}>Осталось в периоде</span>
           <span style={{ fontSize: 18, fontWeight: 700, color: C.green }}>{fmt(Math.max(0, data.s2sPeriod - data.periodSpent), data.currency)}</span>
         </div>
+        {data.usesLiveWindow && data.cashOnHand != null && (
+          <div style={{ borderTop: '1px solid rgba(139,92,246,0.15)', paddingTop: 14, marginTop: 0 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <span style={{ fontSize: 13, color: C.textSec }}>На руках сейчас</span>
+              <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{fmt(data.cashOnHand, data.currency)}</span>
+            </div>
+            {data.reservedUpcoming != null && data.reservedUpcoming > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: 12, color: C.textTertiary }}>Зарезервировано (до выплаты)</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: C.orange }}>−{fmt(data.reservedUpcoming, data.currency)}</span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Quick actions */}
@@ -797,7 +891,7 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
   const [plan, setPlan] = useState<AvalanchePlan | null>(null);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
-  const [newDebt, setNewDebt] = useState({ title: '', type: 'CREDIT_CARD', balance: '', apr: '', minPayment: '' });
+  const [newDebt, setNewDebt] = useState({ title: '', type: 'CREDIT_CARD', balance: '', apr: '', minPayment: '', dueDay: '' });
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
@@ -826,10 +920,11 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
           balance: parseFloat(newDebt.balance) * 100,
           apr: parseFloat(newDebt.apr || '0') / 100,
           minPayment: parseInt(newDebt.minPayment, 10) * 100,
+          dueDay: newDebt.dueDay ? parseInt(newDebt.dueDay) : undefined,
         }),
       });
       setShowAdd(false);
-      setNewDebt({ title: '', type: 'CREDIT_CARD', balance: '', apr: '', minPayment: '' });
+      setNewDebt({ title: '', type: 'CREDIT_CARD', balance: '', apr: '', minPayment: '', dueDay: '' });
       await load();
       onRefresh();
     } catch {}
@@ -937,6 +1032,18 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
             <input type="number" value={newDebt.balance} onChange={(e) => setNewDebt({ ...newDebt, balance: e.target.value })} placeholder="Остаток" style={{ background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 13, fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box' }} />
             <input type="number" value={newDebt.apr} onChange={(e) => setNewDebt({ ...newDebt, apr: e.target.value })} placeholder="Ставка %" style={{ background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 13, fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box' }} />
             <input type="number" value={newDebt.minPayment} onChange={(e) => setNewDebt({ ...newDebt, minPayment: e.target.value })} placeholder="Мин. пл." style={{ background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 13, fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box' }} />
+          </div>
+          <div style={{ marginTop: 8, marginBottom: 12 }}>
+            <p style={{ fontSize: 12, color: C.orange, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span>⚠️</span> День ежемесячного списания (важно для точного расчёта)
+            </p>
+            <input
+              type="number"
+              value={newDebt.dueDay}
+              onChange={(e) => setNewDebt({ ...newDebt, dueDay: e.target.value })}
+              placeholder="Число месяца (напр. 15)"
+              style={{ width: '100%', background: C.elevated, border: `1px solid ${C.orange}60`, borderRadius: 8, padding: '10px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }}
+            />
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <PrimaryBtn onClick={handleAdd} disabled={saving} style={{ flex: 1 }}>
@@ -1252,6 +1359,7 @@ function IncomesScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
   const [payday, setPayday] = useState(15);
   const [twoPaydays, setTwoPaydays] = useState(false);
   const [payday2, setPayday2] = useState(1);
+  const [useRuCalendar, setUseRuCalendar] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(() => {
@@ -1266,10 +1374,10 @@ function IncomesScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
     try {
       await api('/tg/incomes', {
         method: 'POST',
-        body: JSON.stringify({ title: title.trim(), amount: parseFloat(amount) * 100, paydays: twoPaydays ? [...new Set([payday, payday2])].sort((a, b) => a - b) : [payday], currency: 'RUB' }),
+        body: JSON.stringify({ title: title.trim(), amount: parseFloat(amount) * 100, paydays: twoPaydays ? [...new Set([payday, payday2])].sort((a, b) => a - b) : [payday], currency: 'RUB', useRussianWorkCalendar: useRuCalendar }),
       });
       await api('/tg/periods/recalculate', { method: 'POST', body: '{}' }).catch(() => {});
-      setTitle(''); setAmount(''); setPayday(15); setPayday2(1); setTwoPaydays(false); setShowForm(false);
+      setTitle(''); setAmount(''); setPayday(15); setPayday2(1); setTwoPaydays(false); setUseRuCalendar(false); setShowForm(false);
       load(); onChanged();
     } finally { setSaving(false); }
   };
@@ -1316,6 +1424,18 @@ function IncomesScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
               </div>
             </div>
           )}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, padding: '10px 12px', background: C.elevated, borderRadius: 8 }}>
+            <div>
+              <p style={{ fontSize: 13, color: C.text, marginBottom: 2 }}>Производственный календарь РФ</p>
+              <p style={{ fontSize: 11, color: C.textTertiary }}>Перенос на пятницу при выходном/празднике</p>
+            </div>
+            <div
+              onClick={() => setUseRuCalendar(!useRuCalendar)}
+              style={{ width: 40, height: 24, background: useRuCalendar ? C.accent : C.elevated, border: `1px solid ${C.border}`, borderRadius: 12, position: 'relative', cursor: 'pointer', transition: 'background 0.2s', flexShrink: 0 }}
+            >
+              <div style={{ width: 20, height: 20, background: '#fff', borderRadius: '50%', position: 'absolute', top: 1, left: useRuCalendar ? 18 : 1, transition: 'left 0.2s' }} />
+            </div>
+          </div>
           <div style={{ marginBottom: 14 }} />
           <PrimaryBtn onClick={handleAdd} disabled={saving || !title.trim() || !amount}>
             {saving ? 'Сохранение...' : 'Сохранить'}
@@ -1606,7 +1726,11 @@ export default function MiniApp() {
 
   const handleEF = async (currentAmount: number) => {
     await api('/tg/onboarding/ef', { method: 'POST', body: JSON.stringify({ currentAmount }) });
-    const result = await api('/tg/onboarding/complete', { method: 'POST', body: JSON.stringify({}) });
+    setScreen('onboarding-cash');
+  };
+
+  const handleCash = async (currentCash: number) => {
+    const result = await api('/tg/onboarding/complete', { method: 'POST', body: JSON.stringify({ currentCash }) });
     setOnbResult({ s2sDaily: result.s2s.s2sDaily, currency: result.period.currency });
     setScreen('onboarding-result');
   };
@@ -1654,6 +1778,7 @@ export default function MiniApp() {
   if (screen === 'onboarding-obligations') return <OnbObligations onNext={handleObligations} onSkip={() => handleObligations([])} />;
   if (screen === 'onboarding-debts') return <OnbDebts onNext={handleDebts} onSkip={() => handleDebts([])} />;
   if (screen === 'onboarding-ef') return <OnbEF onNext={handleEF} />;
+  if (screen === 'onboarding-cash') return <OnbCash onNext={handleCash} onSkip={() => handleCash(0)} />;
   if (screen === 'onboarding-result' && onbResult) return <OnbResult s2sDaily={onbResult.s2sDaily} currency={onbResult.currency} onDone={handleOnbDone} />;
 
   if (screen === 'add-expense') return (

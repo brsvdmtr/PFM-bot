@@ -24,12 +24,13 @@ related_docs:
 
 | ID | Title | Category | Severity | Status |
 |----|-------|----------|----------|--------|
-| GAP-001 / TD-011 | Trigger payday not persisted in Period | code | P1 | open |
+| GAP-001 / TD-011 | Trigger payday not persisted in Period | code | P1 | fixed |
 | GAP-003 / TD-009 | Notification dedup lost on container restart | code | P1 | open |
 | GAP-004 / TD-003 | Period rollover timing off by UTC offset | code | P2 | open |
 | GAP-007 | EF contribution not resuming after target change | code | P2 | open |
 | GAP-008 / TD-007 | /delete user data command not implemented | code | P1 | open |
 | GAP-011 | Duplicate incomes on onboarding re-run | code | — | fixed |
+| GAP-014 | No cash anchor / mid-period onboarding | code | P2 | fixed |
 | GAP-012 | s2sDaily in Period snapshot diverges from dynamic daily | docs | P2 | open |
 | GAP-013 | emergencyFund.targetAmount computed in API, not stored | code | P2 | open |
 | TD-001 | No rate limiting on API | security | P1 | open |
@@ -52,16 +53,14 @@ related_docs:
 | Title | Trigger payday not persisted in Period |
 | Category | code |
 | Severity | P1 |
-| Status | open |
-| User-visible symptom | Period.s2sDaily snapshot is correct at creation but the trigger payday is not stored — cannot audit which income fired for a given period. If a user changes paydays mid-period, the active period's income may be recalculated with a different trigger, potentially changing the daily limit with no warning or explanation. |
-| Root cause | `calculateS2S()` in `engine.ts` computes `triggerPayday` at runtime from `endDate.getDate()` and the current `allPaydays` list. The `Period` table has no `triggerPayday` column. If paydays change after period creation, the runtime computation uses the new list against the old period's endDate. |
-| Affected code | `packages/db/prisma/schema.prisma` (Period model), `apps/api/src/engine.ts:118–122`, `apps/api/src/cron.ts` (rollover), `apps/api/src/index.ts` (onboarding complete handler) |
+| Status | fixed |
+| User-visible symptom | Was: Period.s2sDaily snapshot is correct at creation but the trigger payday is not stored — cannot audit which income fired for a given period. If a user changes paydays mid-period, the active period's income may be recalculated with a different trigger, potentially changing the daily limit with no warning or explanation. |
+| Root cause | Was: `calculateS2S()` in `engine.ts` computed `triggerPayday` at runtime from `endDate.getDate()` and the current `allPaydays` list. The `Period` table had no `triggerPayday` column. |
+| Affected code | `packages/db/prisma/schema.prisma` (Period model), `apps/api/src/engine.ts`, `apps/api/src/cron.ts` (rollover), `apps/api/src/index.ts` (onboarding complete handler) |
 | Affected docs | `formulas-and-calculation-policy.md` |
-| Current behavior | triggerPayday is derived each request as: `allPaydays[allPaydays.indexOf(endDate.getDate()) - 1]`. Not persisted. |
-| Target behavior | `Period` table has `triggerPayday Int?` field. Set at period creation (onboarding + rollover). `calculateS2S` uses the persisted value when present; falls back to runtime derivation only if null. |
-| Workaround | Derive from `endDate.getDate()` and `allPaydays` (current behavior). Users should avoid changing paydays mid-period. |
-| Migration needed | Yes — schema migration to add `triggerPayday Int?` to `Period` |
-| Fixed in | N/A |
+| Current behavior | Fixed: `triggerPayday` is computed and stored in `Period.triggerPayday` on create/recalculate/rollover. |
+| Migration needed | Yes — schema migration in `packages/db/prisma/migrations/20260320000000_cash_anchor_and_ru_calendar/` |
+| Fixed in | v2 release 2026-03-20 |
 
 ---
 
@@ -167,6 +166,7 @@ related_docs:
 | Workaround | `dashboard-ui-data-contract.md` notes this distinction for dashboard consumers. |
 | Migration needed | No |
 | Fixed in | N/A |
+| v2 update (2026-03-20) | New dashboard explainability fields added: `nextIncomeDate`, `cashOnHand`, `cashAnchorAt`, `lastIncomeDate`, `nextIncomeAmount`, `daysToNextIncome`, `reservedUpcoming`, `reservedUpcomingObligations`, `reservedUpcomingDebtPayments`, `windowStart`, `windowEnd`, `usesLiveWindow`. These fields provide context for the Cash Anchor live window model (see `formulas-and-calculation-policy.md` §Cash Anchor Live Window). |
 
 ---
 
@@ -263,6 +263,25 @@ Settings screen shows a weeklyDigest toggle. The feature is not implemented — 
 | Current behavior | Fixed: `apps/api/src/index.ts:364–365` calls `prisma.income.deleteMany({ where: { userId } })` before creating the new record. Same pattern applied to obligations and debts. |
 | Migration needed | No |
 | Fixed in | d785b05 |
+
+---
+
+### GAP-014: No Cash Anchor / Mid-Period Onboarding
+
+| Field | Value |
+|-------|-------|
+| ID | GAP-014 |
+| Title | No cash anchor / mid-period onboarding |
+| Category | code |
+| Severity | P2 |
+| Status | fixed |
+| User-visible symptom | Was: users who joined mid-period or wanted to update their current cash balance had no way to tell the system how much money they actually have in hand. The period-based model assumed income arrived at period start and tracked spending from there, with no way to anchor to reality. |
+| Root cause | Was: `Period` model had no `cashAnchorAmount`/`cashAnchorAt` fields. The dashboard calculation always used the period-based formula regardless of when the user actually had money. |
+| Affected code | `packages/db/prisma/schema.prisma` (Period model), `apps/api/src/index.ts` (dashboard handler, new `POST /tg/cash-anchor` endpoint) |
+| Affected docs | `formulas-and-calculation-policy.md`, `api-v1.md`, `dashboard-ui-data-contract.md` |
+| Current behavior | Fixed: user can provide current cash via `POST /tg/cash-anchor`. System stores `Period.cashAnchorAmount` and `Period.cashAnchorAt`, then computes live S2S from that anchor (Cash Anchor Live Window model). See `formulas-and-calculation-policy.md` §Cash Anchor Live Window. |
+| Migration needed | Yes — schema migration in `packages/db/prisma/migrations/20260320000000_cash_anchor_and_ru_calendar/` |
+| Fixed in | v2 release 2026-03-20 |
 
 ---
 

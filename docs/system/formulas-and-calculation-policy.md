@@ -56,7 +56,7 @@ All monetary values are in minor units (kopecks for RUB, cents for USD) unless s
 | `totalPeriodSpent` | Int (kopecks) | No | `SUM(expense.amount)` for all expenses in the active period. |
 | `expensesToday` | Int (kopecks) | No | `SUM(expense.amount)` where `spentAt >= UTC midnight today`. |
 | `carryOver` | Implicit | No | Emergent from `periodRemaining / daysLeft`. Not a named field. |
-| `triggerPayday` | Int (day 1–31) | No | The payday that caused this period to begin. Derived from `endDate`. |
+| `triggerPayday` | Int (day 1–31) | Yes (Period) | The payday that caused this period to begin. Stored in `Period.triggerPayday` since v2 (2026-03-20); derived from `endDate` as fallback for legacy periods where the field is null. |
 | `freePool` | Int (kopecks) | No | `max(0, afterFixed - reserve)`. |
 | `investPool` | Int (kopecks) | No | `max(0, freePool - efContribution)`. Base for avalanche percentage. |
 | `monthlyObligations` | Int (kopecks) | No | Raw (non-prorated) sum of all obligation amounts. Used for EF target. |
@@ -128,7 +128,7 @@ Math.round(periodRemaining / daysLeft)                   // daily limit
 | `s2sToday` | — | No | Computed per request | `max(0, dynamicS2sDaily - expensesToday)` |
 | `periodRemaining` | — | No | Computed per request | `max(0, s2sPeriod - totalPeriodSpent)` |
 | `daysLeft` | — | No | Computed per request | `Math.max(1, Math.ceil((endDate - now) / msPerDay))` |
-| `triggerPayday` | — | No | Computed per engine call | Derived from `endDate.getDate()` and `allPaydays` |
+| `Period.triggerPayday` | Period | Yes | Period creation / recalculate / rollover | Stored since v2 (2026-03-20). Fallback: derived from `endDate.getDate()` and `allPaydays` when null (legacy periods). |
 | `DailySnapshot.s2sPlanned` | DailySnapshot | Yes | Nightly cron 23:55 UTC | Live `dynamicS2sDaily` at snapshot time |
 | `DailySnapshot.s2sActual` | DailySnapshot | Yes | Nightly cron 23:55 UTC | `s2sPlanned - todayTotal` at 23:55 UTC — NOT floored at 0 |
 | `DailySnapshot.isOverspent` | DailySnapshot | Yes | Nightly cron 23:55 UTC | `todayTotal > s2sPlanned` |
@@ -573,9 +573,9 @@ When a calculation result is disputed, the canonical answer is found by tracing 
 
 These are current behaviors that must be understood to correctly interpret results. They are not planned fixes.
 
-### 14.1 triggerPayday Not Persisted
+### 14.1 triggerPayday Persistence (Fixed in v2)
 
-`triggerPayday` is computed at runtime from `periodEndDate.getDate()` and `allPaydays`. Never stored. If paydays are changed between period creation and a recalculate, the trigger may differ, changing income amounts retroactively on recalculate.
+`triggerPayday` is now stored in `Period.triggerPayday` on period creation, recalculation, and rollover (v2, 2026-03-20). For legacy periods where the field is null, the engine falls back to deriving it from `periodEndDate.getDate()` and `allPaydays`. See GAP-001 / TD-011 (closed).
 
 ### 14.2 efTarget Uses Full Monthly Obligations Even in Prorated Periods
 
@@ -610,7 +610,72 @@ The fallback (`if afterReserve < 0 and afterFixed > 0`) cannot trigger under nor
 
 ---
 
-## 15. Worked Examples
+## 15. Cash Anchor Live Window (v2)
+
+*Added 2026-03-20.*
+
+When `Period.cashAnchorAmount` is set (via `POST /tg/cash-anchor`), the dashboard uses a different calculation path instead of the period-based carry-over model.
+
+### 15.1 When the Live Window Is Active
+
+`usesLiveWindow = true` when `Period.cashAnchorAmount IS NOT NULL`.
+
+In this mode the dashboard computes:
+
+```
+nextIncomeDate      = next actual payday, adjusted for Russian work calendar
+                      (if payday falls on weekend/holiday, shifted to previous business day)
+daysToNextIncome    = max(1, daysBetween(today, nextIncomeDate))
+reservedUpcoming    = sum of obligation.amount + debt.minPayment
+                      WHERE dueDay IN [today.day, nextIncomeDate.day)
+                      (only obligations/debts whose dueDay falls within the current window)
+expensesSinceAnchor = sum(expense.amount) WHERE spentAt >= Period.cashAnchorAt
+freeCashPool        = max(0, cashAnchorAmount - reservedUpcoming - expensesSinceAnchor)
+s2sDaily            = floor(freeCashPool / daysToNextIncome)   ← floor, not round (conservative)
+```
+
+### 15.2 Key Semantics
+
+- **Expenses before `cashAnchorAt` are NOT deducted.** They are already reflected in the anchor amount the user provided.
+- **`reservedUpcoming`** only includes obligations and debts whose `dueDay` falls in `[today, nextIncomeDate)`. Obligations/debts due after the next income date are not reserved in the current window.
+- **`daysToNextIncome`** is floored at 1 to prevent division by zero.
+- **`floor()` vs `round()`** — the live window uses `Math.floor()` for the daily limit (conservative), while the period model uses `Math.round()`.
+- **`reservedUpcomingObligations`** and **`reservedUpcomingDebtPayments`** are the two components of `reservedUpcoming`, returned separately in the dashboard response for explainability.
+
+### 15.3 Russian Work Calendar
+
+Paydays that fall on a Russian public holiday or weekend are shifted to the **previous business day**. This is used when computing `nextIncomeDate` and `lastIncomeDate` (not for period boundary calculation, which remains calendar-date based).
+
+### 15.4 Fallback When No Anchor Is Set
+
+When `cashAnchorAmount IS NULL`, the dashboard uses the existing period-based model:
+
+```
+s2sDaily = round((s2sPeriod - totalPeriodSpent) / daysLeft)
+```
+
+This is unchanged from v1. `usesLiveWindow = false` in this case.
+
+### 15.5 New Dashboard Fields (v2)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `cashOnHand` | Int? | User's cash anchor in minor units. `null` if not set. |
+| `cashAnchorAt` | DateTime? | When cash anchor was last set. |
+| `lastIncomeDate` | DateTime? | Last actual payday date (work-calendar adjusted). |
+| `nextIncomeDate` | DateTime? | Next actual payday date (work-calendar adjusted). |
+| `nextIncomeAmount` | Int | Expected next income in minor units. |
+| `daysToNextIncome` | Int? | Days until next income. `null` if no anchor. |
+| `reservedUpcoming` | Int | Sum reserved for obligations + debts in current window. |
+| `reservedUpcomingObligations` | Int | Reserved for obligations only. |
+| `reservedUpcomingDebtPayments` | Int | Reserved for debt min payments only. |
+| `windowStart` | DateTime | Effective window start (`cashAnchorAt` or `periodStart`). |
+| `windowEnd` | DateTime | Effective window end (`nextIncomeDate` or `periodEnd`). |
+| `usesLiveWindow` | Boolean | `true` when cash anchor model is active. |
+
+---
+
+## 16. Worked Examples
 
 All amounts in kopecks. To convert to rubles: divide by 100.
 

@@ -121,9 +121,10 @@ model Income {
   currency  Currency        @default(RUB)
   frequency IncomeFrequency @default(MONTHLY)
   paydays   Int[]
-  isActive  Boolean         @default(true)
-  createdAt DateTime        @default(now())
-  updatedAt DateTime        @updatedAt
+  isActive               Boolean         @default(true)
+  useRussianWorkCalendar Boolean         @default(false)
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
@@ -194,6 +195,12 @@ model Period {
   daysTotal         Int
   currency          Currency     @default(RUB)
   isProratedStart   Boolean      @default(false)
+  triggerPayday     Int?
+  cashAnchorAmount  Int?
+  cashAnchorAt      DateTime?
+  lastIncomeDate    DateTime?
+  nextIncomeDate    DateTime?
+  nextIncomeAmount  Int?
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt
 

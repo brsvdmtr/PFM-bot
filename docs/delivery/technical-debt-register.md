@@ -29,7 +29,7 @@ Items that could cause wrong financial numbers to be shown to a user, or create 
 1. **GAP-003 / TD-009**: Notification dedup is in-memory, lost on restart → user gets double notification on API restart during notification window
 2. **TD-001**: No rate limiting → service availability can be affected; malicious actor can flood expense creation
 3. **GAP-008 / TD-007**: /delete user data not implemented → legal risk, GDPR right to erasure not supported
-4. **GAP-001 / TD-011**: Trigger payday not persisted → if user changes paydays mid-period, current period's trigger recomputes retroactively, producing wrong s2sToday
+4. ~~**GAP-001 / TD-011**: Trigger payday not persisted → if user changes paydays mid-period, current period's trigger recomputes retroactively, producing wrong s2sToday~~ **Fixed 2026-03-20** — `triggerPayday` now stored in `Period.triggerPayday`
 5. **GAP-004 / TD-003**: Period rollover UTC timing offset → period starts at wrong local time for non-UTC users
 
 ---
@@ -95,6 +95,8 @@ Previously tracked as GAP-004. Users in UTC+5 to UTC+12 have mid-morning rollove
 **Confirmed**: Production Dockerfile uses `prisma db push --accept-data-loss` (verified 2026-03-20). This skips migration history and is destructive in production. Fix: change CMD to use `prisma migrate deploy`.
 
 Previously stated as "verify that production Dockerfile uses `prisma migrate deploy`" — now confirmed as an open bug. The `db push` command bypasses migration history and can silently drop columns or indexes. Do not deploy to production with this command.
+
+**Note (2026-03-20):** Migration SQL file created at `packages/db/prisma/migrations/20260320000000_cash_anchor_and_ru_calendar/` covering `Period.triggerPayday`, `Period.cashAnchorAmount`, `Period.cashAnchorAt`, and Russian work-calendar support fields. Ready for `prisma migrate deploy` once Dockerfile is fixed.
 
 ---
 
@@ -165,16 +167,16 @@ Also tracked as GAP-003. API restart at notification time → double notificatio
 | ID | GAP-001 (also tracked as TD-011) |
 | Type | gap |
 | Severity | P1 |
-| Status | open |
+| Status | fixed |
 | Trust-critical | Yes |
 | Blocks release | No |
 | Debt type | missing-feature |
-| Owner | (unassigned) |
+| Owner | — |
 | Target date | — |
 | Dependency | none |
-| Fixed in | N/A |
+| Fixed in | 2026-03-20 |
 
-`triggerPayday` is recomputed at runtime from current income paydays. If user changes paydays mid-period, current period's trigger changes retroactively → wrong `s2sToday`. Fix: add `triggerPayday Int?` to `Period` table; persist at period creation time.
+`triggerPayday` is now computed and stored in `Period.triggerPayday` on period create/recalculate/rollover. The runtime derivation fallback is retained only for legacy periods with `triggerPayday = null`.
 
 > Cross-ref: also listed as **TD-011** in the Top Trust-Critical Debts summary above.
 
@@ -268,3 +270,4 @@ EF `targetAmount` is computed from the current period's total obligations. If ob
 | GAP-011 | Duplicate incomes on onboarding re-run | Fixed — dedup check added on onboarding re-entry | 2026-03-20 |
 | TD-008 | s2sActual could be negative in DailySnapshot | Fixed — clamped to non-negative | 2026-03-20 |
 | TD-009-OLD | daysLeft formula diverged between engine/dashboard/cron | Fixed — unified formula | 2026-03-20 |
+| GAP-001 / TD-011 | triggerPayday not persisted in Period | Fixed — stored in `Period.triggerPayday` on create/recalculate/rollover | 2026-03-20 |

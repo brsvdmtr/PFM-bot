@@ -42,6 +42,20 @@ interface DashboardData {
   debts: Debt[];
   emergencyFund: { currentAmount: number; targetAmount: number } | null;
   currency: string;       // 'RUB' | 'USD'
+
+  // Cash Anchor Live Window fields (v2, 2026-03-20)
+  cashOnHand: number | null;            // kopecks — null if anchor not set
+  cashAnchorAt: string | null;          // ISO datetime
+  lastIncomeDate: string | null;        // ISO datetime — work-calendar adjusted
+  nextIncomeDate: string | null;        // ISO datetime — work-calendar adjusted
+  nextIncomeAmount: number;             // kopecks
+  daysToNextIncome: number | null;      // null when usesLiveWindow is false
+  reservedUpcoming: number;             // kopecks
+  reservedUpcomingObligations: number;  // kopecks
+  reservedUpcomingDebtPayments: number; // kopecks
+  windowStart: string;                  // ISO datetime
+  windowEnd: string;                    // ISO datetime
+  usesLiveWindow: boolean;
 }
 ```
 
@@ -236,6 +250,77 @@ All money fields are in minor units (kopecks for RUB, cents for USD). The fronte
 | Label | `expense.note || 'Расход'` |
 | Amount display | `-{fmt(amount, currency)}` in red |
 | Card visibility | Entire card hidden if `todayExpenses.length === 0` |
+
+---
+
+### 11. "До следующей выплаты" (Days to Next Income)
+
+*Added v2, 2026-03-20.*
+
+| Attribute | Value |
+|-----------|-------|
+| UI Label | "До следующей выплаты" |
+| API field | `daysToNextIncome` |
+| Type | Int? |
+| Domain meaning | Days until the next work-calendar-adjusted payday |
+| Formula | `max(1, daysBetween(today, nextIncomeDate))` |
+| Persisted or derived | Derived at runtime |
+| DB field | None |
+| Visibility | Shown when `usesLiveWindow = true` |
+| Null behavior | Hidden when `usesLiveWindow = false` or `nextIncomeDate = null` |
+
+---
+
+### 12. "На руках сейчас" (Cash on Hand)
+
+*Added v2, 2026-03-20.*
+
+| Attribute | Value |
+|-----------|-------|
+| UI Label | "На руках сейчас" |
+| API field | `cashOnHand` |
+| Type | Int? (kopecks) |
+| Domain meaning | User's last-reported cash balance (anchor amount) |
+| Persisted or derived | Persisted (`Period.cashAnchorAmount`) |
+| DB field | `Period.cashAnchorAmount` |
+| Visibility | Shown when `usesLiveWindow = true` and `cashOnHand != null` |
+| Null behavior | Hidden when `cashOnHand = null` |
+| Update mechanism | User calls `POST /tg/cash-anchor` to refresh |
+
+---
+
+### 13. "Зарезервировано" (Reserved Upcoming)
+
+*Added v2, 2026-03-20.*
+
+| Attribute | Value |
+|-----------|-------|
+| UI Label | "Зарезервировано" |
+| API field | `reservedUpcoming` |
+| Type | Int (kopecks) |
+| Domain meaning | Amount set aside for obligations and debt payments due before next income |
+| Components | `reservedUpcomingObligations` + `reservedUpcomingDebtPayments` |
+| Filter | Only items whose `dueDay` falls in `[today.day, nextIncomeDate.day)` |
+| Persisted or derived | Derived at runtime |
+| DB field | None |
+| Visibility | Shown when `usesLiveWindow = true` and `reservedUpcoming > 0` |
+
+---
+
+### 14. "Следующая выплата" (Next Income)
+
+*Added v2, 2026-03-20.*
+
+| Attribute | Value |
+|-----------|-------|
+| UI Label | "Следующая выплата: {date} — {amount}" |
+| API fields | `nextIncomeDate`, `nextIncomeAmount` |
+| Types | `DateTime?`, `Int` (kopecks) |
+| Domain meaning | Date and amount of the next expected payday, adjusted for Russian work calendar |
+| Persisted or derived | Derived at runtime |
+| DB field | None — computed from income paydays and Russian work calendar |
+| Visibility | Shown whenever `nextIncomeDate != null` |
+| Date adjustment | Weekend/holiday paydays are shifted to the previous business day |
 
 ---
 

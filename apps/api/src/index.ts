@@ -2,8 +2,9 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
 import { prisma } from '@pfm/db';
-import { calculateS2S, calculatePeriodBounds } from './engine';
+import { calculateS2S, calculatePeriodBounds, computeReservedUpcoming, computeLiveWindow } from './engine';
 import { determineFocusDebt, buildAvalanchePlan } from './avalanche';
+import { getLastActualPayday, getNextActualPayday, getNextIncomeAmount } from './payday-calendar';
 
 // ── Types ──────────────────────────────────────────────
 
@@ -125,6 +126,73 @@ async function ensureUser(req: AuthenticatedRequest, _res: Response, next: NextF
   next();
 }
 
+/** Trigger a recalculate of the active period for a user (non-throwing) */
+async function triggerRecalculate(userId: string): Promise<void> {
+  const [incomes, obligations, debts, ef] = await Promise.all([
+    prisma.income.findMany({ where: { userId, isActive: true } }),
+    prisma.obligation.findMany({ where: { userId, isActive: true } }),
+    prisma.debt.findMany({ where: { userId, isPaidOff: false } }),
+    prisma.emergencyFund.findUnique({ where: { userId } }),
+  ]);
+
+  const activePeriod = await prisma.period.findFirst({ where: { userId, status: 'ACTIVE' } });
+  if (!activePeriod || incomes.length === 0) return;
+
+  const totalExpenses = await prisma.expense.aggregate({
+    where: { periodId: activePeriod.id },
+    _sum: { amount: true },
+  });
+
+  const today = new Date();
+  const allPaydays = [...new Set(incomes.flatMap((inc) => inc.paydays as number[]))].sort((a, b) => a - b);
+  const newBounds = calculatePeriodBounds(allPaydays, today);
+
+  const s2sResult = calculateS2S({
+    incomes: incomes.map((inc) => ({ amount: inc.amount, paydays: inc.paydays as number[] })),
+    obligations: obligations.map((o) => ({ amount: o.amount })),
+    debts: debts.map((d) => ({ id: d.id, balance: d.balance, apr: d.apr, minPayment: d.minPayment, isFocusDebt: d.isFocusDebt })),
+    emergencyFund: { currentAmount: ef?.currentAmount ?? 0, targetMonths: ef?.targetMonths ?? 3 },
+    periodStartDate: newBounds.start,
+    periodEndDate: newBounds.end,
+    today,
+    totalExpensesInPeriod: totalExpenses._sum.amount ?? 0,
+    todayExpenses: 0,
+    isProratedStart: newBounds.isProratedStart,
+    fullPeriodDays: newBounds.fullPeriodDays,
+  });
+
+  const allUseRuCalendar = incomes.some((inc) => (inc as any).useRussianWorkCalendar);
+  const lastIncomeDateAuto = getLastActualPayday(allPaydays, today, allUseRuCalendar);
+  const nextIncomeDateAuto = getNextActualPayday(allPaydays, today, allUseRuCalendar);
+  const nextIncomeAmountAuto = nextIncomeDateAuto
+    ? getNextIncomeAmount(incomes.map(i => ({ amount: i.amount, paydays: i.paydays as number[] })), nextIncomeDateAuto)
+    : 0;
+  const endDay = newBounds.end.getDate();
+  const endDayIdx = allPaydays.indexOf(endDay);
+  const triggerPaydayAuto = endDayIdx > 0 ? allPaydays[endDayIdx - 1] : allPaydays[allPaydays.length - 1];
+
+  await prisma.period.update({
+    where: { id: activePeriod.id },
+    data: {
+      startDate: newBounds.start,
+      endDate: newBounds.end,
+      daysTotal: s2sResult.daysTotal,
+      isProratedStart: newBounds.isProratedStart,
+      totalIncome: s2sResult.totalIncome,
+      totalObligations: s2sResult.totalObligations,
+      totalDebtPayments: s2sResult.totalDebtPayments,
+      efContribution: s2sResult.efContribution,
+      reserve: s2sResult.reserve,
+      s2sPeriod: s2sResult.s2sPeriod,
+      s2sDaily: s2sResult.s2sDaily,
+      triggerPayday: triggerPaydayAuto ?? null,
+      lastIncomeDate: lastIncomeDateAuto ?? null,
+      nextIncomeDate: nextIncomeDateAuto ?? null,
+      nextIncomeAmount: nextIncomeAmountAuto,
+    },
+  });
+}
+
 // ── App ────────────────────────────────────────────────
 
 const app = express();
@@ -170,7 +238,7 @@ tg.get('/onboarding/status', async (req: AuthenticatedRequest, res) => {
 tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
   const userId = req.userId!;
 
-  const [user, activePeriod, todayExpenses, periodExpenses] = await Promise.all([
+  const [user, activePeriod, todayExpenses, periodExpenses, incomes] = await Promise.all([
     prisma.user.findUnique({
       where: { id: userId },
       include: {
@@ -196,6 +264,7 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
       where: { userId, period: { status: 'ACTIVE' } },
       _sum: { amount: true },
     }),
+    prisma.income.findMany({ where: { userId, isActive: true } }),
   ]);
 
   if (!user || !activePeriod) {
@@ -222,10 +291,27 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
   const daysElapsed = Math.max(1, Math.ceil((now.getTime() - activePeriod.startDate.getTime()) / msPerDay));
   const daysLeft = Math.max(1, activePeriod.daysTotal - daysElapsed + 1);
 
+  // Compute payday dates
+  const allUseRuCalendar = incomes.some((i) => (i as any).useRussianWorkCalendar);
+  const allPaydayNums = [...new Set(incomes.flatMap((i) => i.paydays as number[]))].sort((a, b) => a - b);
+  const lastIncomeDate = getLastActualPayday(allPaydayNums, now, allUseRuCalendar);
+  const nextIncomeDate = activePeriod.nextIncomeDate || getNextActualPayday(allPaydayNums, now, allUseRuCalendar);
+  const nextIncomeAmount = activePeriod.nextIncomeAmount || (nextIncomeDate ? getNextIncomeAmount(incomes.map(i => ({ amount: i.amount, paydays: i.paydays as number[] })), nextIncomeDate) : 0);
+
+  // Compute reserves
+  const reservesResult = nextIncomeDate
+    ? computeReservedUpcoming(
+        user.obligations.map((o) => ({ amount: o.amount, dueDay: o.dueDay })),
+        user.debts.map((d) => ({ minPayment: d.minPayment, dueDay: d.dueDay })),
+        now,
+        nextIncomeDate,
+      )
+    : { reservedUpcomingObligations: 0, reservedUpcomingDebtPayments: 0, reservedUpcoming: 0 };
+
   // Dynamic S2S with carry-over: recalculate daily from remaining budget
   const periodRemaining = Math.max(0, activePeriod.s2sPeriod - totalPeriodSpent);
-  const dynamicS2sDaily = Math.max(0, Math.round(periodRemaining / daysLeft));
-  const s2sToday = Math.max(0, dynamicS2sDaily - todayTotal);
+  let dynamicS2sDaily = Math.max(0, Math.round(periodRemaining / daysLeft));
+  let s2sToday = Math.max(0, dynamicS2sDaily - todayTotal);
 
   // S2S status color
   let s2sStatus: 'OK' | 'WARNING' | 'OVERSPENT' | 'DEFICIT' = 'OK';
@@ -235,6 +321,42 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
     s2sStatus = 'OVERSPENT';
   } else if (dynamicS2sDaily > 0 && s2sToday / dynamicS2sDaily <= 0.3) {
     s2sStatus = 'WARNING';
+  }
+
+  // Use live window model if cash anchor is set
+  if (activePeriod.cashAnchorAmount != null && activePeriod.cashAnchorAt != null && nextIncomeDate) {
+    const anchorAt = activePeriod.cashAnchorAt;
+
+    // Get expenses SINCE the anchor date (not all period expenses)
+    const expensesSinceAnchorAgg = await prisma.expense.aggregate({
+      where: { userId, spentAt: { gte: anchorAt } },
+      _sum: { amount: true },
+    });
+    const expensesSinceAnchor = expensesSinceAnchorAgg._sum.amount ?? 0;
+
+    // Today's expenses since anchor (intersection of today AND since anchor)
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+    const todayAnchorStart = anchorAt > todayStart ? anchorAt : todayStart;
+    const todayExpSinceAnchorAgg = await prisma.expense.aggregate({
+      where: { userId, spentAt: { gte: todayAnchorStart } },
+      _sum: { amount: true },
+    });
+    const todayExpensesSinceAnchor = todayExpSinceAnchorAgg._sum.amount ?? 0;
+
+    const liveWindow = computeLiveWindow({
+      cashAnchorAmount: activePeriod.cashAnchorAmount,
+      expensesSinceAnchor,
+      todayExpensesSinceAnchor,
+      reservedUpcoming: reservesResult.reservedUpcoming,
+      nextIncomeDate,
+      today: now,
+    });
+
+    // Use live window values
+    s2sToday = liveWindow.s2sToday;
+    dynamicS2sDaily = liveWindow.s2sDaily;
+    s2sStatus = liveWindow.status;
   }
 
   const focusDebt = user.debts.find((d) => d.isFocusDebt) ?? user.debts[0] ?? null;
@@ -278,6 +400,19 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
         }
       : null,
     currency: activePeriod.currency,
+    // New live window fields
+    cashOnHand: activePeriod.cashAnchorAmount ?? null,
+    cashAnchorAt: activePeriod.cashAnchorAt ?? null,
+    lastIncomeDate: lastIncomeDate ?? null,
+    nextIncomeDate: nextIncomeDate ?? null,
+    nextIncomeAmount: nextIncomeAmount,
+    daysToNextIncome: nextIncomeDate ? Math.max(1, Math.ceil((nextIncomeDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))) : null,
+    reservedUpcoming: reservesResult.reservedUpcoming,
+    reservedUpcomingObligations: reservesResult.reservedUpcomingObligations,
+    reservedUpcomingDebtPayments: reservesResult.reservedUpcomingDebtPayments,
+    windowStart: activePeriod.cashAnchorAt ?? activePeriod.startDate,
+    windowEnd: nextIncomeDate ?? activePeriod.endDate,
+    usesLiveWindow: activePeriod.cashAnchorAmount != null,
   });
 });
 
@@ -495,6 +630,7 @@ tg.post('/onboarding/ef', async (req: AuthenticatedRequest, res) => {
 // Step 5 — Complete onboarding, create first period
 tg.post('/onboarding/complete', async (req: AuthenticatedRequest, res) => {
   const userId = req.userId!;
+  const { currentCash } = req.body; // optional number in minor units
 
   const [user, incomes, obligations, debts, ef] = await Promise.all([
     prisma.user.findUnique({ where: { id: userId } }),
@@ -521,14 +657,6 @@ tg.post('/onboarding/complete', async (req: AuthenticatedRequest, res) => {
   const bounds = calculatePeriodBounds(allPaydays, today);
 
   // Calculate S2S
-  const totalPeriodIncome = incomes.reduce((sum, inc) => {
-    // Scale monthly amount to period days
-    const monthlyAmount = inc.amount;
-    return sum + (bounds.isProratedStart
-      ? Math.round(monthlyAmount * (bounds.daysTotal / bounds.fullPeriodDays))
-      : monthlyAmount);
-  }, 0);
-
   const s2sResult = calculateS2S({
     incomes: incomes.map((inc) => ({ amount: inc.amount, paydays: inc.paydays as number[] })),
     obligations: obligations.map((o) => ({ amount: o.amount })),
@@ -552,6 +680,19 @@ tg.post('/onboarding/complete', async (req: AuthenticatedRequest, res) => {
     fullPeriodDays: bounds.fullPeriodDays,
   });
 
+  // Compute actual payday dates
+  const allUseRuCalendar = incomes.some((inc) => (inc as any).useRussianWorkCalendar);
+  const lastIncomeDate = getLastActualPayday(allPaydays, today, allUseRuCalendar);
+  const nextIncomeDate = getNextActualPayday(allPaydays, today, allUseRuCalendar);
+  const nextIncomeAmountVal = nextIncomeDate
+    ? getNextIncomeAmount(incomes.map(i => ({ amount: i.amount, paydays: i.paydays as number[] })), nextIncomeDate)
+    : 0;
+
+  // Compute triggerPayday
+  const endDay = bounds.end.getDate();
+  const endDayIdx = allPaydays.indexOf(endDay);
+  const triggerPaydayVal = endDayIdx > 0 ? allPaydays[endDayIdx - 1] : allPaydays[allPaydays.length - 1];
+
   const currency = (user.primaryCurrency || 'RUB') as any;
 
   const period = await prisma.period.create({
@@ -570,6 +711,12 @@ tg.post('/onboarding/complete', async (req: AuthenticatedRequest, res) => {
       currency,
       isProratedStart: bounds.isProratedStart,
       status: 'ACTIVE',
+      triggerPayday: triggerPaydayVal ?? null,
+      lastIncomeDate: lastIncomeDate ?? null,
+      nextIncomeDate: nextIncomeDate ?? null,
+      nextIncomeAmount: nextIncomeAmountVal,
+      cashAnchorAmount: currentCash ? Math.round(currentCash) : null,
+      cashAnchorAt: currentCash ? today : null,
     },
   });
 
@@ -581,6 +728,56 @@ tg.post('/onboarding/complete', async (req: AuthenticatedRequest, res) => {
   res.json({
     period,
     s2s: s2sResult,
+    cashAnchorSet: !!currentCash,
+    nextIncomeDate: nextIncomeDate ?? null,
+    lastIncomeDate: lastIncomeDate ?? null,
+  });
+});
+
+// Update cash anchor
+tg.post('/cash-anchor', async (req: AuthenticatedRequest, res) => {
+  const userId = req.userId!;
+  const { currentCash } = req.body;
+
+  if (currentCash === undefined || currentCash === null || typeof currentCash !== 'number' || currentCash < 0) {
+    res.status(400).json({ error: 'currentCash must be a non-negative number (minor units)' });
+    return;
+  }
+
+  const activePeriod = await prisma.period.findFirst({
+    where: { userId, status: 'ACTIVE' },
+  });
+
+  if (!activePeriod) {
+    res.status(400).json({ error: 'No active period' });
+    return;
+  }
+
+  const now = new Date();
+  const incomes = await prisma.income.findMany({ where: { userId, isActive: true } });
+  const allPaydays = [...new Set(incomes.flatMap((i) => i.paydays as number[]))].sort((a, b) => a - b);
+  const allUseRuCalendar = incomes.some((i) => (i as any).useRussianWorkCalendar);
+  const nextIncomeDate = getNextActualPayday(allPaydays, now, allUseRuCalendar);
+  const nextIncomeAmountVal = nextIncomeDate
+    ? getNextIncomeAmount(incomes.map(i => ({ amount: i.amount, paydays: i.paydays as number[] })), nextIncomeDate)
+    : 0;
+
+  await prisma.period.update({
+    where: { id: activePeriod.id },
+    data: {
+      cashAnchorAmount: Math.round(currentCash),
+      cashAnchorAt: now,
+      nextIncomeDate: nextIncomeDate ?? undefined,
+      nextIncomeAmount: nextIncomeAmountVal,
+    },
+  });
+
+  res.json({
+    ok: true,
+    cashAnchorAmount: Math.round(currentCash),
+    cashAnchorAt: now,
+    nextIncomeDate: nextIncomeDate ?? null,
+    nextIncomeAmount: nextIncomeAmountVal,
   });
 });
 
@@ -687,6 +884,17 @@ tg.post('/periods/recalculate', async (req: AuthenticatedRequest, res) => {
     fullPeriodDays: newBounds.fullPeriodDays,
   });
 
+  // Persist triggerPayday and income window dates
+  const allUseRuCalendarRec = incomes.some((inc) => (inc as any).useRussianWorkCalendar);
+  const lastIncomeDateRec = getLastActualPayday(allPaydays, today, allUseRuCalendarRec);
+  const nextIncomeDateRec = getNextActualPayday(allPaydays, today, allUseRuCalendarRec);
+  const nextIncomeAmountRec = nextIncomeDateRec
+    ? getNextIncomeAmount(incomes.map(i => ({ amount: i.amount, paydays: i.paydays as number[] })), nextIncomeDateRec)
+    : 0;
+  const recEndDay = newBounds.end.getDate();
+  const recEndDayIdx = allPaydays.indexOf(recEndDay);
+  const recTriggerPayday = recEndDayIdx > 0 ? allPaydays[recEndDayIdx - 1] : allPaydays[allPaydays.length - 1];
+
   await prisma.period.update({
     where: { id: activePeriod.id },
     data: {
@@ -701,6 +909,10 @@ tg.post('/periods/recalculate', async (req: AuthenticatedRequest, res) => {
       reserve: s2sResult.reserve,
       s2sPeriod: s2sResult.s2sPeriod,
       s2sDaily: s2sResult.s2sDaily,
+      triggerPayday: recTriggerPayday ?? null,
+      lastIncomeDate: lastIncomeDateRec ?? null,
+      nextIncomeDate: nextIncomeDateRec ?? null,
+      nextIncomeAmount: nextIncomeAmountRec,
     },
   });
 
@@ -827,12 +1039,18 @@ tg.post('/debts', async (req: AuthenticatedRequest, res) => {
     },
   });
 
+  // Auto-recalculate active period
+  try {
+    await triggerRecalculate(userId);
+  } catch { /* non-blocking */ }
+
   res.status(201).json(debt);
 });
 
 tg.patch('/debts/:id', async (req: AuthenticatedRequest, res) => {
   const id = req.params.id as string;
-  const debt = await prisma.debt.findFirst({ where: { id, userId: req.userId! } });
+  const userId = req.userId!;
+  const debt = await prisma.debt.findFirst({ where: { id, userId } });
   if (!debt) { res.status(404).json({ error: 'Not found' }); return; }
   const allowed = ['title', 'type', 'balance', 'apr', 'minPayment', 'dueDay'];
   const data: Record<string, any> = {};
@@ -840,23 +1058,35 @@ tg.patch('/debts/:id', async (req: AuthenticatedRequest, res) => {
     if (key in req.body) data[key] = req.body[key];
   }
   const updated = await prisma.debt.update({ where: { id }, data });
+
+  // Auto-recalculate active period
+  try {
+    await triggerRecalculate(userId);
+  } catch { /* non-blocking */ }
+
   res.json(updated);
 });
 
 tg.delete('/debts/:id', async (req: AuthenticatedRequest, res) => {
   const id = req.params.id as string;
-  const debt = await prisma.debt.findFirst({ where: { id, userId: req.userId! } });
+  const userId = req.userId!;
+  const debt = await prisma.debt.findFirst({ where: { id, userId } });
   if (!debt) { res.status(404).json({ error: 'Not found' }); return; }
   await prisma.debt.delete({ where: { id: debt.id } });
 
   // If deleted debt was focus, assign new focus
   if (debt.isFocusDebt) {
-    const allDebts = await prisma.debt.findMany({ where: { userId: req.userId!, isPaidOff: false }, orderBy: { apr: 'desc' } });
+    const allDebts = await prisma.debt.findMany({ where: { userId, isPaidOff: false }, orderBy: { apr: 'desc' } });
     if (allDebts.length > 0) {
       const focusId = determineFocusDebt(allDebts.map((d) => ({ id: d.id, title: d.title, balance: d.balance, apr: d.apr, minPayment: d.minPayment, type: d.type })));
       if (focusId) await prisma.debt.update({ where: { id: focusId }, data: { isFocusDebt: true } });
     }
   }
+
+  // Auto-recalculate active period
+  try {
+    await triggerRecalculate(userId);
+  } catch { /* non-blocking */ }
 
   res.json({ ok: true });
 });

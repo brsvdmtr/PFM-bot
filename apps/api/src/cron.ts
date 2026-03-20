@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { prisma } from '@pfm/db';
 import { calculateS2S, calculatePeriodBounds } from './engine';
+import { getLastActualPayday, getNextActualPayday, getNextIncomeAmount } from './payday-calendar';
 import {
   sendMorningNotification,
   sendEveningNotification,
@@ -332,6 +333,22 @@ cron.schedule('5 0 * * *', async () => {
           fullPeriodDays: bounds.fullPeriodDays,
         });
 
+        // Compute and persist triggerPayday
+        const endDay = bounds.end.getDate();
+        const endDayIdx = allPaydays.indexOf(endDay);
+        const triggerPayday = endDayIdx > 0 ? allPaydays[endDayIdx - 1] : allPaydays[allPaydays.length - 1];
+
+        // Compute actual income dates
+        const allUseRuCalendar = incomes.some((i: any) => (i as any).useRussianWorkCalendar);
+        const lastIncomeDate = getLastActualPayday(allPaydays, now, allUseRuCalendar);
+        const nextIncomeDate = getNextActualPayday(allPaydays, now, allUseRuCalendar);
+        const nextIncomeAmountVal = nextIncomeDate
+          ? getNextIncomeAmount(
+              incomes.map((i: any) => ({ amount: i.amount, paydays: i.paydays as number[] })),
+              nextIncomeDate,
+            )
+          : 0;
+
         await prisma.period.create({
           data: {
             userId: user.id,
@@ -348,6 +365,10 @@ cron.schedule('5 0 * * *', async () => {
             currency: period.currency,
             isProratedStart: bounds.isProratedStart,
             status: 'ACTIVE',
+            triggerPayday: triggerPayday ?? null,
+            lastIncomeDate: lastIncomeDate ?? null,
+            nextIncomeDate: nextIncomeDate ?? null,
+            nextIncomeAmount: nextIncomeAmountVal,
           },
         });
 

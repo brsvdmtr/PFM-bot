@@ -342,3 +342,151 @@ export function calculatePeriodBounds(paydays: number[], fromDate: Date): Period
     isProratedStart: false,
   };
 }
+
+// ── Due-Date Window Logic ───────────────────────────────────────────────────
+
+/**
+ * Check if a dueDay (day-of-month) falls within the half-open interval
+ * [today, nextIncomeDate). Handles month crossings correctly.
+ *
+ * Returns true if the item should be reserved in the current window.
+ */
+export function isDueDayInWindow(dueDay: number, today: Date, nextIncomeDate: Date): boolean {
+  const t = new Date(today);
+  t.setHours(0, 0, 0, 0);
+  const n = new Date(nextIncomeDate);
+  n.setHours(0, 0, 0, 0);
+
+  const current = new Date(t);
+  let safety = 0;
+  while (current < n && safety < 60) {
+    if (current.getDate() === dueDay) return true;
+    current.setDate(current.getDate() + 1);
+    safety++;
+  }
+  return false;
+}
+
+export interface ObligationForWindow {
+  amount: number;
+  dueDay?: number | null;
+}
+
+export interface DebtForWindow {
+  minPayment: number;
+  dueDay?: number | null;
+}
+
+export interface UpcomingReserves {
+  reservedUpcomingObligations: number;
+  reservedUpcomingDebtPayments: number;
+  reservedUpcoming: number;
+}
+
+/**
+ * Compute upcoming reserved amounts for obligations and debts
+ * whose dueDay falls in [today, nextIncomeDate).
+ *
+ * Items WITHOUT a dueDay are included conservatively
+ * (we don't know when they'll be charged — assume current window).
+ */
+export function computeReservedUpcoming(
+  obligations: ObligationForWindow[],
+  debts: DebtForWindow[],
+  today: Date,
+  nextIncomeDate: Date,
+): UpcomingReserves {
+  const reservedUpcomingObligations = obligations.reduce((sum, o) => {
+    // No dueDay → include (conservative: unknown timing)
+    if (!o.dueDay || isDueDayInWindow(o.dueDay, today, nextIncomeDate)) {
+      return sum + o.amount;
+    }
+    return sum;
+  }, 0);
+
+  const reservedUpcomingDebtPayments = debts.reduce((sum, d) => {
+    if (!d.dueDay || isDueDayInWindow(d.dueDay, today, nextIncomeDate)) {
+      return sum + d.minPayment;
+    }
+    return sum;
+  }, 0);
+
+  return {
+    reservedUpcomingObligations,
+    reservedUpcomingDebtPayments,
+    reservedUpcoming: reservedUpcomingObligations + reservedUpcomingDebtPayments,
+  };
+}
+
+// ── Live Window Calculation (Cash Anchor Model) ─────────────────────────────
+
+export interface LiveWindowInput {
+  cashAnchorAmount: number;           // current cash user confirmed (minor units)
+  expensesSinceAnchor: number;        // total expenses after cashAnchorAt
+  todayExpensesSinceAnchor: number;   // today's expenses (local day) after anchor
+  reservedUpcoming: number;           // sum of reserved obligations + debts
+  nextIncomeDate: Date;               // next actual payday
+  today: Date;                        // current date/time
+}
+
+export interface LiveWindowResult {
+  freeCashPool: number;       // cashAnchor - reserved - expensesSinceAnchor (floored at 0)
+  daysToNextIncome: number;   // days until nextIncomeDate (min 1)
+  s2sDaily: number;           // Math.floor(freeCashPool / daysToNextIncome)
+  s2sToday: number;           // max(0, s2sDaily - todayExpensesSinceAnchor)
+  status: 'OK' | 'WARNING' | 'OVERSPENT' | 'DEFICIT';
+  s2sColor: 'green' | 'orange' | 'red';
+}
+
+/**
+ * Compute live Safe-to-Spend from a cash anchor.
+ *
+ * Formula:
+ *   freeCashPool = max(0, cashAnchor - reservedUpcoming - expensesSinceAnchor)
+ *   s2sDaily     = floor(freeCashPool / daysToNextIncome)    ← conservative floor
+ *   s2sToday     = max(0, s2sDaily - todayExpensesSinceAnchor)
+ *
+ * CRITICAL: expenses BEFORE the anchor date are NOT deducted again —
+ * the cash anchor already implicitly reflects prior spending.
+ */
+export function computeLiveWindow(input: LiveWindowInput): LiveWindowResult {
+  const {
+    cashAnchorAmount,
+    expensesSinceAnchor,
+    todayExpensesSinceAnchor,
+    reservedUpcoming,
+    nextIncomeDate,
+    today,
+  } = input;
+
+  const freeCashPool = Math.max(
+    0,
+    cashAnchorAmount - reservedUpcoming - expensesSinceAnchor,
+  );
+
+  const daysToNextIncome = Math.max(1, daysBetween(today, nextIncomeDate));
+
+  // Use Math.floor for conservative daily display (trust-critical)
+  const s2sDaily = Math.floor(freeCashPool / daysToNextIncome);
+  const s2sToday = Math.max(0, s2sDaily - todayExpensesSinceAnchor);
+
+  let status: LiveWindowResult['status'] = 'OK';
+  if (freeCashPool <= 0) {
+    status = 'DEFICIT';
+  } else if (todayExpensesSinceAnchor > s2sDaily) {
+    status = 'OVERSPENT';
+  } else if (s2sDaily > 0 && s2sToday / s2sDaily <= 0.3) {
+    status = 'WARNING';
+  }
+
+  let s2sColor: LiveWindowResult['s2sColor'] = 'green';
+  if (status === 'DEFICIT' || status === 'OVERSPENT') {
+    s2sColor = 'red';
+  } else if (s2sDaily > 0 && s2sToday / s2sDaily <= 0.3) {
+    s2sColor = 'red';
+  } else if (s2sDaily > 0 && s2sToday / s2sDaily <= 0.7) {
+    s2sColor = 'orange';
+  }
+
+  return { freeCashPool, daysToNextIncome, s2sDaily, s2sToday, status, s2sColor };
+}
