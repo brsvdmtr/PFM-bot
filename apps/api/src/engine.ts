@@ -387,8 +387,9 @@ export interface UpcomingReserves {
  * Compute upcoming reserved amounts for obligations and debts
  * whose dueDay falls in [today, nextIncomeDate).
  *
- * Items WITHOUT a dueDay are included conservatively
- * (we don't know when they'll be charged — assume current window).
+ * Items WITHOUT a dueDay are NOT included — we can't reliably know
+ * whether they fall in the current window or have already been paid.
+ * Callers should pre-filter debts to exclude those already paid this cycle.
  */
 export function computeReservedUpcoming(
   obligations: ObligationForWindow[],
@@ -397,15 +398,16 @@ export function computeReservedUpcoming(
   nextIncomeDate: Date,
 ): UpcomingReserves {
   const reservedUpcomingObligations = obligations.reduce((sum, o) => {
-    // No dueDay → include (conservative: unknown timing)
-    if (!o.dueDay || isDueDayInWindow(o.dueDay, today, nextIncomeDate)) {
+    // Only reserve if dueDay is explicitly set AND falls in [today, nextIncomeDate)
+    if (o.dueDay != null && isDueDayInWindow(o.dueDay, today, nextIncomeDate)) {
       return sum + o.amount;
     }
     return sum;
   }, 0);
 
   const reservedUpcomingDebtPayments = debts.reduce((sum, d) => {
-    if (!d.dueDay || isDueDayInWindow(d.dueDay, today, nextIncomeDate)) {
+    // Only reserve if dueDay is explicitly set AND falls in [today, nextIncomeDate)
+    if (d.dueDay != null && isDueDayInWindow(d.dueDay, today, nextIncomeDate)) {
       return sum + d.minPayment;
     }
     return sum;

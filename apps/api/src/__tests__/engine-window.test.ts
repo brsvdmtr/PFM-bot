@@ -87,16 +87,16 @@ describe('computeReservedUpcoming', () => {
     expect(result.reservedUpcoming).toBe(0);
   });
 
-  it('includes obligation with no dueDay (conservative: unknown timing)', () => {
+  it('excludes obligation with no dueDay (cannot determine window position)', () => {
     const obligations: ObligationForWindow[] = [{ amount: 8000000, dueDay: null }];
     const result = computeReservedUpcoming(obligations, [], today, nextIncome);
-    expect(result.reservedUpcomingObligations).toBe(8000000);
+    expect(result.reservedUpcomingObligations).toBe(0);
   });
 
-  it('includes obligation with undefined dueDay (conservative)', () => {
+  it('excludes obligation with undefined dueDay', () => {
     const obligations: ObligationForWindow[] = [{ amount: 7000000 }];
     const result = computeReservedUpcoming(obligations, [], today, nextIncome);
-    expect(result.reservedUpcomingObligations).toBe(7000000);
+    expect(result.reservedUpcomingObligations).toBe(0);
   });
 
   it('excludes debt with dueDay=1 (April 1 = boundary, excluded)', () => {
@@ -106,26 +106,26 @@ describe('computeReservedUpcoming', () => {
     expect(result.reservedUpcoming).toBe(0);
   });
 
-  it('includes debt with no dueDay (conservative)', () => {
+  it('excludes debt with no dueDay', () => {
     const debts: DebtForWindow[] = [{ minPayment: 4000000, dueDay: null }];
     const result = computeReservedUpcoming([], debts, today, nextIncome);
-    expect(result.reservedUpcomingDebtPayments).toBe(4000000);
+    expect(result.reservedUpcomingDebtPayments).toBe(0);
   });
 
   it('sums obligations and debts correctly in reservedUpcoming', () => {
     const obligations: ObligationForWindow[] = [
       { amount: 5000000, dueDay: 27 },  // included
       { amount: 2000000, dueDay: 17 },  // excluded (past)
-      { amount: 3000000 },              // included (no dueDay)
+      { amount: 3000000 },              // excluded (no dueDay)
     ];
     const debts: DebtForWindow[] = [
       { minPayment: 1000000, dueDay: 25 }, // included
       { minPayment: 2000000, dueDay: 1 },  // excluded (boundary)
     ];
     const result = computeReservedUpcoming(obligations, debts, today, nextIncome);
-    expect(result.reservedUpcomingObligations).toBe(8000000);  // 5M + 3M
+    expect(result.reservedUpcomingObligations).toBe(5000000);  // only dueDay=27 in window
     expect(result.reservedUpcomingDebtPayments).toBe(1000000);
-    expect(result.reservedUpcoming).toBe(9000000);
+    expect(result.reservedUpcoming).toBe(6000000);
   });
 
   it('empty inputs → all zeros', () => {

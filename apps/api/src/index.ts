@@ -298,11 +298,20 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
   const nextIncomeDate = activePeriod.nextIncomeDate || getNextActualPayday(allPaydayNums, now, allUseRuCalendar);
   const nextIncomeAmount = activePeriod.nextIncomeAmount || (nextIncomeDate ? getNextIncomeAmount(incomes.map(i => ({ amount: i.amount, paydays: i.paydays as number[] })), nextIncomeDate) : 0);
 
-  // Compute reserves
+  // Debts already paid this cycle (since period start) → exclude from reservation
+  const paidThisCycle = await prisma.debtPayment.findMany({
+    where: { debt: { userId }, paidAt: { gte: activePeriod.startDate } },
+    select: { debtId: true },
+  });
+  const paidDebtIds = new Set(paidThisCycle.map((p) => p.debtId));
+
+  // Compute reserves — only debts with explicit dueDay in window AND not yet paid
   const reservesResult = nextIncomeDate
     ? computeReservedUpcoming(
         user.obligations.map((o) => ({ amount: o.amount, dueDay: o.dueDay })),
-        user.debts.map((d) => ({ minPayment: d.minPayment, dueDay: d.dueDay })),
+        user.debts
+          .filter((d) => !paidDebtIds.has(d.id))
+          .map((d) => ({ minPayment: d.minPayment, dueDay: d.dueDay })),
         now,
         nextIncomeDate,
       )
