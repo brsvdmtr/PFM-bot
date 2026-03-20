@@ -104,12 +104,13 @@ Specific claims in documents that have not been verified against running code:
 
 | Document | Claim | Verification Command | Status |
 |----------|-------|---------------------|--------|
-| api/api-v1.md | `GET /tg/me/profile` exact fields returned | Read the route handler in `apps/api/src/` | Not verified |
-| security/security-privacy-checklist.md | ADMIN_KEY is non-default in prod | `grep ADMIN_KEY /srv/pfm/.env` | Not verified |
-| security/security-privacy-checklist.md | Secrets not in logs | `docker compose logs api \| grep -i token` | Not verified |
-| architecture/adr-007 | DailySnapshot fires at 23:55 UTC | `grep "23:55" apps/api/src/cron.ts` | Partially verified |
-| api/api-v1.md | `GET /tg/expenses` scopes to active period only | Read listExpenses route handler | Partially verified |
-| delivery/technical-debt-register.md | TD-005 Dockerfile uses migrate deploy | Read `Dockerfile.api` entrypoint | Not verified |
+| api/api-v1.md | `GET /tg/me/profile` returns User + profile (displayName) + subscription | Verified against `apps/api/src/index.ts:343-349` | **Verified 2026-03-20** |
+| api/api-v1.md | `GET /tg/expenses` scopes to active period only | Verified against `apps/api/src/index.ts:938-943` | **Verified 2026-03-20** |
+| architecture/adr-007 | DailySnapshot fires at 23:55 UTC | Verified: `grep '55 23' apps/api/src/cron.ts` → line 156 | **Verified 2026-03-20** |
+| architecture/adr-007 | Period rollover fires at 00:05 UTC | Verified: `grep '5 0' apps/api/src/cron.ts` → line 266 | **Verified 2026-03-20** |
+| delivery/technical-debt-register.md | TD-005 Dockerfile uses prisma db push not migrate deploy | Verified: Dockerfile.api CMD line uses `prisma db push --accept-data-loss` | **Confirmed open — db push in production** |
+| security/security-privacy-checklist.md | ADMIN_KEY is non-default in prod | `grep ADMIN_KEY /srv/pfm/.env` | Not verified — requires server access |
+| security/security-privacy-checklist.md | Secrets not in logs | `docker compose logs api \| grep -i token` | Not verified — requires server access |
 
 ---
 
@@ -137,4 +138,4 @@ Specific claims in documents that have not been verified against running code:
 | docs/ARCHITECTURE.md | docs/architecture/ARCHITECTURE.md | Moved to architecture/ subfolder |
 | docs/adr/* | docs/architecture/adr-* | ADRs co-located with architecture docs |
 
-Note: Both old and new paths may currently exist. The canonical location is `docs/architecture/`. Old paths in `docs/adr/` are the original location; `docs/architecture/` contains copies. When editing ADRs, update `docs/architecture/`.
+Note: `docs/adr/` files are redirect stubs only (3-line redirect notices). Canonical ADR files are in `docs/architecture/`. When editing ADRs, always update `docs/architecture/`.

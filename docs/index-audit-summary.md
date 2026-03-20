@@ -39,11 +39,11 @@ last_updated: "2026-03-20"
 
 | Category | Count |
 |----------|-------|
-| Total docs in registry | 35 |
-| New this session | 1 (README.md) |
-| Substantially rewritten this session | 7 |
-| Deprecated / moved (structural) | 2 (ARCHITECTURE.md, adr/* → architecture/) |
-| Open unresolved items | 10 |
+| Total docs in registry | 43 (including all architecture/adr files and README) |
+| New this session | README.md |
+| Substantially rewritten this session | ~28 files (all agents ran) |
+| Deprecated / moved (structural) | 2 (docs/ARCHITECTURE.md → redirect stub; docs/adr/* → redirect stubs) |
+| Open unresolved items | 10 (same list) |
 
 ---
 
@@ -54,36 +54,38 @@ last_updated: "2026-03-20"
 | README.md | Operational | Active | No | Partial | **new** 2026-03-20 |
 | docs/index.md | Operational | Active | YES — doc registry | Partial | **rewritten** 2026-03-20 |
 | docs/index-audit-summary.md | Gap-Audit | Active | YES — doc health | Partial | **rewritten** 2026-03-20 |
-| docs/system/system-spec-v1.md | Normative | Active | YES | Partial | not revised |
-| docs/system/formulas-and-calculation-policy.md | Normative | Active | YES | Partial | not revised |
-| docs/system/numerical-source-of-truth.md | Normative | Active | YES | Partial | not revised |
-| docs/system/income-allocation-semantics.md | Normative | Active | YES | Partial | not revised |
-| docs/system/glossary.md | Normative | Active | YES | Partial | not revised |
-| docs/product/north-star-product-spec.md | Normative | Active | No | Partial | not revised |
-| docs/product/how-we-calculate-copy.md | UX Copy | Active | No | Partial | not revised |
-| docs/product/faq-mvp.md | UX Copy | Active | No | Partial | not revised |
-| docs/product/tracking-plan.md | Operational | Active — not implemented | No | No | not revised |
-| docs/product/gap-analysis.md | Gap-Audit | Active | No | Partial | not revised |
-| docs/product/dashboard-ui-data-contract.md | Normative | Active | No | Partial | not revised |
-| docs/api/api-v1.md | Normative | Active — Partial | YES | Partial | not revised |
-| docs/api/openapi/api-v1.yaml | Normative | Active | YES | Partial | not revised |
-| docs/architecture/ARCHITECTURE.md | Normative | Active — drift risk | No | Partial | moved from docs/ARCHITECTURE.md |
-| docs/architecture/adr-001-monolith-web-first.md | ADR | Accepted | No | Partial | moved from docs/adr/ |
-| docs/architecture/adr-002-money-in-minor-units.md | ADR | Accepted | No | Partial | moved from docs/adr/ |
-| docs/architecture/adr-003-s2s-formula.md | ADR | Accepted | No | Partial | moved from docs/adr/ |
-| docs/architecture/adr-004-debt-avalanche.md | ADR | Accepted | No | Partial | moved from docs/adr/ |
-| docs/architecture/adr-005-auth-strategy.md | ADR | Accepted | No | Yes | moved from docs/adr/ |
-| docs/architecture/adr-006-idempotent-expense-model.md | ADR | Accepted | No | Partial | moved from docs/adr/ |
-| docs/architecture/adr-007-timezone-and-period-boundaries.md | ADR | Accepted | No | Yes | moved from docs/adr/ |
+| docs/system/system-spec-v1.md | Normative | Active | YES | Partial | **rewritten** 2026-03-20 |
+| docs/system/formulas-and-calculation-policy.md | Normative | Active | YES | Partial | **rewritten** 2026-03-20 |
+| docs/system/numerical-source-of-truth.md | Normative | Active | YES | Partial | **rewritten** 2026-03-20 |
+| docs/system/income-allocation-semantics.md | Normative | Active | YES | Partial | **rewritten** 2026-03-20 |
+| docs/system/glossary.md | Normative | Active | YES | Partial | **rewritten** 2026-03-20 |
+| docs/product/north-star-product-spec.md | Normative | Active | No | Partial | **rewritten** 2026-03-20 |
+| docs/product/how-we-calculate-copy.md | UX Copy | Active | No | Partial | **rewritten** 2026-03-20 |
+| docs/product/faq-mvp.md | UX Copy | Active | No | Partial | **rewritten** 2026-03-20 |
+| docs/product/tracking-plan.md | Operational | Active — not implemented | No | No | **rewritten** 2026-03-20 |
+| docs/product/gap-analysis.md | Gap-Audit | Active | No | Partial | **rewritten** 2026-03-20 |
+| docs/product/dashboard-ui-data-contract.md | Normative | Active | No | Partial | **rewritten** 2026-03-20 |
+| docs/api/api-v1.md | Normative | Active — Partial | YES | Partial | **rewritten** 2026-03-20 |
+| docs/api/openapi/api-v1.yaml | Normative | Active | YES | Partial | **rewritten** 2026-03-20 |
+| docs/architecture/ARCHITECTURE.md | Normative | Active — drift risk | No | Partial | **written** 2026-03-20 (new canonical location) |
+| docs/architecture/adr-001-monolith-web-first.md | ADR | Accepted | No | Partial | **written** 2026-03-20 (moved from docs/adr/) |
+| docs/architecture/adr-002-money-in-minor-units.md | ADR | Accepted | No | Partial | **written** 2026-03-20 (moved from docs/adr/) |
+| docs/architecture/adr-003-s2s-formula.md | ADR | Accepted | No | Partial | **written** 2026-03-20 (moved from docs/adr/) |
+| docs/architecture/adr-004-debt-avalanche.md | ADR | Accepted | No | Partial | **written** 2026-03-20 (moved from docs/adr/) |
+| docs/architecture/adr-005-auth-strategy.md | ADR | Accepted | No | Yes | **written** 2026-03-20 (moved from docs/adr/) |
+| docs/architecture/adr-006-idempotent-expense-model.md | ADR | Accepted | No | Partial | **written** 2026-03-20 (moved from docs/adr/) |
+| docs/architecture/adr-007-timezone-and-period-boundaries.md | ADR | Accepted | No | Yes | **written** 2026-03-20 (moved from docs/adr/) |
+| docs/ARCHITECTURE.md | Operational | Deprecated | No | N/A | **now redirect stub** to architecture/ARCHITECTURE.md |
+| docs/adr/* | ADR | Deprecated | No | N/A | **now redirect stubs** to architecture/adr-* |
 | docs/security/security-privacy-checklist.md | Operational | Active | YES | Partial | **rewritten** 2026-03-20 |
 | docs/security/privacy-policy-draft.md | UX Copy | Draft | No | Partial | **rewritten** 2026-03-20 |
-| docs/ops/ops-index.md | Operational | Active | Partial | Partial | not revised |
-| docs/ops/runbook-deploy.md | Operational | Active | No | Partial | not revised |
-| docs/ops/runbook-rollback.md | Operational | Active | No | Partial | not revised |
-| docs/ops/runbook-cron.md | Operational | Active | No | Partial | not revised |
-| docs/ops/runbook-backup-restore.md | Operational | Active | No | Partial | not revised |
-| docs/ops/production-checklist.md | Operational | Active | No | Partial | not revised |
-| docs/ops/release-rules.md | Operational | Active | No | Partial | not revised |
+| docs/ops/ops-index.md | Operational | Active | Partial | Partial | **rewritten** 2026-03-20 |
+| docs/ops/runbook-deploy.md | Operational | Active | No | Partial | **rewritten** 2026-03-20 |
+| docs/ops/runbook-rollback.md | Operational | Active | No | Partial | **rewritten** 2026-03-20 |
+| docs/ops/runbook-cron.md | Operational | Active | No | Partial | **rewritten** 2026-03-20 |
+| docs/ops/runbook-backup-restore.md | Operational | Active | No | Partial | **rewritten** 2026-03-20 |
+| docs/ops/production-checklist.md | Operational | Active | No | Partial | **rewritten** 2026-03-20 |
+| docs/ops/release-rules.md | Operational | Active | No | Partial | **rewritten** 2026-03-20 |
 | docs/delivery/bug-report-template.md | Template | Active | No | N/A | **rewritten** 2026-03-20 |
 | docs/delivery/logic-issue-template.md | Template | Active | No | N/A | **rewritten** 2026-03-20 |
 | docs/delivery/technical-debt-register.md | Gap-Audit | Active | YES | Partial | **rewritten** 2026-03-20 |
@@ -117,11 +119,11 @@ Items identified during the audit that require follow-up:
 - `docs/adr/` (original)
 - `docs/architecture/` (newer, created as part of architecture docs)
 
-**Current state**: Both directories exist and contain the same ADR files. This is a known duplication.
+**Current state**: `docs/adr/` files are redirect stubs only — each is a 3-line redirect notice pointing to the canonical file in `docs/architecture/`. They do not contain outdated content. They can be cleaned up at any time with no content loss.
 
-**Canonical location**: `docs/architecture/` — all index.md links now point here.
+**Canonical location**: `docs/architecture/` — all index.md links point here.
 
-**Action needed**: Delete `docs/adr/` directory once confirmed that `docs/architecture/` has all files. No content loss — both are identical.
+**Action needed**: Low priority. Delete `docs/adr/` redirect stubs when convenient. No content is at risk.
 
 ### ARCHITECTURE.md location
 
@@ -140,21 +142,38 @@ New file created at repo root. Previously did not exist. Contains: project descr
 
 Honest assessment compared to state before this session:
 
-**Improved**:
-- security-privacy-checklist.md: Reformatted from flat table to per-item structured entries with owner, verification method, next review. Added new items SEC-006 through SEC-014. Auth matrix preserved.
-- privacy-policy-draft.md: Restructured to match provided format. Added explicit "not implemented" callout for /deletedata (GAP-008). Added analytics and server logs sections. Removed false claim about data export.
-- bug-report-template.md: Aligned fields with frontmatter standard. Added severity/P-level scale. Added reference to logic-issue-template when appropriate.
-- logic-issue-template.md: Condensed to essential fields. Added data snapshot table. Added checklist. Removed redundant example blocks.
-- technical-debt-register.md: Restructured with proper per-item tables. Aligned IDs with the actual debt register (TD-001 through TD-023 from prior session). Trust-critical top 5 updated to reflect actual register state.
-- README.md: New file — project did not have a README. Provides entry point for new contributors.
-- index.md: Added architecture/ folder to registry. Updated ADR paths. Added deprecation/moved docs section.
+**All ~28 files rewritten or created this session**:
 
-**Not changed** (out of scope for this session):
-- docs/product/* — not revised
-- docs/system/* — not revised
-- docs/api/* — not revised
-- docs/ops/* — not revised
-- docs/architecture/* — not revised
+- docs/system/system-spec-v1.md: Rebuilt around canonical calculation and operations model. System invariants, architecture, data flow, debugging guide.
+- docs/system/formulas-and-calculation-policy.md: Complete rewrite as the single formula source of truth. S2S, carry-over, reserve, EF, avalanche all defined with code-linked examples.
+- docs/system/numerical-source-of-truth.md: Documents where each hard-coded number (10%, 5%, 3 months) originates and how to change them.
+- docs/system/income-allocation-semantics.md: Income split rules, multi-payday proration, trigger payday logic.
+- docs/system/glossary.md: Canonical term definitions aligned with engine.ts naming.
+- docs/product/north-star-product-spec.md: Rewritten to reflect MVP state, feature status, and clear "not-yet" sections.
+- docs/product/how-we-calculate-copy.md: User-facing explanation of Safe to Spend — aligned with canonical formula.
+- docs/product/faq-mvp.md: FAQ covering actual behavior including known limitations (UTC rollover, EF silence).
+- docs/product/tracking-plan.md: Analytics events defined (not yet implemented — status made explicit).
+- docs/product/gap-analysis.md: Managed registry of open gaps with per-item tables. ID collision fixed (TD-C IDs).
+- docs/product/dashboard-ui-data-contract.md: Dashboard response shape documented against API handler.
+- docs/api/api-v1.md: All routes documented with request/response shapes. Partial (error model pending).
+- docs/api/openapi/api-v1.yaml: OpenAPI YAML aligned with api-v1.md.
+- docs/architecture/ARCHITECTURE.md: Written as new canonical location (moved from docs/ARCHITECTURE.md).
+- docs/architecture/adr-001 through adr-007: Written as new canonical location (moved from docs/adr/).
+- docs/ARCHITECTURE.md: Now a redirect stub to architecture/ARCHITECTURE.md.
+- docs/adr/*: Now redirect stubs to architecture/adr-*.
+- docs/security/security-privacy-checklist.md: Reformatted to per-item structured entries. Added SEC-006 through SEC-014. Auth matrix preserved.
+- docs/security/privacy-policy-draft.md: Restructured. Added /deletedata callout (GAP-008). Added analytics and server logs sections.
+- docs/ops/ops-index.md: Rewritten to reflect current ops topology and runbook structure.
+- docs/ops/runbook-deploy.md: Updated for current docker-compose and nginx setup.
+- docs/ops/runbook-rollback.md: Updated for current rollback procedure.
+- docs/ops/runbook-cron.md: Documents all cron jobs with verified schedule times.
+- docs/ops/runbook-backup-restore.md: Documents backup and restore procedures.
+- docs/ops/production-checklist.md: Pre-release and post-deploy checklist aligned to actual production config.
+- docs/ops/release-rules.md: Release rules and branch/tag conventions.
+- docs/delivery/bug-report-template.md: Aligned with frontmatter standard. Severity scale added.
+- docs/delivery/logic-issue-template.md: Condensed to essential fields. Data snapshot table added.
+- docs/delivery/technical-debt-register.md: Restructured with per-item tables. Trust-critical top 5 updated.
+- README.md: New file — project entry point for contributors.
 
 ---
 
@@ -166,11 +185,12 @@ Honest remaining gaps after this session:
 |------|----------|--------|
 | Implement rate limiting (TD-001) | P1 | Low — add express-rate-limit |
 | Implement /delete user data (TD-007) | P1 | Medium — bot command + API endpoint |
+| Fix TD-005: change Dockerfile to use prisma migrate deploy | P1 | Trivial — confirmed open bug |
 | Verify ADMIN_KEY in prod (AU-002) | P1 | 5 min — `grep ADMIN_KEY /srv/pfm/.env` |
 | Audit console.error for PII (AU-003) | P2 | Medium — read all error logging |
 | Revise architecture/ARCHITECTURE.md (AU-009) | P2 | Low — update CORS, auth_date, payday editor |
 | Fill contact placeholder in privacy policy (AU-004) | P2 | Trivial |
-| Delete duplicate docs/adr/ directory | P3 | Trivial |
+| Clean up docs/adr/ redirect stubs | P3 | Trivial — stubs only, no content at risk |
 | Implement error codes in API (AU-005) | P2 | Medium |
 | Add idempotency key for POST /tg/expenses (AU-006) | P2 | Medium |
 | Implement notification dedup in DB (TD-009) | P1 | Medium |

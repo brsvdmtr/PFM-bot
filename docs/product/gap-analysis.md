@@ -33,9 +33,9 @@ related_docs:
 | GAP-012 | s2sDaily in Period snapshot diverges from dynamic daily | docs | P2 | open |
 | GAP-013 | emergencyFund.targetAmount computed in API, not stored | code | P2 | open |
 | TD-001 | No rate limiting on API | security | P1 | open |
-| TD-003 | CORS open to all origins | security | — | fixed |
-| TD-004 | auth_date not validated (replay attack) | security | — | fixed |
-| TD-007 | Cron rollover used incomes[0].paydays | code | — | fixed |
+| TD-C002 | CORS open to all origins | security | — | fixed |
+| TD-C003 | auth_date not validated (replay attack) | security | — | fixed |
+| TD-C001 | Cron rollover used incomes[0].paydays | code | — | fixed |
 
 ---
 
@@ -265,11 +265,11 @@ Settings screen shows a weeklyDigest toggle. The feature is not implemented — 
 
 ---
 
-### TD-003: CORS Open to All Origins
+### TD-C002: CORS Open to All Origins
 
 | Field | Value |
 |-------|-------|
-| ID | TD-003 |
+| ID | TD-C002 |
 | Title | CORS open to all origins |
 | Category | security |
 | Severity | — |
@@ -281,11 +281,11 @@ Settings screen shows a weeklyDigest toggle. The feature is not implemented — 
 
 ---
 
-### TD-004: auth_date Not Validated (Replay Attack)
+### TD-C003: auth_date Not Validated (Replay Attack)
 
 | Field | Value |
 |-------|-------|
-| ID | TD-004 |
+| ID | TD-C003 |
 | Title | auth_date not validated — replay attack possible |
 | Category | security |
 | Severity | — |
@@ -297,11 +297,11 @@ Settings screen shows a weeklyDigest toggle. The feature is not implemented — 
 
 ---
 
-### TD-007: Cron Rollover Used incomes[0].paydays
+### TD-C001: Cron Rollover Used incomes[0].paydays
 
 | Field | Value |
 |-------|-------|
-| ID | TD-007 |
+| ID | TD-C001 |
 | Title | Cron rollover used incomes[0].paydays instead of allPaydays |
 | Category | code |
 | Severity | — |

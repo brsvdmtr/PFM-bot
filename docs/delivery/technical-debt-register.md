@@ -92,7 +92,9 @@ Previously tracked as GAP-004. Users in UTC+5 to UTC+12 have mid-morning rollove
 | Dependency | none |
 | Fixed in | N/A |
 
-Verify that production Dockerfile uses `prisma migrate deploy` (not `prisma db push`). The `db push` command is destructive in production — it skips migration history. Check `Dockerfile.api` and `docker-compose.yml` entrypoint.
+**Confirmed**: Production Dockerfile uses `prisma db push --accept-data-loss` (verified 2026-03-20). This skips migration history and is destructive in production. Fix: change CMD to use `prisma migrate deploy`.
+
+Previously stated as "verify that production Dockerfile uses `prisma migrate deploy`" — now confirmed as an open bug. The `db push` command bypasses migration history and can silently drop columns or indexes. Do not deploy to production with this command.
 
 ---
 
