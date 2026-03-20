@@ -1564,6 +1564,7 @@ paths:
     patch:
       summary: Update obligation
       operationId: updateObligation
+      x-stability: provisional
       tags: [Obligations]
       security:
         - TelegramInitData: []
@@ -1607,6 +1608,7 @@ paths:
     delete:
       summary: Delete obligation
       operationId: deleteObligation
+      x-stability: stable
       tags: [Obligations]
       security:
         - TelegramInitData: []
@@ -1631,6 +1633,7 @@ paths:
       summary: List active debts
       description: Returns non-paid-off debts sorted by APR descending.
       operationId: listDebts
+      x-stability: stable
       tags: [Debts]
       security:
         - TelegramInitData: []
@@ -1652,6 +1655,7 @@ paths:
         Creates a new debt. If no focus debt currently exists, the new debt
         becomes the focus debt automatically.
       operationId: createDebt
+      x-stability: stable
       tags: [Debts]
       security:
         - TelegramInitData: []
@@ -1705,6 +1709,7 @@ paths:
         Returns the full avalanche plan for all active debts. Monthly extra is estimated
         as round(s2sPeriod × 0.10 / (daysTotal / 30)) from the current period.
       operationId: getAvalanchePlan
+      x-stability: provisional
       tags: [Debts]
       security:
         - TelegramInitData: []
@@ -1721,8 +1726,11 @@ paths:
   /tg/debts/{id}:
     patch:
       summary: Update debt
-      description: "Allowed fields: title, type, balance, apr, minPayment, dueDay"
+      description: |
+        Allowed fields: title, type, balance, apr, minPayment, dueDay.
+        Forbidden: isFocusDebt (managed automatically — cannot be set via PATCH).
       operationId: updateDebt
+      x-stability: stable
       tags: [Debts]
       security:
         - TelegramInitData: []
@@ -1773,6 +1781,7 @@ paths:
         Deletes debt. If it was the focus debt, reassigns focus to next
         highest-APR debt.
       operationId: deleteDebt
+      x-stability: stable
       tags: [Debts]
       security:
         - TelegramInitData: []
@@ -1797,6 +1806,7 @@ paths:
         Reduces debt balance by amount. If balance reaches 0, sets isPaidOff=true
         and reassigns focus debt.
       operationId: postDebtPayment
+      x-stability: stable
       tags: [Debts]
       security:
         - TelegramInitData: []
@@ -1853,6 +1863,7 @@ paths:
     get:
       summary: Get user profile
       operationId: getProfile
+      x-stability: provisional
       tags: [Me]
       security:
         - TelegramInitData: []
@@ -1905,6 +1916,7 @@ paths:
     get:
       summary: Get user settings
       operationId: getSettings
+      x-stability: stable
       tags: [Me]
       security:
         - TelegramInitData: []
@@ -1923,8 +1935,10 @@ paths:
       description: |
         Only these fields are accepted (others silently ignored):
         morningNotifyTime, eveningNotifyTime, morningNotifyEnabled,
-        eveningNotifyEnabled, paymentAlerts, deficitAlerts, weeklyDigest
+        eveningNotifyEnabled, paymentAlerts, deficitAlerts, weeklyDigest.
+        NOTE: weeklyDigest is a dead setting — stored but no handler sends a digest.
       operationId: patchSettings
+      x-stability: stable
       tags: [Me]
       security:
         - TelegramInitData: []
@@ -1970,6 +1984,7 @@ paths:
         Returns plan=PRO if user has godMode=true OR an ACTIVE subscription
         with currentPeriodEnd > now.
       operationId: getPlan
+      x-stability: stable
       tags: [Me]
       security:
         - TelegramInitData: []
@@ -2002,6 +2017,7 @@ paths:
         Creates a Telegram Stars invoice link (100 Stars / 1 month).
         After payment, the bot calls /internal/activate-subscription.
       operationId: checkoutPro
+      x-stability: provisional
       tags: [Billing]
       security:
         - TelegramInitData: []
@@ -2052,8 +2068,12 @@ paths:
   /internal/store-chat-id:
     post:
       summary: Store Telegram chat ID for a user
-      description: Called by the bot when it receives any message. Required for push notifications.
+      description: |
+        Called by the bot when it receives any message. Required for push notifications.
+        Internal route — requires X-Internal-Key. Never proxied externally by nginx.
       operationId: storeChatId
+      x-stability: stable
+      x-internal-only: true
       tags: [Internal]
       security:
         - InternalKey: []

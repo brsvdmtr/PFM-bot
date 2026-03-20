@@ -1,3 +1,16 @@
+---
+title: "Logic Issue Report Template"
+document_type: Template
+status: Active
+source_of_truth: "YES — for all formula / calculation issue reports on PFM Bot"
+verified_against_code: Yes
+last_updated: "2026-03-20"
+related_docs:
+  - bug-report-template.md
+  - ../ops/runbook-rollback.md
+  - technical-debt-register.md
+---
+
 # Logic Issue Report
 
 **Date**:
@@ -9,6 +22,33 @@
 ## Issue Description
 
 [What calculation is wrong or produces unexpected output]
+
+---
+
+## Observation Context
+
+- **User timezone**: (IANA string from `SELECT timezone FROM "User" WHERE "telegramId"='...'`)
+- **Local time at observation**:
+- **UTC time at observation**:
+- **Period ID**: (from `SELECT id FROM "Period" WHERE "userId"='...' AND status='ACTIVE'`)
+- **Period start/end**: (from `SELECT "startDate", "endDate" FROM "Period" WHERE id='...'`)
+- **Period isProratedStart**: (from `SELECT "isProratedStart" FROM "Period" WHERE id='...'`)
+
+---
+
+## Analysis
+
+- **Source of Truth Used**: `formulas-and-calculation-policy.md` (link: `../system/formulas-and-calculation-policy.md`)
+- **Canonical Rule Violated**: (copy the specific rule or formula from that doc)
+- **Issue Type**:
+  - [ ] Formula calculation error (wrong arithmetic in engine.ts)
+  - [ ] Aggregation error (wrong set of expenses summed — e.g., wrong period, wrong date range)
+  - [ ] Timezone boundary error (UTC vs. local midnight mismatch)
+  - [ ] Rendering error (correct data from API, wrong display in UI)
+  - [ ] Stale data (correct when fetched, stale now — not recalculated)
+  - [ ] Wrong active period selected (two ACTIVE periods exist, or wrong one returned)
+  - [ ] triggerPayday mismatch (paydays changed mid-period, trigger recomputed retroactively)
+  - [ ] Carry-over not applied (savings from previous period not carried forward)
 
 ---
 
@@ -41,10 +81,13 @@ FROM "Period"
 WHERE status = 'ACTIVE'
   AND "userId" = '<user-id>';
 
--- Retrieve today's expenses:
+-- Retrieve today's expenses (UTC day):
 SELECT SUM(amount) FROM "Expense"
 WHERE "userId" = '<user-id>'
   AND "spentAt" >= NOW()::date;
+
+-- Retrieve incomes and paydays:
+SELECT id, amount, paydays, "isActive" FROM "Income" WHERE "userId" = '<user-id>';
 ```
 
 Actual result from DB / API response:
@@ -80,8 +123,8 @@ Delta: Z ₽ (Z% deviation)
 
 ```bash
 # 1. SSH to server and open psql
-ssh user@mytodaylimit.ru
-docker exec -it pfm-db psql -U pfm pfm_db
+ssh root@147.45.213.51
+docker compose -f /srv/pfm/docker-compose.yml exec postgres psql -U pfm -d pfmdb
 
 # 2. Check the active period for the user
 SELECT * FROM "Period" WHERE status = 'ACTIVE' AND "userId" = '<id>';
@@ -92,7 +135,11 @@ SELECT id, amount, paydays, "isActive" FROM "Income" WHERE "userId" = '<id>';
 # 4. Sum expenses in period
 SELECT SUM(amount) FROM "Expense" WHERE "periodId" = '<period-id>';
 
-# 5. Call the API directly
+# 5. Sum expenses today (UTC day)
+SELECT SUM(amount) FROM "Expense"
+WHERE "userId" = '<id>' AND "spentAt" >= CURRENT_DATE;
+
+# 6. Call the API directly
 curl -X GET https://mytodaylimit.ru/api/tg/dashboard \
   -H "X-TG-Init-Data: <initData>" | jq '.s2sToday, .s2sDaily, .s2sPeriod'
 ```
@@ -103,7 +150,7 @@ curl -X GET https://mytodaylimit.ru/api/tg/dashboard \
 
 [Which function / file / line contains the bug]
 
-Examples of common locations:
+Common locations:
 - `apps/api/src/engine.ts` — `calculateS2S()`, `calculatePeriodBounds()`, `daysBetween()`
 - `apps/api/src/avalanche.ts` — `buildAvalanchePlan()`, `determineFocusDebt()`
 - `apps/api/src/cron.ts` — period rollover, daily snapshot, notification dispatch
@@ -121,4 +168,4 @@ Examples of common locations:
 
 ## Notes
 
-[Any additional context: timing, edge cases, related issues]
+[Any additional context: timing, edge cases, related TD items]
