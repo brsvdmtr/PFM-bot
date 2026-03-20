@@ -264,7 +264,7 @@ Honest remaining gaps after this session:
 | Fix period rollover for non-UTC users | GAP-004 / TD-003 | P2 | Large — per-user timezone scheduling |
 | Add before/after UI on EF target change | GAP-007 | P2 | Small — UI only |
 
-**Audit findings (require verification/doc updates, not code changes):**
+**Audit findings (require verification, doc updates, environment confirmation, or in some cases code/spec correction):**
 
 | Item | ID | Priority | Effort |
 |------|----|----------|--------|
