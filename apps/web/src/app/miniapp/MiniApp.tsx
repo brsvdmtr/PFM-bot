@@ -335,15 +335,15 @@ function OnbIncome({ onNext }: { onNext: (data: { amount: number; paydays: numbe
         <label style={{ display: 'block', fontSize: 13, color: C.textSec, marginBottom: 8 }}>День зарплаты</label>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {payOptions.map((d) => (
-            <button key={d} onClick={() => { setPayday([d]); setTwoPaydays(false); }} style={{ padding: '10px 16px', borderRadius: 24, background: payday.includes(d) && !twoPaydays ? C.accentBgStrong : C.surface, border: `1px solid ${payday.includes(d) && !twoPaydays ? C.accent : C.border}`, color: payday.includes(d) && !twoPaydays ? C.accentLight : C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>
+            <button key={d} onClick={() => setPayday([d])} style={{ padding: '10px 16px', borderRadius: 24, background: payday.includes(d) ? C.accentBgStrong : C.surface, border: `1px solid ${payday.includes(d) ? C.accent : C.border}`, color: payday.includes(d) ? C.accentLight : C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>
               {d}
             </button>
           ))}
-          <button onClick={() => setTwoPaydays(!twoPaydays)} style={{ padding: '10px 16px', borderRadius: 24, background: twoPaydays ? C.accentBgStrong : C.surface, border: `1px solid ${twoPaydays ? C.accent : C.border}`, color: twoPaydays ? C.accentLight : C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>2 раза</button>
+          <button onClick={() => { setTwoPaydays(!twoPaydays); if (!twoPaydays) { const other = payOptions.find(d => !payday.includes(d)) ?? 1; setPayday2([other]); } }} style={{ padding: '10px 16px', borderRadius: 24, background: twoPaydays ? C.accentBgStrong : C.surface, border: `1px solid ${twoPaydays ? C.accent : C.border}`, color: twoPaydays ? C.accentLight : C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>2 раза</button>
         </div>
         {twoPaydays && (
           <div style={{ marginTop: 12 }}>
-            <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 8 }}>Второй день:</p>
+            <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 8 }}>Второй день зарплаты:</p>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {payOptions.map((d) => (
                 <button key={d} onClick={() => setPayday2([d])} style={{ padding: '10px 16px', borderRadius: 24, background: payday2.includes(d) ? C.accentBgStrong : C.surface, border: `1px solid ${payday2.includes(d) ? C.accent : C.border}`, color: payday2.includes(d) ? C.accentLight : C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>
@@ -1140,6 +1140,8 @@ function IncomesScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
   const [title, setTitle] = useState('');
   const [amount, setAmount] = useState('');
   const [payday, setPayday] = useState(15);
+  const [twoPaydays, setTwoPaydays] = useState(false);
+  const [payday2, setPayday2] = useState(1);
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(() => {
@@ -1154,10 +1156,10 @@ function IncomesScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
     try {
       await api('/tg/incomes', {
         method: 'POST',
-        body: JSON.stringify({ title: title.trim(), amount: parseFloat(amount) * 100, paydays: [payday], currency: 'RUB' }),
+        body: JSON.stringify({ title: title.trim(), amount: parseFloat(amount) * 100, paydays: twoPaydays ? [...new Set([payday, payday2])].sort((a, b) => a - b) : [payday], currency: 'RUB' }),
       });
       await api('/tg/periods/recalculate', { method: 'POST', body: '{}' }).catch(() => {});
-      setTitle(''); setAmount(''); setPayday(15); setShowForm(false);
+      setTitle(''); setAmount(''); setPayday(15); setPayday2(1); setTwoPaydays(false); setShowForm(false);
       load(); onChanged();
     } finally { setSaving(false); }
   };
@@ -1188,11 +1190,23 @@ function IncomesScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
           <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Название (напр. Зарплата)" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
           <input value={amount} onChange={(e) => setAmount(e.target.value)} type="number" placeholder="Сумма в месяц (₽)" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
           <p style={{ fontSize: 12, color: C.textSec, marginBottom: 8 }}>День зарплаты</p>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
             {payOptions.map((d) => (
               <button key={d} onClick={() => setPayday(d)} style={{ padding: '8px 14px', borderRadius: 20, background: payday === d ? C.accentBgStrong : C.elevated, border: `1px solid ${payday === d ? C.accent : C.border}`, color: payday === d ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>{d}</button>
             ))}
+            <button onClick={() => { setTwoPaydays(!twoPaydays); if (!twoPaydays) { const other = payOptions.find(d => d !== payday) ?? 1; setPayday2(other); } }} style={{ padding: '8px 14px', borderRadius: 20, background: twoPaydays ? C.accentBgStrong : C.elevated, border: `1px solid ${twoPaydays ? C.accent : C.border}`, color: twoPaydays ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>2 раза</button>
           </div>
+          {twoPaydays && (
+            <div style={{ marginBottom: 8 }}>
+              <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 6 }}>Второй день зарплаты:</p>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {payOptions.map((d) => (
+                  <button key={d} onClick={() => setPayday2(d)} style={{ padding: '8px 14px', borderRadius: 20, background: payday2 === d ? C.accentBgStrong : C.elevated, border: `1px solid ${payday2 === d ? C.accent : C.border}`, color: payday2 === d ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>{d}</button>
+                ))}
+              </div>
+            </div>
+          )}
+          <div style={{ marginBottom: 14 }} />
           <PrimaryBtn onClick={handleAdd} disabled={saving || !title.trim() || !amount}>
             {saving ? 'Сохранение...' : 'Сохранить'}
           </PrimaryBtn>
