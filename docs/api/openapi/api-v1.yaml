@@ -1,5 +1,11 @@
 openapi: 3.0.3
 
+# document_type: Normative
+# status: Active — Partial (error model pending)
+# source_of_truth: YES — for API contract
+# verified_against_code: Partial
+# last_updated: "2026-03-20"
+
 info:
   title: PFM Bot API
   description: |
@@ -13,9 +19,16 @@ info:
     **Authentication:**
     - Telegram Mini App routes (`/tg/*`): send `X-TG-INIT-DATA` header containing the
       URL-encoded `window.Telegram.WebApp.initData` string. The API validates it using HMAC-SHA256
-      with the bot token.
+      with the bot token. auth_date freshness is validated — requests older than 1 hour are
+      rejected (implemented 2026-03-20).
     - Internal routes (`/internal/*`): send `X-Internal-Key` header equal to the `ADMIN_KEY`
       environment variable. Used by the bot service only.
+
+    **Calculation policy:** Routes that return `s2sToday`/`s2sDaily` use live calculation,
+    not the stored `period.s2sDaily`. See formulas-and-calculation-policy.md for details.
+
+    **Error format:** Current: `{ "error": "string" }`. Target (not yet implemented):
+    `{ "error": "string", "code": "ERROR_CODE", "requestId": "uuid" }`.
   version: "1"
   contact:
     name: PFM Bot
@@ -36,6 +49,8 @@ components:
         Telegram WebApp initData string (URL-encoded). Validated with HMAC-SHA256:
         secretKey = HMAC-SHA256("WebAppData", BOT_TOKEN)
         hash = HMAC-SHA256(secretKey, sorted_data_check_string)
+        auth_date freshness: rejected if Date.now()/1000 - auth_date > 3600 (1 hour).
+        This check was added 2026-03-20; prior to that date auth_date was not validated.
 
     InternalKey:
       type: apiKey
@@ -434,7 +449,9 @@ components:
         weeklyDigest:
           type: boolean
           default: false
-          description: Not yet implemented — stored but no cron handler sends it
+          description: |
+            DEAD SETTING: Accepted and stored, but no cron handler sends a weekly digest.
+            Setting this to true has no observable effect in the current implementation.
         createdAt:
           type: string
           format: date-time
@@ -632,6 +649,7 @@ paths:
     get:
       summary: Liveness check
       operationId: getHealth
+      x-stability: stable
       tags: [Health]
       security: []
       responses:
@@ -654,6 +672,7 @@ paths:
     get:
       summary: Deep health check (includes DB)
       operationId: getHealthDeep
+      x-stability: stable
       tags: [Health]
       security: []
       responses:
@@ -696,6 +715,7 @@ paths:
     get:
       summary: Get onboarding completion status
       operationId: getOnboardingStatus
+      x-stability: stable
       tags: [Onboarding]
       security:
         - TelegramInitData: []
@@ -722,6 +742,7 @@ paths:
         Also updates user.primaryCurrency.
         Idempotent — safe to call multiple times.
       operationId: postOnboardingIncome
+      x-stability: stable
       tags: [Onboarding]
       security:
         - TelegramInitData: []
@@ -769,6 +790,7 @@ paths:
       summary: Set obligations (step 2)
       description: Replaces all obligations. Pass empty array to clear.
       operationId: postOnboardingObligations
+      x-stability: stable
       tags: [Onboarding]
       security:
         - TelegramInitData: []
@@ -821,6 +843,7 @@ paths:
         Replaces all debts. Sorts by APR descending; highest APR debt
         gets isFocusDebt=true automatically. Pass empty array to clear.
       operationId: postOnboardingDebts
+      x-stability: stable
       tags: [Onboarding]
       security:
         - TelegramInitData: []
@@ -880,6 +903,7 @@ paths:
       summary: Set emergency fund (step 4)
       description: Upserts emergency fund record.
       operationId: postOnboardingEf
+      x-stability: stable
       tags: [Onboarding]
       security:
         - TelegramInitData: []
@@ -917,7 +941,11 @@ paths:
       description: |
         Requires at least one active income. Marks any existing ACTIVE period as COMPLETED.
         Calculates period bounds and S2S, creates first ACTIVE period, sets onboardingDone=true.
+        x-calculation-policy: s2sDaily stored in Period is a creation-time snapshot.
+        Subsequent dashboard reads recalculate live. See formulas-and-calculation-policy.md.
       operationId: postOnboardingComplete
+      x-stability: stable
+      x-calculation-policy: "s2sDaily in response is live; period.s2sDaily is a snapshot"
       tags: [Onboarding]
       security:
         - TelegramInitData: []
@@ -958,9 +986,13 @@ paths:
       summary: Main dashboard
       description: |
         Returns S2S metrics, today's expenses, focus debt, and emergency fund summary.
-        s2sDaily is recalculated dynamically on every call (carry-over).
+        s2sDaily and s2sToday are recalculated dynamically on every call (carry-over).
+        They are NOT read from period.s2sDaily in the database.
         Returns zeroed fields if no active period.
+        See formulas-and-calculation-policy.md for the carry-over formula.
       operationId: getDashboard
+      x-stability: stable
+      x-calculation-policy: "s2sDaily and s2sToday are LIVE — computed each request, not from DB"
       tags: [Dashboard]
       security:
         - TelegramInitData: []
@@ -1074,8 +1106,11 @@ paths:
   /tg/expenses:
     post:
       summary: Create expense
-      description: Creates an expense in the current active period.
+      description: |
+        Creates an expense in the current active period.
+        WARNING: No idempotency key — retrying a failed request creates a duplicate expense.
       operationId: postExpense
+      x-stability: stable
       tags: [Expenses]
       security:
         - TelegramInitData: []
@@ -1109,8 +1144,11 @@ paths:
 
     get:
       summary: List expenses (paginated)
-      description: Returns expenses for the current active period.
+      description: |
+        Returns expenses for the current active period ONLY — not all-time history.
+        Scoped to active period by design (current behavior, may change).
       operationId: listExpenses
+      x-stability: current-behavior
       tags: [Expenses]
       security:
         - TelegramInitData: []
@@ -1151,8 +1189,11 @@ paths:
   /tg/expenses/today:
     get:
       summary: Today's expenses
-      description: Returns all expenses with spentAt >= today 00:00:00 (server time), sorted by spentAt desc.
+      description: |
+        Returns all expenses with spentAt >= today 00:00:00 UTC (server time), sorted by spentAt desc.
+        Note: "today" boundary is UTC midnight, not user's local midnight.
       operationId: getTodayExpenses
+      x-stability: stable
       tags: [Expenses]
       security:
         - TelegramInitData: []
@@ -1172,6 +1213,7 @@ paths:
     delete:
       summary: Delete expense
       operationId: deleteExpense
+      x-stability: stable
       tags: [Expenses]
       security:
         - TelegramInitData: []
@@ -1195,6 +1237,7 @@ paths:
     get:
       summary: Get current active period
       operationId: getCurrentPeriod
+      x-stability: stable
       tags: [Periods]
       security:
         - TelegramInitData: []
@@ -1220,6 +1263,7 @@ paths:
     get:
       summary: Get last completed period summary
       operationId: getLastCompletedPeriod
+      x-stability: stable
       tags: [Periods]
       security:
         - TelegramInitData: []
@@ -1283,7 +1327,10 @@ paths:
       description: |
         Recomputes period bounds and S2S using current income, obligations, debts, and EF.
         Call after editing income or payday settings.
+        See formulas-and-calculation-policy.md for recalculation behavior.
       operationId: recalculatePeriod
+      x-stability: stable
+      x-calculation-policy: "Recomputes period bounds from allPaydays; updates Period record in DB"
       tags: [Periods]
       security:
         - TelegramInitData: []
@@ -1322,6 +1369,7 @@ paths:
     get:
       summary: List incomes
       operationId: listIncomes
+      x-stability: stable
       tags: [Incomes]
       security:
         - TelegramInitData: []
@@ -1340,6 +1388,7 @@ paths:
     post:
       summary: Create income
       operationId: createIncome
+      x-stability: stable
       tags: [Incomes]
       security:
         - TelegramInitData: []
@@ -1383,6 +1432,7 @@ paths:
     patch:
       summary: Update income
       operationId: updateIncome
+      x-stability: provisional
       tags: [Incomes]
       security:
         - TelegramInitData: []
@@ -1429,6 +1479,7 @@ paths:
     delete:
       summary: Delete income
       operationId: deleteIncome
+      x-stability: stable
       tags: [Incomes]
       security:
         - TelegramInitData: []
@@ -1452,6 +1503,7 @@ paths:
     get:
       summary: List obligations
       operationId: listObligations
+      x-stability: stable
       tags: [Obligations]
       security:
         - TelegramInitData: []
@@ -1470,6 +1522,7 @@ paths:
     post:
       summary: Create obligation
       operationId: createObligation
+      x-stability: stable
       tags: [Obligations]
       security:
         - TelegramInitData: []
