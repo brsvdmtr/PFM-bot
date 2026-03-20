@@ -51,6 +51,57 @@ All `Verified` claims in individual documents refer to code-level verification (
 
 ---
 
+## 2. Real Open Items (Honest Classification)
+
+> **Glossary for this section:**
+> - **Product gap** — affects product behavior, logic correctness, or user data. Requires a code or schema change.
+> - **Technical debt** — implementation shortcut or missing feature. Same resolution path as product gap.
+> - **Audit finding** — verification, compliance, doc drift, or ops review item. Does NOT require code changes — requires grep, manual check, doc update, or environment confirmation.
+> - IDs may be shared: e.g. `GAP-001 / TD-011` = same issue tracked in both gap-analysis and technical-debt-register.
+
+### P1 — Product Gaps (Need Code)
+
+| ID | Title | Trust-Critical | Canonical doc |
+|----|-------|----------------|---------------|
+| TD-001 | No rate limiting on API | No (availability risk) | technical-debt-register |
+| TD-007 / GAP-008 | /delete user data not implemented (GDPR) | No (legal risk) | gap-analysis + technical-debt-register |
+| TD-005 | Dockerfile uses `prisma db push --accept-data-loss` in production | No (production safety) | technical-debt-register |
+| GAP-001 / TD-011 | Trigger payday not persisted — payday changes affect current period retroactively | **Yes** | gap-analysis + technical-debt-register |
+| TD-009 / GAP-003 | Notification dedup in-memory only — lost on container restart | No (UX annoyance) | gap-analysis + technical-debt-register |
+
+### P2 — Product Gaps
+
+| ID | Title | Trust-Critical | Canonical doc |
+|----|-------|----------------|---------------|
+| GAP-004 / TD-003 | Period rollover at 00:05 UTC, not user's local midnight | Partial (non-Moscow TZ) | gap-analysis |
+| GAP-007 | EF target change silently lowers daily limit — no UI feedback | No | gap-analysis |
+| GAP-012 | `s2sDaily` naming ambiguity (snapshot vs live value) | No | gap-analysis |
+| GAP-013 | `emergencyFund.targetAmount` derived from current obligations, not stored | No | gap-analysis |
+
+### Audit Findings (Verification / Docs / Compliance)
+
+These do NOT require code changes. Each requires a specific verification action.
+
+| ID | Finding | Action needed | Priority |
+|----|---------|---------------|----------|
+| AU-002 | ADMIN_KEY not verified in production | `grep ADMIN_KEY /srv/pfm/.env` on server | P1 |
+| AU-003 | PII in logs not audited | Read all `console.error` / `console.log` call sites in apps/api | P2 |
+| AU-004 | Privacy policy contact placeholder not filled | Add real email/Telegram handle to privacy-policy-draft.md | P2 |
+| AU-005 | Error `code` field documented in API spec but not implemented | Implement in code, or remove from spec | P2 |
+| AU-006 | No idempotency key for `POST /tg/expenses` | Implement, or document as known gap | P2 |
+| AU-009 | ARCHITECTURE.md may have drift (CORS fix, auth_date, payday editor) | Re-verify architecture/ARCHITECTURE.md against current code | P2 |
+| AU-010 | ops/production-checklist.md not smoke-tested against live prod | Run through checklist on server | P3 |
+
+### Closed Items
+
+| ID | Finding | Resolution | Closed |
+|----|---------|------------|--------|
+| AU-001 | `GET /tg/me/profile` fields not verified | Verified: returns User + profile + subscription (index.ts:343-349) | 2026-03-20 |
+| AU-007 | Rate limiting not reflected in route docs | Closed — tracked as TD-001 (product gap); not a standalone doc finding | 2026-03-20 |
+| AU-008 | TD-005 Dockerfile not verified | Verified: `prisma db push --accept-data-loss` confirmed in Dockerfile | 2026-03-20 |
+
+---
+
 ## 2. Summary Counts
 
 | Category | Count |
@@ -93,8 +144,8 @@ All `Verified` claims in individual documents refer to code-level verification (
 | docs/architecture/adr-005-auth-strategy.md | ADR | Accepted | No | Yes | **written** 2026-03-20 (moved from docs/adr/) |
 | docs/architecture/adr-006-idempotent-expense-model.md | ADR | Accepted | No | Partial | **written** 2026-03-20 (moved from docs/adr/) |
 | docs/architecture/adr-007-timezone-and-period-boundaries.md | ADR | Accepted | No | Yes | **written** 2026-03-20 (moved from docs/adr/) |
-| docs/ARCHITECTURE.md | Operational | Deprecated | No | N/A | **now redirect stub** to architecture/ARCHITECTURE.md |
-| docs/adr/* | ADR | Deprecated | No | N/A | **now redirect stubs** to architecture/adr-* |
+| docs/ARCHITECTURE.md | Operational | Deprecated | No | N/A | **redirect stub** → architecture/ARCHITECTURE.md |
+| docs/adr/* | ADR | **Deleted** | N/A | N/A | **deleted 2026-03-20** — were redirect stubs only |
 | docs/security/security-privacy-checklist.md | Operational | Active | YES | Partial | **rewritten** 2026-03-20 |
 | docs/security/privacy-policy-draft.md | UX Copy | Draft | No | Partial | **rewritten** 2026-03-20 |
 | docs/ops/ops-index.md | Operational | Active | Partial | Partial | **rewritten** 2026-03-20 |
@@ -118,22 +169,16 @@ All `Verified` claims in individual documents refer to code-level verification (
 
 ### Open Audit Findings
 
-| ID | Document | Finding | Priority | Status |
-|----|----------|---------|----------|--------|
-| AU-002 | security/security-privacy-checklist.md | ADMIN_KEY value not verified in prod — requires `grep ADMIN_KEY /srv/pfm/.env` | Medium | open |
-| AU-003 | security/security-privacy-checklist.md | Log PII audit not completed — requires reading all `console.error` call sites | Medium | open |
-| AU-004 | security/privacy-policy-draft.md | Contact placeholder (email/Telegram handle) not filled in | Low | open |
-| AU-005 | api/api-v1.md | Error `code` field documented in spec but not yet implemented in API code | Medium | open |
-| AU-006 | api/api-v1.md | No idempotency key for `POST /tg/expenses` — documented as missing, no fix yet | Medium | open |
-| AU-007 | all route docs | Rate limiting (TD-001) is a product gap AND affects doc accuracy — routes documented without rate limit | High | open (product fix needed) |
-| AU-009 | architecture/ARCHITECTURE.md | Drift risk — written 2026-03-20 but not verified for CORS fix, auth_date fix, and payday editor additions | Medium | open |
-| AU-010 | ops/production-checklist.md | Not smoke-tested against live production config | Low | open |
+See **Section 2 § Audit Findings** above for the current canonical list (AU-002 through AU-010).
+
+This table is the legacy per-item format — the master list is in Section 2.
 
 ### Closed Audit Findings
 
 | ID | Finding | Resolution | Closed |
 |----|---------|------------|--------|
 | AU-001 | `GET /tg/me/profile` exact fields not verified | Verified against index.ts:343-349 — returns User + profile + subscription | 2026-03-20 |
+| AU-007 | Rate limiting not reflected in route docs | Closed — covered by TD-001 as a product gap; not a standalone documentation finding | 2026-03-20 |
 | AU-008 | TD-005 (prisma db push vs migrate deploy) not verified | Verified against Dockerfile — confirmed `db push --accept-data-loss` in production | 2026-03-20 |
 
 ---

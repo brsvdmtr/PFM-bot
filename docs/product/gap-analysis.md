@@ -24,15 +24,16 @@ related_docs:
 
 | ID | Title | Category | Severity | Status |
 |----|-------|----------|----------|--------|
-| GAP-001 | Trigger payday not persisted in Period | code | P1 | open |
-| GAP-003 | Notification dedup lost on container restart | code | P1 | open |
-| GAP-004 | Period rollover timing off by UTC offset | code | P2 | open |
+| GAP-001 / TD-011 | Trigger payday not persisted in Period | code | P1 | open |
+| GAP-003 / TD-009 | Notification dedup lost on container restart | code | P1 | open |
+| GAP-004 / TD-003 | Period rollover timing off by UTC offset | code | P2 | open |
 | GAP-007 | EF contribution not resuming after target change | code | P2 | open |
-| GAP-008 | /delete user data command not implemented | code | P1 | open |
+| GAP-008 / TD-007 | /delete user data command not implemented | code | P1 | open |
 | GAP-011 | Duplicate incomes on onboarding re-run | code | — | fixed |
 | GAP-012 | s2sDaily in Period snapshot diverges from dynamic daily | docs | P2 | open |
 | GAP-013 | emergencyFund.targetAmount computed in API, not stored | code | P2 | open |
 | TD-001 | No rate limiting on API | security | P1 | open |
+| TD-005 | Dockerfile uses prisma db push in production | ops | P1 | open |
 | TD-C002 | CORS open to all origins | security | — | fixed |
 | TD-C003 | auth_date not validated (replay attack) | security | — | fixed |
 | TD-C001 | Cron rollover used incomes[0].paydays | code | — | fixed |
@@ -43,11 +44,11 @@ related_docs:
 
 ---
 
-### GAP-001: Trigger Payday Not Persisted in Period
+### GAP-001 / TD-011: Trigger Payday Not Persisted in Period
 
 | Field | Value |
 |-------|-------|
-| ID | GAP-001 |
+| ID | GAP-001 (also tracked as TD-011 in technical-debt-register) |
 | Title | Trigger payday not persisted in Period |
 | Category | code |
 | Severity | P1 |

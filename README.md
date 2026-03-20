@@ -75,18 +75,18 @@ docker compose up -d --build api
 
 ## Known Open Issues
 
-This is a summary of currently open issues. It is **not** the complete list.
+**P1 — need code fix:**
+- **TD-001** No rate limiting on API
+- **TD-007 / GAP-008** No user data deletion (`/deletedata` not implemented)
+- **GAP-001 / TD-011** Trigger payday not persisted — payday changes affect current period retroactively
+- **TD-009 / GAP-003** Notification dedup is in-memory — lost on container restart
+- **TD-005** Dockerfile uses `prisma db push` in production — should be `migrate deploy`
 
-**P1 — Fix soon:**
-- **TD-001** No rate limiting — API can be flooded by any valid client
-- **TD-007 / GAP-008** No user data deletion — GDPR right to erasure not implemented
-- **GAP-001** Trigger payday not persisted in Period — payday changes affect current period retroactively
-- **TD-009 / GAP-003** Notification dedup is in-memory — duplicate notifications sent after container restart
-- **TD-005** Production Dockerfile uses `prisma db push` — should use `prisma migrate deploy` (confirmed)
+**P2 — fix eventually:**
+- **GAP-004 / TD-003** Period rollover at 00:05 UTC, not user's local midnight
+- **GAP-007** EF target change silently alters daily limit — no UI feedback
+- **GAP-012 / GAP-013** `s2sDaily` naming ambiguity; `targetAmount` derived not stored
 
-**P2 — Fix eventually:**
-- **GAP-004 / TD-003** Period rollover fires at 00:05 UTC, not user's local midnight — affects non-Moscow timezones
-- **GAP-007** EF contribution silently changes daily limit when target is changed — no UI feedback
-- **GAP-012** `s2sDaily` means two different things in code — naming ambiguity
+Full product/tech gaps: [docs/index.md §Known Gaps](./docs/index.md) | [docs/product/gap-analysis.md](./docs/product/gap-analysis.md) | [docs/delivery/technical-debt-register.md](./docs/delivery/technical-debt-register.md)
 
-Full canonical list: [docs/delivery/technical-debt-register.md](./docs/delivery/technical-debt-register.md) | [docs/product/gap-analysis.md](./docs/product/gap-analysis.md)
+Audit findings (verification/compliance/docs drift): [docs/index-audit-summary.md §Audit Findings](./docs/index-audit-summary.md)

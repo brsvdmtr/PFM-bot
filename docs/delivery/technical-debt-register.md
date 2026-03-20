@@ -158,11 +158,11 @@ Also tracked as GAP-003. API restart at notification time → double notificatio
 
 ---
 
-### GAP-001: Trigger payday not persisted in Period
+### GAP-001 / TD-011: Trigger payday not persisted in Period
 
 | Field | Value |
 |-------|-------|
-| ID | GAP-001 |
+| ID | GAP-001 (also tracked as TD-011) |
 | Type | gap |
 | Severity | P1 |
 | Status | open |
@@ -175,6 +175,8 @@ Also tracked as GAP-003. API restart at notification time → double notificatio
 | Fixed in | N/A |
 
 `triggerPayday` is recomputed at runtime from current income paydays. If user changes paydays mid-period, current period's trigger changes retroactively → wrong `s2sToday`. Fix: add `triggerPayday Int?` to `Period` table; persist at period creation time.
+
+> Cross-ref: also listed as **TD-011** in the Top Trust-Critical Debts summary above.
 
 ---
 
