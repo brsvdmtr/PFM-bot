@@ -380,40 +380,11 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
     s2sStatus = 'WARNING';
   }
 
-  // Use live window model if cash anchor is set
-  if (activePeriod.cashAnchorAmount != null && activePeriod.cashAnchorAt != null && nextIncomeDate) {
-    const anchorAt = activePeriod.cashAnchorAt;
-
-    // Get expenses SINCE the anchor date (not all period expenses)
-    const expensesSinceAnchorAgg = await prisma.expense.aggregate({
-      where: { userId, spentAt: { gte: anchorAt } },
-      _sum: { amount: true },
-    });
-    const expensesSinceAnchor = expensesSinceAnchorAgg._sum.amount ?? 0;
-
-    // Today's expenses since anchor (intersection of today AND since anchor) — local midnight
-    const todayStart = todayLocalStart;
-    const todayAnchorStart = anchorAt > todayStart ? anchorAt : todayStart;
-    const todayExpSinceAnchorAgg = await prisma.expense.aggregate({
-      where: { userId, spentAt: { gte: todayAnchorStart } },
-      _sum: { amount: true },
-    });
-    const todayExpensesSinceAnchor = todayExpSinceAnchorAgg._sum.amount ?? 0;
-
-    const liveWindow = computeLiveWindow({
-      cashAnchorAmount: activePeriod.cashAnchorAmount,
-      expensesSinceAnchor,
-      todayExpensesSinceAnchor,
-      reservedUpcoming: reservesResult.reservedUpcoming,
-      nextIncomeDate,
-      today: now,
-    });
-
-    // Use live window values
-    s2sToday = liveWindow.s2sToday;
-    dynamicS2sDaily = liveWindow.s2sDaily;
-    s2sStatus = liveWindow.status;
-  }
+  // cashOnHand / live window is DISPLAY ONLY — never used to compute s2sToday or s2sDaily.
+  // S2S is always derived from period budget semantics:
+  //   dynamicS2sDaily = round(periodRemaining / daysLeft)
+  //   s2sToday        = max(0, dynamicS2sDaily - todayTotal)
+  // Spec §7: "никогда не вычислять dynamicS2sDaily из cashOnHand"
 
   const focusDebt = user.debts.find((d) => d.isFocusDebt) ?? user.debts[0] ?? null;
 
@@ -480,7 +451,27 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
     reservedUpcomingDebtPayments: reservesResult.reservedUpcomingDebtPayments,
     windowStart: activePeriod.cashAnchorAt ?? activePeriod.startDate,
     windowEnd: nextIncomeDate ?? activePeriod.endDate,
-    usesLiveWindow: activePeriod.cashAnchorAmount != null,
+    usesLiveWindow: false,
+    _debug: {
+      tz,
+      nowUtc: now.toISOString(),
+      nowLocal: toLocalDate(now, tz).toISOString(),
+      daysLeft,
+      periodRemaining,
+      totalPeriodSpent,
+      todayTotal,
+      dynamicS2sDaily,
+      s2sToday,
+      totalDebtPaymentsRemaining,
+      debtSummaries: debtPeriodSummaries.map((s) => ({
+        debtId: s.debtId,
+        dueDay: s.dueDay,
+        required: s.requiredMinForPeriod,
+        paid: s.paidRequiredThisPeriod,
+        remaining: s.remainingRequiredThisPeriod,
+        status: s.status,
+      })),
+    },
   });
 });
 
