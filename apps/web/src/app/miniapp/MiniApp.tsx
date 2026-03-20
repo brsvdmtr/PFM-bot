@@ -1151,7 +1151,7 @@ function ProPaywall({ onBack, api }: { onBack: () => void; api: (path: string, o
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 
-function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPaydays }: { api: (path: string, opts?: RequestInit) => Promise<any>; onOpenPro: () => void; onOpenIncomes: () => void; onOpenObligations: () => void; onOpenPaydays: () => void }) {
+function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPaydays, onRefresh }: { api: (path: string, opts?: RequestInit) => Promise<any>; onOpenPro: () => void; onOpenIncomes: () => void; onOpenObligations: () => void; onOpenPaydays: () => void; onRefresh?: () => void }) {
   const [settings, setSettings] = useState<any>(null);
   const [plan, setPlan] = useState<any>(null);
   const [cashModal, setCashModal] = useState(false);
@@ -1176,6 +1176,7 @@ function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPayd
     try {
       await api('/tg/cash-anchor', { method: 'POST', body: JSON.stringify({ currentCash: amount }) });
       setCashDone(true);
+      onRefresh?.();
       setTimeout(() => { setCashModal(false); setCashDone(false); setCashInput(''); }, 1200);
     } finally { setCashSaving(false); }
   };
@@ -1876,7 +1877,7 @@ export default function MiniApp() {
       )}
       {screen === 'history' && <History api={api} currency={dashboard?.currency ?? 'RUB'} onRefresh={loadDashboard} />}
       {screen === 'debts' && <DebtsScreen api={api} currency={dashboard?.currency ?? 'RUB'} onRefresh={loadDashboard} />}
-      {screen === 'settings' && <Settings api={api} onOpenPro={() => setScreen('pro')} onOpenIncomes={() => setScreen('incomes')} onOpenObligations={() => setScreen('obligations')} onOpenPaydays={() => setScreen('paydays')} />}
+      {screen === 'settings' && <Settings api={api} onOpenPro={() => setScreen('pro')} onOpenIncomes={() => setScreen('incomes')} onOpenObligations={() => setScreen('obligations')} onOpenPaydays={() => setScreen('paydays')} onRefresh={loadDashboard} />}
 
       <BottomNav
         active={navTab}
