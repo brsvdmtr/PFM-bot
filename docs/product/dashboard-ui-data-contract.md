@@ -2,41 +2,40 @@
 title: "Dashboard UI Data Contract"
 document_type: Normative
 status: Active
-source_of_truth: "YES — for dashboard display logic"
+source_of_truth: NO
 verified_against_code: Partial
 last_updated: "2026-03-20"
 related_docs:
-  - system/numerical-source-of-truth.md
-  - system/formulas-and-calculation-policy.md
-  - api/api-v1.md
+  - path: ../system/formulas-and-calculation-policy.md
+    relation: "canonical formula source"
 ---
 
 # Dashboard UI Data Contract
 
-This document defines exactly what every visible element on the dashboard displays and where that data comes from. It is the authoritative reference for anyone verifying or debugging dashboard output.
+This document defines the contract between the backend API response and the UI rendering. When a number is wrong on the dashboard, this document is the debugging starting point.
 
-**Source files verified:**
-- `apps/web/src/app/miniapp/MiniApp.tsx` — `Dashboard` component (line ~510), `loadDashboard` function (line ~1544), error/loading render (line ~1637)
-- `apps/api/src/index.ts` — `GET /tg/dashboard` handler (line ~170)
+**Reference**: The authoritative API response shape is at `GET /tg/dashboard`. For calculation semantics see [`../system/formulas-and-calculation-policy.md`](../system/formulas-and-calculation-policy.md).
+
+**Source files:**
+- `apps/web/src/app/miniapp/MiniApp.tsx` — `Dashboard` component, `loadDashboard` function
+- `apps/api/src/index.ts` — `GET /tg/dashboard` handler
 
 ---
 
-## Dashboard Data Shape
-
-The `DashboardData` TypeScript interface in `MiniApp.tsx`:
+## Dashboard API Response Shape
 
 ```typescript
 interface DashboardData {
   onboardingDone: boolean;
   s2sToday: number;       // kopecks
-  s2sDaily: number;       // kopecks
+  s2sDaily: number;       // kopecks — live carry-over daily limit (NOT period.s2sDaily snapshot)
   s2sStatus: string;      // 'OK' | 'WARNING' | 'OVERSPENT' | 'DEFICIT'
   daysLeft: number;
   daysTotal: number;
   periodStart: string;    // ISO datetime string
   periodEnd: string;      // ISO datetime string
   periodSpent: number;    // kopecks
-  s2sPeriod: number;      // kopecks
+  s2sPeriod: number;      // kopecks — persisted at period creation
   todayExpenses: Expense[];
   todayTotal: number;     // kopecks
   focusDebt: Debt | null;
@@ -46,315 +45,291 @@ interface DashboardData {
 }
 ```
 
-All money fields are in minor units (kopecks for RUB, cents for USD). The frontend formats them as `amount / 100` rounded to 0 decimal places.
+All money fields are in minor units (kopecks for RUB, cents for USD). The frontend divides by 100 for display.
 
 ---
 
-## UI Elements — Data Contract Table
+## UI Elements — Data Contract
 
-| UI Label | Russian Label | API Field | Source | Persisted/Derived | Formula | Null Behavior | Notes |
-|---|---|---|---|---|---|---|---|
-| SAFE TO SPEND TODAY (large number) | — | `s2sToday` | `GET /tg/dashboard` | Derived at request | `max(0, dynamicS2sDaily - todayTotal)` | Shows `0 ₽` if null/zero | Top of S2S card; color driven by `s2sColor()` in frontend |
-| Daily limit subtitle | "из дневного лимита X ₽" | `s2sDaily` | `GET /tg/dashboard` | Derived at request | `max(0, round((s2sPeriod - totalPeriodSpent) / daysLeft))` | Hidden if 0 | This is NOT `period.s2sDaily`; it is live-recomputed carry-over value |
-| Left this period | "Осталось в периоде X ₽" | Computed from `s2sPeriod - periodSpent` | Frontend inline | Derived | `max(0, data.s2sPeriod - data.periodSpent)` | Shows `0 ₽` | Computed in JSX: `Math.max(0, data.s2sPeriod - data.periodSpent)` |
-| Period date range bar | "Янв 15 → Апр 1" | `periodStart`, `periodEnd` | `GET /tg/dashboard` | Persisted (Period.startDate, endDate) | `periodLabel(periodStart, periodEnd)` | Not shown if no period | Format: month abbreviation + day, no year |
-| Day counter in period bar | "День X из Y" | `daysLeft`, `daysTotal` | `GET /tg/dashboard` | Derived / Persisted | `periodElapsed = daysTotal - daysLeft; day = periodElapsed + 1` | Shows "День 1 из 0" if daysTotal=0 | `periodElapsed` is computed in frontend |
-| Overspent banner | "Перерасход на X ₽" | `s2sStatus`, `todayTotal`, `s2sDaily` | `GET /tg/dashboard` | Derived | `todayTotal - s2sDaily` | Not shown unless `s2sStatus === 'OVERSPENT'` | Shown inside S2S card as red box |
-| Today's expenses header total | "-X ₽" | `todayTotal` | `GET /tg/dashboard` | Derived at request | Sum of all expenses where `spentAt >= today 00:00:00 UTC` | Not shown if `todayExpenses.length === 0` | Card only renders if `todayExpenses.length > 0` |
-| Today expense line item | note or "Расход" / "-X ₽" | `todayExpenses[n].note`, `todayExpenses[n].amount` | `GET /tg/dashboard` | Persisted | Direct DB values | note defaults to "Расход" | Shows first 3 items maximum |
-| Emergency fund card | "Подушка безопасности" | `emergencyFund.currentAmount`, `emergencyFund.targetAmount` | `GET /tg/dashboard` | currentAmount persisted; targetAmount derived | `targetAmount = sum(activeObligations) × targetMonths` | Card hidden if `emergencyFund === null` or `targetAmount === 0` | `targetAmount` is computed server-side in the dashboard handler |
-| EF progress bar | — | `emergencyFund.currentAmount / emergencyFund.targetAmount` | Computed in frontend | Derived | `min(100, round(currentAmount / targetAmount × 100))` | 0% if targetAmount=0 | Uses `ProgressBar` component |
-| EF percentage label | "X%" | Computed in frontend | — | Derived | `efPct = min(100, round(currentAmount / targetAmount × 100))` | Shows "0%" | |
-| EF goal label | "цель: 3 мес. обязательных" | Hardcoded string | — | — | Static label | Always shown | Does not reflect actual `targetMonths` value from DB |
-| Debts card (Лавина) | "Долги (Лавина)" | `debts[]` | `GET /tg/dashboard` | Persisted | Ordered by APR desc on server | Card hidden if `debts.length === 0` | Shows first 3 debts |
-| Debt focus indicator (dot) | — | `debt.isFocusDebt` | `GET /tg/dashboard` | Persisted | `Debt.isFocusDebt` flag | No dot if not focus debt | Accent-colored dot before debt title |
-| Debt APR | "APR X%" | `debt.apr` | `GET /tg/dashboard` | Persisted | `(d.apr × 100).toFixed(1)%` | Shows "APR 0.0%" | apr stored as decimal fraction |
-| Debt balance | "X ₽" | `debt.balance` | `GET /tg/dashboard` | Persisted | `fmt(d.balance, currency)` | Shows "0 ₽" | |
-| Debt min payment | "мин X ₽" | `debt.minPayment` | `GET /tg/dashboard` | Persisted | `fmt(d.minPayment, currency)` | Shows "мин 0 ₽" | |
-| Period spending progress bar | "Расходы за период" | `periodSpent`, `s2sPeriod` | `GET /tg/dashboard` | periodSpent derived; s2sPeriod persisted | `periodPct = min(100, round(periodSpent / s2sPeriod × 100))` | 0% if s2sPeriod=0 | Color: red if >80%, orange if >50%, green otherwise |
-| Period progress % | "X% потрачено" | Computed in frontend | — | Derived | `periodPct` | Shows "0% потрачено" | |
-| Days left label (period card) | "X дн. осталось" | `daysLeft` | `GET /tg/dashboard` | Derived at request | From API | Shows "1 дн. осталось" minimum | |
-| S2S card main color | — | `s2sToday`, `s2sDaily` | Computed in frontend | Derived | `s2sColor(s2sToday, s2sDaily)` | red if both ≤ 0 | Frontend `s2sColor()` function, NOT the API's `s2sStatus` field |
-| Period summary banner | "Период завершён" | Shown if last-completed period ended within 3 days | `GET /tg/periods/last-completed` | Persisted (Period) | `diffDays <= 3` from period.endDate | Not shown | Loaded asynchronously after dashboard, failure is silently ignored |
+### 1. "Можно сегодня" (Safe to Spend Today)
+
+| Attribute | Value |
+|-----------|-------|
+| UI Label | "Можно сегодня" |
+| UI Label (EN) | "Safe to spend today" |
+| API field | `s2sToday` |
+| Type | Int (kopecks) |
+| Domain meaning | Remaining daily budget after today's expenses |
+| Formula | `max(0, dynamicS2sDaily - todayTotal)` |
+| Formula source | formulas-and-calculation-policy.md §S2S_Today |
+| Persisted or derived | **Derived at runtime** |
+| DB field | None — computed in API handler on every request |
+| Null behavior | If no active period: 0 |
+| Zero behavior | Shown as 0₽; status becomes WARNING or OVERSPENT or DEFICIT |
+| Negative source | Cannot be negative — floored at 0 via `max(0, ...)` |
+| Loading state | Full-screen spinner on initial load; no partial update |
+| Error state | Shows "error" screen with reload button |
+| Related | `s2sStatus` and `s2sColor()` determine display color |
 
 ---
 
-## Detailed Element Specs
+### 2. "Дневной лимит" (Daily Limit)
 
-### 1. Safe to Spend Today
-
-**API field:** `s2sToday`
-
-**Formula (server-side, `index.ts`):**
-```typescript
-const periodRemaining = Math.max(0, activePeriod.s2sPeriod - totalPeriodSpent);
-const dynamicS2sDaily = Math.max(0, Math.round(periodRemaining / daysLeft));
-const s2sToday = Math.max(0, dynamicS2sDaily - todayTotal);
-```
-
-**Critical distinction:** `dynamicS2sDaily` used here is NOT `period.s2sDaily` (the snapshot). It is recomputed fresh from `period.s2sPeriod`, current total spend, and current `daysLeft` on every dashboard request.
-
-**Display:** Divided by 100, formatted with `ru-RU` locale, 0 decimal places, `₽` suffix.
-
-**Color:** Computed in frontend by `s2sColor(data.s2sToday, data.s2sDaily)`:
-- green: `s2sToday / s2sDaily > 0.7`
-- orange: `s2sToday / s2sDaily > 0.3`
-- red: ratio ≤ 0.3, or either value is 0
-
-This frontend color calculation is independent from the `s2sStatus` field returned by the API. They should agree but are separate implementations.
+| Attribute | Value |
+|-----------|-------|
+| UI Label | "из дневного лимита X ₽" |
+| API field | `s2sDaily` |
+| Type | Int (kopecks) |
+| Domain meaning | Live carry-over daily limit for today |
+| Formula | `max(0, round((s2sPeriod - totalPeriodSpent) / daysLeft))` |
+| Formula source | formulas-and-calculation-policy.md §S2S_Daily_Live |
+| Persisted or derived | **Derived at runtime** |
+| DB field | None — recomputed on every dashboard request |
+| Critical distinction | This is NOT `period.s2sDaily` (the creation-time snapshot). It is recalculated live on every request from current spend and daysLeft. |
+| Null behavior | Hidden if 0 |
+| Related | Used by `s2sColor()` frontend function to determine card color |
 
 ---
 
-### 2. Daily Limit ("из дневного лимита X ₽")
+### 3. "Осталось за период" (Period Remaining)
 
-**API field:** `s2sDaily`
-
-**This is the live carry-over daily limit, not the stored `period.s2sDaily`.**
-
-**Formula:** `max(0, round((s2sPeriod - totalPeriodSpent) / daysLeft))`
-
-`totalPeriodSpent` = sum of all expenses in the active period (not just today).
-
-`daysLeft` = `max(1, ceil((activePeriod.endDate - now) / 86400000))`
-
-Note: This `daysLeft` formula differs slightly from the engine's `daysBetween` helper. The dashboard handler uses `Math.ceil((endDate - now) / ms_per_day)` directly, not `daysBetween(periodStartDate, periodEndDate)`.
-
----
-
-### 3. Left This Period ("Осталось в периоде X ₽")
-
-**Not a distinct API field.** Computed inline in the JSX:
-
-```typescript
-Math.max(0, data.s2sPeriod - data.periodSpent)
-```
-
-Where:
-- `data.s2sPeriod` = `activePeriod.s2sPeriod` (persisted at period creation)
-- `data.periodSpent` = `periodExpenses._sum.amount ?? 0` (live sum of all period expenses)
-
-Shown below the period remaining label in the S2S card.
+| Attribute | Value |
+|-----------|-------|
+| UI Label | "Осталось в периоде X ₽" |
+| API field | Computed inline from `s2sPeriod` and `periodSpent` |
+| Type | Int (kopecks) |
+| Domain meaning | Budget remaining in the current period |
+| Formula | `max(0, data.s2sPeriod - data.periodSpent)` |
+| Formula source | Computed in JSX, not returned as a distinct API field |
+| Persisted or derived | **Derived in frontend** |
+| DB field | `s2sPeriod` persisted; `periodSpent` is a live aggregate |
+| Null behavior | Shows 0₽ |
 
 ---
 
-### 4. Days Left ("X дн. осталось")
+### 4. "Потрачено за период" (Period Spent)
 
-**API field:** `daysLeft`
-
-**Formula (server-side):**
-```typescript
-Math.max(1, Math.ceil((activePeriod.endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)))
-```
-
-Guaranteed to be at least 1 (never 0 or negative). This is a UTC-based calculation; it decrements at UTC midnight regardless of the user's local timezone.
-
----
-
-### 5. Period Date Range
-
-**API fields:** `periodStart`, `periodEnd` (ISO datetime strings)
-
-**Display function (`periodLabel`):**
-```typescript
-function periodLabel(start: string, end: string) {
-  const s = new Date(start);
-  const e = new Date(end);
-  const mo = ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];
-  return `${mo[s.getMonth()]} ${s.getDate()} → ${mo[e.getMonth()]} ${e.getDate()}`;
-}
-```
-
-No year is shown. The month abbreviations are Russian. The separator is `→` (not `–`).
+| Attribute | Value |
+|-----------|-------|
+| UI Label | "Расходы за период" (in progress bar) |
+| API field | `periodSpent` |
+| Type | Int (kopecks) |
+| Domain meaning | Sum of all expenses in the current period |
+| Formula | `sum(expenses.amount) WHERE spentAt >= period.startDate` |
+| Persisted or derived | **Derived at runtime** (live aggregate query) |
+| DB field | No — computed from `Expense` table on each request |
+| Related | Drives progress bar: `periodPct = min(100, round(periodSpent / s2sPeriod * 100))` |
+| Color logic | Progress bar: green < 50%, orange 50–80%, red > 80% |
 
 ---
 
-### 6. Today's Expenses List
+### 5. "Дней до конца периода" (Days Left)
 
-**API field:** `todayExpenses` (array of Expense objects)
-
-**Server-side query (`index.ts`):**
-```typescript
-prisma.expense.findMany({
-  where: {
-    userId,
-    spentAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
-  },
-  orderBy: { spentAt: 'desc' },
-})
-```
-
-The `setHours(0, 0, 0, 0)` call sets UTC midnight of the current server day. Users in non-UTC timezones see a "day boundary" at server midnight, not their local midnight.
-
-The card is only rendered if `todayExpenses.length > 0`. Maximum 3 items are shown.
-
-Each expense shows:
-- `note || 'Расход'` as the label
-- `-{fmt(amount, currency)}` in red as the amount
+| Attribute | Value |
+|-----------|-------|
+| UI Label | "X дн. осталось" |
+| API field | `daysLeft` |
+| Type | Int |
+| Domain meaning | Days remaining in the current period, including today |
+| Formula | `max(1, ceil((period.endDate - now) / 86400000))` |
+| Persisted or derived | **Derived at runtime** |
+| DB field | None — computed from `period.endDate` |
+| Minimum value | Always at least 1 (never 0) |
+| Timezone note | UTC-based. Decrements at UTC midnight, not user's local midnight. |
+| Related | Used in denominator of `s2sDaily` formula |
 
 ---
 
-### 7. Today's Total Spent
+### 6. "Потрачено сегодня" (Today Total)
 
-**API field:** `todayTotal`
-
-**Formula (server-side):**
-```typescript
-const todayTotal = todayExpenses.reduce((sum, e) => sum + e.amount, 0);
-```
-
-This is the sum of the `todayExpenses` array already loaded for the response, not a separate aggregate query. Shown as the header of the today's expenses card: `"-X ₽"`.
-
----
-
-### 8. Focus Debt (via Debts Card)
-
-**API field:** `focusDebt` (from `GET /tg/dashboard`), `debts[]`
-
-The dashboard response includes a `focusDebt` field and a full `debts` array. The dashboard renders the `debts` array (not `focusDebt` directly) as a summary card showing up to 3 debts.
-
-**Server-side focus debt selection:**
-```typescript
-const focusDebt = user.debts.find((d) => d.isFocusDebt) ?? user.debts[0] ?? null;
-```
-
-Debts are ordered by APR desc in the query (`orderBy: { apr: 'desc' }`). The focus debt is the one with `isFocusDebt = true`, falling back to the first debt in the list.
-
-The focus debt indicator is a small accent-colored dot rendered before the debt title for debts where `isFocusDebt === true`.
+| Attribute | Value |
+|-----------|-------|
+| UI Label | Header of today's expense card: "-X ₽" |
+| API field | `todayTotal` |
+| Type | Int (kopecks) |
+| Domain meaning | Sum of all expenses logged today (UTC day) |
+| Formula | `sum(todayExpenses[].amount)` — computed from the already-loaded todayExpenses array |
+| Persisted or derived | **Derived at runtime** |
+| DB field | None |
+| Day boundary | "Today" = UTC midnight of server date. Users in non-UTC zones see their day start at a non-local midnight. |
+| Card visibility | Card hidden if `todayExpenses.length === 0` |
 
 ---
 
-### 9. Emergency Fund Progress Bar
+### 7. "Подушка безопасности" (Emergency Fund)
 
-**API field:** `emergencyFund: { currentAmount: number; targetAmount: number } | null`
-
-**`targetAmount` is computed server-side in the dashboard handler:**
-```typescript
-emergencyFund: user.emergencyFund
-  ? {
-      currentAmount: user.emergencyFund.currentAmount,
-      targetAmount: user.obligations.reduce((sum, o) => sum + o.amount, 0)
-                    * user.emergencyFund.targetMonths,
-    }
-  : null
-```
-
-`targetAmount` = sum of all active obligations (monthly amounts) × `targetMonths` (default 3). This is NOT prorated — it always uses full monthly obligation amounts.
-
-The card is hidden if `emergencyFund === null` or `emergencyFund.targetAmount === 0` (i.e., user has no obligations).
-
-The goal label is hardcoded as "цель: 3 мес. обязательных" regardless of the actual `targetMonths` value.
+| Attribute | Value |
+|-----------|-------|
+| UI Label | "Подушка безопасности" |
+| API field | `emergencyFund: { currentAmount, targetAmount }` |
+| Type | Both Int (kopecks) |
+| Domain meaning | currentAmount = saved so far; targetAmount = goal |
+| `currentAmount` source | Persisted: `EmergencyFund.currentAmount` in DB |
+| `targetAmount` formula | `sum(activeObligations.amount) * emergencyFund.targetMonths` — computed server-side in dashboard handler, NOT stored in DB |
+| Persisted or derived | currentAmount persisted; targetAmount **derived at runtime** |
+| Gap note | If obligations change after EF record was created, targetAmount on dashboard changes too (GAP-013 in gap-analysis.md) |
+| Card visibility | Hidden if `emergencyFund === null` or `targetAmount === 0` |
+| Progress bar | `min(100, round(currentAmount / targetAmount * 100))` |
+| Goal label bug | Hardcoded as "цель: 3 мес. обязательных" — does not reflect actual `targetMonths` from DB |
 
 ---
 
-### 10. S2S Status / Color Bar
+### 8. "Фокусный долг" (Focus Debt)
 
-**API field:** `s2sStatus: 'OK' | 'WARNING' | 'OVERSPENT' | 'DEFICIT'`
+| Attribute | Value |
+|-----------|-------|
+| UI Label | "Долги (Лавина)" card |
+| API field | `debts[]` array (also `focusDebt` but dashboard renders the array) |
+| Domain meaning | Focus debt = highest-APR debt selected for extra avalanche payment |
+| Focus debt selection | `debts.find(d => d.isFocusDebt) ?? debts[0] ?? null` |
+| Sort order | Ordered by APR desc server-side |
+| Displayed fields | `debt.title`, `debt.balance`, `debt.minPayment`, `debt.apr`, `debt.isFocusDebt` |
+| Focus indicator | Small accent-colored dot before debt title if `isFocusDebt === true` |
+| Card visibility | Hidden if `debts.length === 0` |
+| Items shown | Maximum 3, with "Показать все (N)" button to navigate to Debts screen |
+| APR display | `(d.apr * 100).toFixed(1)%` — apr stored as decimal fraction in DB |
 
-**Server-side status rules (`index.ts`):**
+---
+
+### 9. S2S Status Color
+
+| Attribute | Value |
+|-----------|-------|
+| API field | `s2sStatus: 'OK' | 'WARNING' | 'OVERSPENT' | 'DEFICIT'` |
+| Server-side status rules | See table below |
+| Frontend color function | `s2sColor(s2sToday, s2sDaily)` — computed independently from `s2sStatus` |
+| `s2sStatus` usage | Only used for overspent banner (`s2sStatus === 'OVERSPENT'`) |
+| Main card color | Determined by frontend `s2sColor()`, NOT by `s2sStatus` |
+
+**Server-side `s2sStatus` rules (`index.ts`):**
 
 | Condition | Status |
-|---|---|
+|-----------|--------|
 | `activePeriod.s2sPeriod <= 0` | `DEFICIT` |
 | `todayTotal > dynamicS2sDaily` | `OVERSPENT` |
 | `dynamicS2sDaily > 0 && s2sToday / dynamicS2sDaily <= 0.3` | `WARNING` |
 | Otherwise | `OK` |
 
-**Frontend color derivation (`s2sColor()` in MiniApp.tsx):**
+**Frontend `s2sColor(s2sToday, s2sDaily)` rules:**
 
 | Condition | Color |
-|---|---|
-| `s2sToday <= 0 \|\| s2sDaily <= 0` | `red` |
-| `ratio > 0.7` | `green` |
-| `ratio > 0.3` | `orange` |
-| Otherwise | `red` |
+|-----------|-------|
+| `s2sToday <= 0 \|\| s2sDaily <= 0` | red |
+| `s2sToday / s2sDaily > 0.7` | green |
+| `s2sToday / s2sDaily > 0.3` | orange |
+| Otherwise | red |
 
-The frontend does NOT use `s2sStatus` for the main card color. It recomputes the color from `s2sToday` and `s2sDaily` values. The API's `s2sStatus` is used only for the overspent banner (shown when `s2sStatus === 'OVERSPENT'`).
-
-The two implementations are semantically equivalent for the OVERSPENT and WARNING cases but differ in the DEFICIT case: the API emits `DEFICIT` when `s2sPeriod <= 0`, while the frontend shows `red` when `s2sToday <= 0 || s2sDaily <= 0`.
+**Important:** The two implementations are parallel and semantically equivalent for most cases, but diverge for DEFICIT: the API emits `DEFICIT` when `s2sPeriod <= 0`, while the frontend shows red when `s2sToday <= 0 || s2sDaily <= 0`. There is no explicit DEFICIT UI state — the user sees "0 ₽" in red with no explanatory message.
 
 ---
 
-## Loading States
+### 10. Today's Expense List
 
-The dashboard goes through these loading phases:
+| Attribute | Value |
+|-----------|-------|
+| UI Label | Individual line items under today's total |
+| API field | `todayExpenses[]` |
+| Type | `Expense[]` |
+| Server query | `WHERE userId = X AND spentAt >= UTC_midnight_today ORDER BY spentAt DESC` |
+| Day boundary | UTC midnight of server date — not user's local midnight |
+| Items shown | Maximum 3 items (no "show more" on dashboard) |
+| Label | `expense.note || 'Расход'` |
+| Amount display | `-{fmt(amount, currency)}` in red |
+| Card visibility | Entire card hidden if `todayExpenses.length === 0` |
 
-**Initial app load:**
-1. `screen = 'loading'` — full-screen spinner with "Загрузка..." text
+---
+
+## Dashboard Response JSON Example
+
+```json
+{
+  "onboardingDone": true,
+  "s2sToday": 621800,
+  "s2sDaily": 872300,
+  "s2sStatus": "OK",
+  "daysLeft": 9,
+  "daysTotal": 15,
+  "periodStart": "2026-04-05T00:00:00.000Z",
+  "periodEnd": "2026-04-20T00:00:00.000Z",
+  "periodSpent": 2508700,
+  "s2sPeriod": 13084100,
+  "todayTotal": 250500,
+  "todayExpenses": [
+    { "id": "exp_1", "amount": 150000, "note": "обед", "spentAt": "2026-04-11T09:32:00.000Z" },
+    { "id": "exp_2", "amount": 100500, "note": null, "spentAt": "2026-04-11T08:15:00.000Z" }
+  ],
+  "focusDebt": {
+    "id": "debt_1",
+    "title": "Кредитная карта Тинькофф",
+    "balance": 20000000,
+    "apr": 0.21,
+    "minPayment": 1500000,
+    "isFocusDebt": true
+  },
+  "debts": [
+    {
+      "id": "debt_1",
+      "title": "Кредитная карта Тинькофф",
+      "balance": 20000000,
+      "apr": 0.21,
+      "minPayment": 1500000,
+      "isFocusDebt": true
+    }
+  ],
+  "emergencyFund": {
+    "currentAmount": 10000000,
+    "targetAmount": 15000000
+  },
+  "currency": "RUB"
+}
+```
+
+All money values in kopecks. Divide by 100 for display in rubles.
+
+---
+
+## What to Do When the Number Is Wrong
+
+### "Можно сегодня" is lower than expected
+
+1. Check `s2sDaily` in the response. Is the daily limit itself low, or did today's expenses consume it?
+2. Check `periodSpent`. Was there more spending than expected this period?
+3. Check `daysLeft`. If it's low (e.g., 1–2), the carry-over formula amplifies any deficit.
+4. Check `s2sPeriod`. If this is lower than expected, the issue is in the period creation calculation — check `calculateS2S` in `engine.ts`.
+5. If `s2sStatus === 'DEFICIT'`, `s2sPeriod` is 0 or negative — obligations exceed income.
+
+### "Дневной лимит" changed without any expenses
+
+- `s2sDaily` is recalculated live on every request. If `daysLeft` decreased by 1 (new day started), the formula `(s2sPeriod - periodSpent) / daysLeft` produces a different result. This is expected behavior (carry-over).
+
+### "Потрачено за период" is wrong
+
+- Verify `periodSpent` matches the sum of all expenses in the period from the DB.
+- Check `period.startDate` — expenses before startDate should not be counted.
+
+### Emergency fund progress is wrong
+
+- `targetAmount` is computed server-side from current obligations sum × `targetMonths`. If obligations were recently changed, targetAmount changes too. This is by design (GAP-013).
+
+### Dashboard shows 0 / spinner indefinitely
+
+- If `loadDashboard()` fails after the initial onboarding status check succeeds, the app sets `screen = 'dashboard'` but `dashboard` remains null. This shows an infinite spinner with no error message and no retry button. This is a known UX gap.
+
+---
+
+## Loading and Error States
+
+**Initial load sequence:**
+1. Full-screen spinner ("Загрузка...")
 2. `GET /tg/onboarding/status` fires
-3. If `onboardingDone = true`: `loadDashboard()` fires → `GET /tg/dashboard`
-4. On success: `screen = 'dashboard'`
-5. On failure: `screen = 'error'` with error text from `String(e)`
+3. If `onboardingDone = true`: `loadDashboard()` → `GET /tg/dashboard`
+4. On success: screen transitions to dashboard
+5. On failure of onboarding/status: `screen = 'error'` with "Повторить" reload button
 
-**Dashboard screen with no data (transition state):**
-If `screen === 'dashboard' && !dashboard`: a centered `<Spinner />` is shown. This is visible for the brief moment between setting `screen = 'dashboard'` and `setDashboard(data)` completing.
+**Error message format:** `String(e)` from caught exception. Examples:
+- Network failure: "TypeError: Load failed"
+- API error: "Error: API 401"
 
-In practice, `loadDashboard` sets `dashboard` before setting `screen`, so this state should rarely be visible:
-```typescript
-loadDashboard().then(() => setScreen('dashboard'))
-```
+**Known gap:** If `loadDashboard()` fails (after onboarding status succeeds), the screen is set to `'dashboard'` with `dashboard = null`, resulting in an infinite spinner with no error or retry option.
 
-**After adding an expense:**
-`loadDashboard()` is called before navigating back to dashboard. The dashboard data is updated before the screen transition.
-
-**After settings changes (incomes, obligations, paydays):**
-`onChanged={loadDashboard}` is passed as a callback. Dashboard data refreshes after the settings change completes.
-
----
-
-## Error States
-
-If the initial API call (`GET /tg/onboarding/status`) fails, the app shows:
-
-```
-screen = 'error'
-```
-
-Renders:
-- Red text showing `error` string (e.g. "TypeError: Load failed", "API 401")
-- "Повторить" button that calls `window.location.reload()`
-
-The error message is `String(e)` where `e` is the caught exception. For network failures, this shows the browser's fetch error message (e.g. "TypeError: Load failed" on iOS Safari). For API errors, the `api()` helper throws `new Error(\`API ${res.status}\`)`, so the message is "Error: API 401".
-
-**Note:** The error screen is only reachable from the initial onboarding status check. If `loadDashboard()` fails (after onboarding status succeeds), the app silently proceeds to `screen = 'dashboard'` with `dashboard = null`, which renders a spinner indefinitely. This is a UX gap — a failed dashboard load after a successful status check shows an infinite spinner with no error or retry option.
-
----
-
-## Staleness
-
-The dashboard data becomes stale immediately after it is loaded. There is no auto-refresh, no WebSocket, and no polling.
-
-Data is refreshed in these scenarios only:
-
-| Trigger | Mechanism |
-|---|---|
-| User adds an expense | `handleSaveExpense` calls `loadDashboard()` before returning to dashboard |
-| User deletes an expense (History screen) | `onRefresh={loadDashboard}` callback from History |
-| User changes income | `onChanged={loadDashboard}` callback from IncomesScreen |
-| User changes obligation | `onChanged={loadDashboard}` callback from ObligationsScreen |
-| User changes paydays | `onChanged={loadDashboard}` callback from PaydaysScreen |
-| User navigates away and back | Only if they came from a screen that called `onChanged` |
-| App reload | `window.location.reload()` on error screen |
-
-**There is no pull-to-refresh.** If the user opens the app and leaves it open for hours without adding an expense, the displayed s2sToday and daysLeft will reflect the state at load time, not the current time.
-
----
-
-## Known UX Gaps
-
-1. **No pull-to-refresh.** The dashboard does not update unless the user takes an action. A user who opens the app first thing in the morning sees the same data as when they last loaded it.
-
-2. **Failed dashboard load shows infinite spinner.** If `loadDashboard()` fails after the initial status check succeeds, `screen` is set to `'dashboard'` but `dashboard` remains `null`, resulting in a non-dismissible spinner.
-
-3. **"Left this period" is computed in JSX, not returned by API.** If `s2sPeriod` and `periodSpent` are ever inconsistent (e.g. due to a direct DB edit), the displayed "Осталось в периоде" will differ from what the API internally considers the remaining budget.
-
-4. **EF goal label hardcodes "3 мес."** The label always reads "цель: 3 мес. обязательных" regardless of the user's `targetMonths` setting. A user who has set `targetMonths = 6` in the DB will see incorrect goal labeling.
-
-5. **Today's expenses capped at 3 items with no "show more".** The dashboard shows `todayExpenses.slice(0, 3)` with no expansion option. Users with more than 3 expenses today must navigate to the History screen to see them all.
-
-6. **Debts capped at 3 items with a "show all" button.** Unlike today's expenses, the debts card does have a "Показать все (N)" button that navigates to the Debts screen.
-
-7. **`s2sStatus` field from API is used only for the overspent banner.** The main card color is recomputed independently by `s2sColor()`. If the two implementations ever diverge, the card color and the overspent banner can contradict each other.
-
-8. **No explicit "DEFICIT" UI state.** When `s2sStatus === 'DEFICIT'`, the card shows `s2sToday = 0` in red. There is no special message explaining that obligations exceed income. The user sees "0 ₽" with no explanation.
-
-9. **Period summary banner fires asynchronously.** The `GET /tg/periods/last-completed` call is made after `loadDashboard()` returns. Its failure is silently swallowed with `.catch(() => {})`. If this endpoint is slow or failing, the banner never appears without any user-visible indication.
+**Data staleness:** There is no auto-refresh, polling, or WebSocket. Data refreshes only when the user takes an action (adds expense, changes settings, etc.). There is no pull-to-refresh.

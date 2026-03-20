@@ -1,73 +1,12 @@
-# ADR-002: All Monetary Values Stored as Int in Minor Units (Kopecks)
+---
+title: "ADR-002 — MOVED"
+status: Reference Only
+---
 
-**Status**: Accepted
-**Date**: 2025-12
-**Author**: Dmitriy
+# ADR-002 has moved
 
-## Context
+This file has been relocated to the architecture folder.
 
-PFM Bot performs arithmetic on monetary values throughout the calculation pipeline: income splits, obligation proration, debt minimum payments, reserve computation, and EF contributions. These calculations involve division and multiplication across potentially large values (a Moscow salary of 100 000 ₽ = 10 000 000 kopecks).
+**New location**: [../architecture/adr-002-money-in-minor-units.md](../architecture/adr-002-money-in-minor-units.md)
 
-Three storage strategies were evaluated:
-
-- **Float**: JavaScript's `number` is IEEE 754 double-precision. Classic example: `0.1 + 0.2 === 0.30000000000000004`. Unacceptable for financial display.
-- **Decimal/Numeric (PostgreSQL)**: Arbitrary precision, no float error. Requires a Decimal library in JavaScript (e.g. `decimal.js`), adds a dependency, and Prisma's `Decimal` type requires explicit casting at every read/write boundary.
-- **Int in minor units (kopecks)**: Store `10050000` for 100 500 ₽. All arithmetic is integer arithmetic. No precision bugs possible.
-
-The Russian ruble's smallest unit is the kopeck (1/100 of a ruble). The US dollar equivalent is cents. No sub-kopeck precision is ever needed.
-
-## Decision
-
-All monetary fields in the Prisma schema are `Int`, representing the value in **kopecks** (or cents for USD). Examples:
-
-- `Income.amount: Int` — monthly income. 75 000 ₽ → stored as `7500000`
-- `Obligation.amount: Int` — monthly obligation. 12 000 ₽ → stored as `1200000`
-- `Debt.balance: Int`, `Debt.minPayment: Int`
-- `Period.s2sPeriod: Int`, `Period.s2sDaily: Int`
-- `Expense.amount: Int`
-- `EmergencyFund.currentAmount: Int`
-- `Subscription.starsPrice: Int` (Telegram Stars are already integer units)
-
-Division in the engine (`engine.ts`) uses `Math.round()` at every boundary:
-```ts
-const payCount = Math.max(1, inc.paydays.length);
-return sum + Math.round(inc.amount / payCount);
-```
-
-The UI layer (`apps/web`) divides by 100 before display and multiplies by 100 before sending to the API:
-```ts
-// Display: 7500000 → "75 000 ₽"
-(amount / 100).toLocaleString('ru-RU', { maximumFractionDigits: 0 })
-
-// Input: "75000" → 7500000
-Math.round(parseFloat(input) * 100)
-```
-
-The bot (`apps/bot`) does the same:
-```ts
-const amountKop = Math.round(amount * 100); // /spend 500 → 50000
-```
-
-## Consequences
-
-### Positive
-- **No floating-point bugs**: All arithmetic in `engine.ts` and `avalanche.ts` is integer. `Math.round()` at division boundaries means at most ±1 kopeck rounding error per operation, which is acceptable.
-- **No external library dependency**: No `decimal.js`, no `big.js`.
-- **Fast comparisons**: Integer equality checks for zero-balance detection, overspend detection, etc. are exact.
-- **Consistent across services**: Both `api` and `bot` use the same unit; the Prisma client returns plain `number` (JS) in both.
-
-### Negative / Tradeoffs
-- **UI layer must always divide by 100**: If any client-side code forgets this, it will display values 100x too large. This has caused display bugs in the past (e.g., showing "1,500,000 ₽" instead of "15,000 ₽").
-- **Input layer must always multiply by 100**: User types "500" → must send `50000` to API. Decimal input (e.g., "499.99") must be multiplied: `Math.round(499.99 * 100) = 49999`.
-- **Large numbers**: 1 000 000 ₽ = 100 000 000 kopecks. JavaScript's `Number.MAX_SAFE_INTEGER` is 9 007 199 254 740 991, so values up to ~90 billion rubles are safe. PostgreSQL `Int` (32-bit signed) caps at 2 147 483 647, which is ~21 million rubles. For debts/mortgages over 21M ₽, `Int` would overflow. **This is a known future risk** — large mortgage balances may need `BigInt`.
-
-### Open Questions
-- Should mortgage/large-debt `balance` be stored as `BigInt` to avoid the 21M ₽ ceiling?
-
-## Alternatives Considered
-
-| Option | Reason Rejected |
-|--------|----------------|
-| `Float` (IEEE 754 double) | Precision errors in accumulated arithmetic |
-| `Decimal` (PostgreSQL Numeric) | Requires `decimal.js` in JS, verbose Prisma casting |
-| `String` representation | Requires parsing at every use, error-prone |
+All ADRs are now maintained in `/docs/architecture/`.

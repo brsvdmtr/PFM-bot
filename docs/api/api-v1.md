@@ -1,52 +1,75 @@
 ---
-title: "PFM Bot — API Reference v1"
+title: "API Reference v1"
 document_type: Normative
-status: "Active — Partial (error model pending)"
-source_of_truth: "YES — for API contract"
-verified_against_code: Partial
+status: Active
+source_of_truth: YES
+verified_against_code: Yes
 last_updated: "2026-03-20"
+related_docs:
+  - path: ../system/formulas-and-calculation-policy.md
+    relation: "calculation semantics"
+  - path: openapi/api-v1.yaml
+    relation: "machine-readable spec"
 ---
 
-# PFM Bot — API Reference v1
+# API Reference v1
 
-> Base URL: `https://mytodaylimit.ru/api`
+> **Base URL:** `https://mytodaylimit.ru`
 > All monetary values are integers in **minor units** (kopecks for RUB, cents for USD).
-> Example: 150000 = 1500.00 ₽
+> Example: `150000` = 1 500.00 ₽
 
 ---
 
 ## Table of Contents
 
-1. [Authentication](#1-authentication)
-2. [Calculation Caveats](#2-calculation-caveats)
-3. [Error Format](#3-error-format)
-4. [Error Codes](#4-error-codes)
-5. [PATCH Semantics](#5-patch-semantics)
-6. [Common Types](#6-common-types)
-7. [Health](#7-health)
-8. [Onboarding](#8-onboarding)
-9. [Dashboard](#9-dashboard)
-10. [Expenses](#10-expenses)
-11. [Periods](#11-periods)
-12. [Incomes](#12-incomes)
-13. [Obligations](#13-obligations)
-14. [Debts](#14-debts)
-15. [Me (Profile, Settings, Plan)](#15-me-profile-settings-plan)
-16. [Billing](#16-billing)
-17. [Internal Routes](#17-internal-routes)
-18. [Auth Appendix](#18-auth-appendix)
-19. [Open Issues](#19-open-issues)
+1. [Overview](#1-overview)
+2. [Authentication](#2-authentication)
+3. [Request/Response Format](#3-requestresponse-format)
+4. [Error Model](#4-error-model)
+5. [Contract Stability Levels](#5-contract-stability-levels)
+6. [PATCH Semantics](#6-patch-semantics)
+7. [Calculation Semantics](#7-calculation-semantics)
+8. [Common Types](#8-common-types)
+9. [Health](#9-health)
+10. [Onboarding](#10-onboarding)
+11. [Dashboard](#11-dashboard)
+12. [Expenses](#12-expenses)
+13. [Periods](#13-periods)
+14. [Incomes](#14-incomes)
+15. [Obligations](#15-obligations)
+16. [Debts](#16-debts)
+17. [User](#17-user)
+18. [Billing](#18-billing)
+19. [Internal Routes](#19-internal-routes)
+20. [Auth/Security Appendix](#20-authsecurity-appendix)
+21. [Known Caveats](#21-known-caveats)
 
 ---
 
-## 1. Authentication
+## 1. Overview
 
-### Telegram Mini App (X-TG-INIT-DATA)
+The PFM Bot API is an Express.js server that backs the Telegram Mini App and bot. It listens on port 3002 internally; nginx proxies external HTTPS traffic at `https://mytodaylimit.ru` to the container.
+
+**Base URL:** `https://mytodaylimit.ru`
+
+**API versioning:** There is no URL prefix versioning (e.g. `/api/v1`). The current contract version is v1. Breaking changes will be tracked in this document.
+
+**Nginx routing:**
+- `/health*` → api:3002
+- `/tg/*` → api:3002
+- `/internal/*` → api:3002 (not externally accessible in prod nginx config)
+- All other paths → web frontend
+
+---
+
+## 2. Authentication
+
+### Telegram WebApp (x-tg-init-data)
 
 All `/tg/*` routes require this header:
 
 ```
-X-TG-INIT-DATA: <Telegram WebApp initData string>
+x-tg-init-data: <Telegram WebApp initData string>
 ```
 
 The value is the URL-encoded `initData` string injected by Telegram into `window.Telegram.WebApp.initData`. The API validates it using HMAC-SHA256:
@@ -56,61 +79,46 @@ secretKey  = HMAC-SHA256("WebAppData", BOT_TOKEN)
 checkHash  = HMAC-SHA256(secretKey, sorted_data_check_string)
 ```
 
-**auth_date freshness check (implemented 2026-03-20):** The API rejects requests where `Date.now()/1000 - auth_date > 3600` (older than 1 hour). Returns `401` with `{ "error": "Stale init data" }`.
+**auth_date freshness check:** The API rejects requests where `Date.now()/1000 - auth_date > 3600` (older than 1 hour). Returns `401` with `{"error": "Stale init data"}`.
 
-Returns `401` if header is missing, hash is invalid, or auth_date is stale.
+Returns `401` if the header is missing, the hash is invalid, or `auth_date` is stale.
 
 On first authenticated request, the API automatically creates a User record for the Telegram user.
 
-### Internal (X-Internal-Key)
+### Internal (x-internal-key)
 
 All `/internal/*` routes require:
 
 ```
-X-Internal-Key: <ADMIN_KEY env var value>
+x-internal-key: <ADMIN_KEY env var value>
 ```
 
-Returns `401` if missing or wrong. Used by the bot service only.
+Returns `401` if missing or wrong. Used exclusively by the bot service.
 
 ### Dev bypass (non-production only)
 
-When `NODE_ENV !== 'production'`, the following header skips HMAC validation:
+When `NODE_ENV !== 'production'`, the following header skips HMAC validation entirely:
 
 ```
-X-TG-DEV: <telegramId as integer string>
+x-tg-dev: <telegramId as integer string>
 ```
 
-**This header is blocked in production.**
+**This header is blocked in production.** The guard is `if (process.env.NODE_ENV !== 'production')` and `NODE_ENV=production` is set in the production Dockerfile.
 
 ---
 
-## 2. Calculation Caveats
+## 3. Request/Response Format
 
-> For full formula details see: [formulas-and-calculation-policy.md](../system/formulas-and-calculation-policy.md)
-
-### Live vs. stored s2sDaily
-
-Routes that return `s2sToday` or `s2sDaily` — specifically `GET /tg/dashboard` and the `S2SResult` type — use **live calculation** on every request, not the `period.s2sDaily` stored in the database.
-
-The live formula: `s2sDaily = round((s2sPeriod - totalPeriodSpent) / daysLeft)`
-
-This implements carry-over: unspent budget from previous days rolls forward automatically.
-
-The `period.s2sDaily` column in the DB is a snapshot taken at period creation and at recalculation. It is **not** what the dashboard returns.
-
-### Expense scoping
-
-`GET /tg/expenses` (paginated) scopes to the **current ACTIVE period only**. It does not return all-time expenses.
-
-### No idempotency key for expenses
-
-`POST /tg/expenses` has no idempotency key. Retrying a failed request will create a duplicate expense. Known gap — see [Open Issues](#19-open-issues).
+- All request bodies must be JSON. Set `Content-Type: application/json`.
+- All responses are JSON.
+- Dates are ISO 8601 strings (e.g. `"2026-03-20T10:00:00.000Z"`).
+- Monetary amounts are integers in minor units (kopecks/cents).
 
 ---
 
-## 3. Error Format
+## 4. Error Model
 
-**Current format (implemented):**
+### Current format (implemented)
 
 ```json
 {
@@ -118,7 +126,10 @@ The `period.s2sDaily` column in the DB is a snapshot taken at period creation an
 }
 ```
 
-**Target format (not yet implemented):**
+### Known gaps
+
+- **No `requestId`/`traceId`:** Correlation IDs are not implemented. Planned.
+- **No machine-readable error codes:** The `code` field is not present in current responses. Target format (not yet implemented):
 
 ```json
 {
@@ -128,49 +139,63 @@ The `period.s2sDaily` column in the DB is a snapshot taken at period creation an
 }
 ```
 
-The `code` field is absent in the current implementation. `requestId` is not implemented.
+### HTTP status codes
 
-Common HTTP status codes:
-
-| Status | Meaning |
-|---|---|
-| 400 | Bad request — missing or invalid fields |
-| 401 | Unauthorized — missing, invalid, or stale auth header |
-| 404 | Resource not found (ownership verified) |
+| Status | When used |
+|--------|-----------|
+| 400 | Validation failure — missing or invalid fields |
+| 401 | Auth failure — missing, invalid, or stale auth header |
+| 404 | Resource not found or not owned by user |
 | 500 | Unhandled server error |
-| 502 | Upstream error (Telegram Bot API unreachable) |
-| 503 | Service unavailable (DB down, on `/health/deep`) |
+| 502 | Upstream error — Telegram Bot API unreachable |
+| 503 | Service unavailable — DB down (on `/health/deep`), or BOT_TOKEN not configured |
 
 ---
 
-## 4. Error Codes
+## 5. Contract Stability Levels
 
-These are the **target** machine-readable codes. They are not yet returned by the API (field `code` is missing from current error responses).
+Each endpoint group is assigned a stability level:
 
-| Code | HTTP Status | Meaning |
-|------|-------------|---------|
-| `UNAUTHORIZED` | 401 | Missing or invalid auth header |
-| `INVALID_INIT_DATA` | 401 | HMAC hash mismatch |
-| `STALE_INIT_DATA` | 401 | auth_date older than 1 hour |
-| `NO_ACTIVE_PERIOD` | 400 | Operation requires an active period |
-| `NOT_FOUND` | 404 | Resource not found or not owned by user |
-| `VALIDATION_ERROR` | 400 | Request body failed validation |
-| `INVALID_AMOUNT` | 400 | Amount field is missing, not a number, or ≤ 0 |
-| `INTERNAL_ERROR` | 500 | Unhandled server error |
+| Level | Meaning |
+|-------|---------|
+| **Stable** | Contract is finalized. Breaking changes require a new API version. |
+| **Provisional** | Functional but shape may change without a major version bump. |
+| **Needs Verification** | Implemented but some edge cases are not fully confirmed against code. |
+
+| Endpoint Group | Stability |
+|----------------|-----------|
+| `/health`, `/health/deep` | Stable |
+| `/tg/dashboard` | Stable |
+| `/tg/expenses` (CRUD) | Stable |
+| `/tg/me/profile`, `/tg/me/settings` | Stable |
+| `/tg/me/plan` | Stable |
+| `/tg/onboarding/*` | Stable |
+| `/tg/periods/current`, `/tg/periods/recalculate` | Stable |
+| `/tg/incomes` (CRUD) | Stable |
+| `/tg/obligations` (CRUD) | Stable |
+| `/tg/debts` (CRUD + payment) | Stable |
+| `/tg/billing/pro/checkout` | Provisional |
+| `/tg/debts/avalanche-plan` | Provisional |
+| `/tg/periods/last-completed` | Needs Verification — some edge cases (overspentDays calculation) not fully confirmed |
+| `/internal/*` | Stable |
 
 ---
 
-## 5. PATCH Semantics
+## 6. PATCH Semantics
+
+All `PATCH` endpoints use partial update semantics: only fields present in the request body are updated. Omitted fields are left unchanged. Sending `null` removes optional fields.
+
+Numeric fields `amount`, `balance`, and `minPayment` are `Math.round()`ed before storage.
 
 ### PATCH /tg/incomes/:id
 
 **Allowed fields:** `title`, `amount`, `paydays`, `currency`, `frequency`, `isActive`
 
-**Forbidden fields:** `id`, `userId`, `createdAt`, `updatedAt` (silently ignored by Prisma)
+**Forbidden fields** (silently ignored by ORM): `id`, `userId`, `createdAt`, `updatedAt`
 
 **Validation:**
 - `amount` must be > 0 if provided
-- `paydays` must be non-empty array of integers 1–31 if provided
+- `paydays` must be a non-empty array of integers 1–31 if provided
 
 ### PATCH /tg/obligations/:id
 
@@ -187,61 +212,120 @@ These are the **target** machine-readable codes. They are not yet returned by th
 
 **Forbidden fields (explicitly blocked by whitelist):** `isFocusDebt`, `isPaidOff`, `paidOffAt`, `id`, `userId`
 
-**Note:** `isFocusDebt` cannot be set directly via PATCH. Focus debt assignment is managed automatically (highest APR, or reassigned on delete/payoff).
+`isFocusDebt` cannot be set directly. Focus debt assignment is managed automatically: highest APR on creation, reassigned on delete or payoff.
 
 **Validation:**
 - `balance` must be > 0 if provided
-- `apr` must be 0–1 decimal fraction if provided
-- `minPayment` must be ≥ 0 if provided
+- `apr` must be a decimal fraction 0–1 if provided (e.g. `0.189` = 18.9%)
+- `minPayment` must be >= 0 if provided
 
 ### PATCH /tg/me/settings
 
 **Allowed fields:** `morningNotifyTime`, `eveningNotifyTime`, `morningNotifyEnabled`, `eveningNotifyEnabled`, `paymentAlerts`, `deficitAlerts`, `weeklyDigest`
 
-**Note on weeklyDigest:** The field is accepted and stored, but **no cron job or handler sends a weekly digest**. Setting this to `true` has no effect in the current implementation.
+**Dead setting:** `weeklyDigest` is accepted and stored but no cron job or handler sends a weekly digest. Setting it to `true` has no observable effect.
 
 ---
 
-## 6. Common Types
+## 7. Calculation Semantics
+
+> For full formula details see: [formulas-and-calculation-policy.md](../system/formulas-and-calculation-policy.md)
+
+### s2sToday and s2sDaily are RUNTIME computed
+
+Routes that return `s2sToday` or `s2sDaily` — specifically `GET /tg/dashboard` and `POST /tg/periods/recalculate` — compute these values **live on every request**. They are not read from the `Period.s2sDaily` column in the DB.
+
+Live formula:
+
+```
+s2sDaily = round((s2sPeriod - totalPeriodSpent) / daysLeft)
+s2sToday = s2sDaily - todaySpent
+```
+
+This implements carry-over: unspent budget from previous days rolls forward automatically.
+
+`Period.s2sDaily` in the DB is a snapshot taken at period creation and at recalculation. It reflects the value at that moment, not the current live value.
+
+### daysLeft formula
+
+```
+daysLeft = max(1, daysTotal - daysElapsed + 1)
+```
+
+where `daysElapsed = ceil((now - startDate) / 86400000)`.
+
+### periodRemaining
+
+```
+periodRemaining = max(0, s2sPeriod - totalPeriodSpent)
+```
+
+### All amounts are integers
+
+All monetary fields are integers in minor units (kopecks for RUB, cents for USD). No floating-point currency values appear in the API.
+
+---
+
+## 8. Common Types
 
 ### Currency
 
-```typescript
-type Currency = "RUB" | "USD"
+```
+"RUB" | "USD"
+```
+
+### ObligationType
+
+```
+"RENT" | "UTILITIES" | "SUBSCRIPTION" | "TELECOM" | "INSURANCE" | "ENVELOPE" | "OTHER"
+```
+
+### DebtType
+
+```
+"CREDIT" | "MORTGAGE" | "CREDIT_CARD" | "CAR_LOAN" | "PERSONAL_LOAN" | "OTHER"
+```
+
+### IncomeFrequency
+
+```
+"MONTHLY" | "BIWEEKLY" | "WEEKLY" | "IRREGULAR"
+```
+
+### S2SStatus
+
+```
+"OK" | "WARNING" | "OVERSPENT" | "DEFICIT"
 ```
 
 ### S2SResult
 
 Returned by `POST /tg/onboarding/complete` and `POST /tg/periods/recalculate`.
 
-> **Note:** `s2sDaily` and `s2sToday` in this struct are computed live, not read from DB. See [Section 2](#2-calculation-caveats).
+`s2sDaily` and `s2sToday` here are computed live — see [Section 7](#7-calculation-semantics).
 
 ```typescript
 interface S2SResult {
-  // Period-level breakdown
   totalIncome: number;          // kopecks — income attributed to this period
   totalObligations: number;     // kopecks — fixed monthly costs (prorated if needed)
   totalDebtPayments: number;    // kopecks — sum of debt minimum payments
   avalanchePool: number;        // kopecks — extra allocation to focus debt
-  efContribution: number;       // kopecks — amount going to emergency fund
+  efContribution: number;       // kopecks — emergency fund contribution
   reserve: number;              // kopecks — 10% buffer (reduced to 5%/0 if tight)
   residual: number;             // kopecks — raw s2sPeriod before max(0) clamp
   s2sPeriod: number;            // kopecks — total safe to spend for the entire period
 
-  // Daily metrics
-  daysTotal: number;            // total days in period
-  daysLeft: number;             // days remaining including today
-  daysElapsed: number;          // days since period start
-  s2sDaily: number;             // kopecks — per-day limit (carry-over adjusted, LIVE)
+  daysTotal: number;
+  daysLeft: number;
+  daysElapsed: number;
+  s2sDaily: number;             // kopecks — per-day limit, carry-over adjusted (LIVE)
   s2sToday: number;             // kopecks — remaining today after expenses (LIVE)
 
-  // Status
   status: "OK" | "WARNING" | "OVERSPENT" | "DEFICIT";
   s2sColor: "green" | "orange" | "red";
 
-  // Convenience
   periodSpent: number;          // kopecks — total expenses in period so far
-  periodRemaining: number;      // kopecks — s2sPeriod - periodSpent (clamped to 0)
+  periodRemaining: number;      // kopecks — s2sPeriod - periodSpent, clamped to 0
 }
 ```
 
@@ -259,7 +343,7 @@ interface Period {
   efContribution: number;       // kopecks
   reserve: number;              // kopecks
   s2sPeriod: number;            // kopecks
-  s2sDaily: number;             // kopecks (snapshot at period creation — NOT the live value)
+  s2sDaily: number;             // kopecks — SNAPSHOT at period creation, NOT the live value
   status: "ACTIVE" | "COMPLETED" | "DEFICIT";
   daysTotal: number;
   currency: Currency;
@@ -276,9 +360,9 @@ interface Income {
   id: string;
   userId: string;
   title: string;
-  amount: number;               // kopecks per month (full period amount)
+  amount: number;               // kopecks per month
   currency: Currency;
-  frequency: "MONTHLY" | "BIWEEKLY" | "WEEKLY" | "IRREGULAR";
+  frequency: IncomeFrequency;
   paydays: number[];            // days of month, e.g. [15] or [5, 20]
   isActive: boolean;
   createdAt: string;
@@ -293,10 +377,9 @@ interface Obligation {
   id: string;
   userId: string;
   title: string;
-  type: "RENT" | "UTILITIES" | "SUBSCRIPTION" | "TELECOM" | "INSURANCE" | "ENVELOPE" | "OTHER";
+  type: ObligationType;
   amount: number;               // kopecks per month
-  currency: Currency;
-  dueDay: number | null;        // day of month payment is due, 1–31
+  dueDay: number | null;        // day of month, 1–31
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
@@ -310,12 +393,10 @@ interface Debt {
   id: string;
   userId: string;
   title: string;
-  type: "CREDIT" | "MORTGAGE" | "CREDIT_CARD" | "CAR_LOAN" | "PERSONAL_LOAN" | "OTHER";
+  type: DebtType;
   balance: number;              // kopecks — current remaining balance
-  originalAmount: number | null; // kopecks — balance at time of creation
   apr: number;                  // decimal fraction, e.g. 0.189 = 18.9%
   minPayment: number;           // kopecks per month
-  currency: Currency;
   dueDay: number | null;
   isFocusDebt: boolean;         // receives extra avalanche payment
   isPaidOff: boolean;
@@ -333,7 +414,6 @@ interface Expense {
   userId: string;
   periodId: string;
   amount: number;               // kopecks
-  currency: Currency;
   note: string | null;
   source: "MANUAL" | "IMPORT";
   spentAt: string;              // ISO 8601
@@ -341,15 +421,20 @@ interface Expense {
 }
 ```
 
-### EmergencyFund
+### UserSettings
 
 ```typescript
-interface EmergencyFund {
+interface UserSettings {
   id: string;
   userId: string;
-  currentAmount: number;        // kopecks
-  targetMonths: number;         // default 3
-  currency: Currency;
+  morningNotifyTime: string;    // "HH:MM", default "09:00"
+  eveningNotifyTime: string;    // "HH:MM", default "21:00"
+  morningNotifyEnabled: boolean;
+  eveningNotifyEnabled: boolean;
+  paymentAlerts: boolean;
+  deficitAlerts: boolean;
+  weeklyDigest: boolean;        // DEAD SETTING — stored but no handler sends digest
+  createdAt: string;
   updatedAt: string;
 }
 ```
@@ -364,8 +449,8 @@ interface Subscription {
   status: "ACTIVE" | "CANCELLED" | "EXPIRED";
   starsPrice: number;           // Telegram Stars amount
   telegramChargeId: string | null;
-  currentPeriodStart: string;   // ISO 8601
-  currentPeriodEnd: string;     // ISO 8601
+  currentPeriodStart: string;
+  currentPeriodEnd: string;
   cancelledAt: string | null;
   cancelAtPeriodEnd: boolean;
   createdAt: string;
@@ -373,33 +458,14 @@ interface Subscription {
 }
 ```
 
-### UserSettings
-
-```typescript
-interface UserSettings {
-  id: string;
-  userId: string;
-  morningNotifyTime: string;    // "HH:MM", default "09:00"
-  eveningNotifyTime: string;    // "HH:MM", default "21:00"
-  morningNotifyEnabled: boolean; // default true
-  eveningNotifyEnabled: boolean; // default true
-  paymentAlerts: boolean;       // default true
-  deficitAlerts: boolean;       // default true
-  weeklyDigest: boolean;        // default false — DEAD SETTING: stored but no handler sends digest
-  createdAt: string;
-  updatedAt: string;
-}
-```
-
 ---
 
-## 7. Health
+## 9. Health
 
 ### GET /health
 
 **Stability:** Stable
-
-No authentication required.
+**Auth:** None
 
 **Response 200:**
 ```json
@@ -414,8 +480,9 @@ No authentication required.
 ### GET /health/deep
 
 **Stability:** Stable
+**Auth:** None
 
-No authentication required. Runs `SELECT 1` against the database.
+Runs `SELECT 1` against the database to verify connectivity.
 
 **Response 200:**
 ```json
@@ -437,15 +504,14 @@ No authentication required. Runs `SELECT 1` against the database.
 
 ---
 
-## 8. Onboarding
+## 10. Onboarding
 
-The onboarding flow is a 5-step sequence. Steps 1–4 can be called in any order and are idempotent (each step deletes and recreates its data). Step 5 (`/complete`) creates the first Period and must be called last.
+The onboarding flow is a 5-step sequence. Steps 1–4 can be called in any order and use replace semantics (each step deletes and recreates its data). Step 5 (`/complete`) creates the first Period and must be called last.
 
 ### GET /tg/onboarding/status
 
 **Stability:** Stable
-
-**Auth:** X-TG-INIT-DATA
+**Auth:** x-tg-init-data
 
 **Response 200:**
 ```json
@@ -457,70 +523,57 @@ The onboarding flow is a 5-step sequence. Steps 1–4 can be called in any order
 ### POST /tg/onboarding/income
 
 **Stability:** Stable
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
-
-Deletes all existing incomes for the user, then creates one new income record. Also updates `user.primaryCurrency`.
+Deletes ALL existing income records for the user, then creates one new income. Also updates `user.primaryCurrency`. This is replace semantics, not append.
 
 **Request body:**
-```typescript
-{
-  amount: number;               // kopecks, required, > 0
-  paydays: number[];            // required, non-empty, days of month e.g. [15] or [5, 20]
-  currency?: Currency;          // default "RUB"
-  title?: string;               // default "Основной доход"
-}
-```
-
-**Response 200:** `Income` object
-
-**Example:**
 ```json
-// Request
-POST /tg/onboarding/income
 {
   "amount": 15000000,
   "paydays": [5, 20],
   "currency": "RUB",
   "title": "Зарплата"
 }
-
-// Response
-{
-  "id": "cm8abc123",
-  "userId": "cm8user456",
-  "title": "Зарплата",
-  "amount": 15000000,
-  "currency": "RUB",
-  "frequency": "MONTHLY",
-  "paydays": [5, 20],
-  "isActive": true,
-  "createdAt": "2026-03-20T10:00:00.000Z",
-  "updatedAt": "2026-03-20T10:00:00.000Z"
-}
 ```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `amount` | Int (kopecks) | Yes | Must be > 0 |
+| `paydays` | Int[] | Yes | Non-empty, days of month 1–31 |
+| `currency` | Currency | No | Default: `"RUB"` |
+| `title` | string | No | Default: `"Основной доход"` |
+
+**Response 200:** `Income` object
+
+**Errors:**
+- `400` — amount missing, not a number, or <= 0; paydays missing or empty
 
 ---
 
 ### POST /tg/onboarding/obligations
 
 **Stability:** Stable
-
-**Auth:** X-TG-INIT-DATA
+**Auth:** x-tg-init-data
 
 Replaces all obligations. Passing an empty array clears all obligations.
 
 **Request body:**
-```typescript
+```json
 {
-  obligations: Array<{
-    title: string;
-    type: ObligationType;       // default "OTHER"
-    amount: number;             // kopecks
-    dueDay?: number;            // day of month, 1–31
-  }>;
+  "obligations": [
+    { "title": "Аренда", "type": "RENT", "amount": 5000000, "dueDay": 1 }
+  ]
 }
 ```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `obligations` | Array | Yes | May be empty to clear all |
+| `obligations[].title` | string | Yes | |
+| `obligations[].type` | ObligationType | No | Default: `"OTHER"` |
+| `obligations[].amount` | Int (kopecks) | Yes | |
+| `obligations[].dueDay` | Int | No | Day of month 1–31 |
 
 **Response 200:** `Obligation[]` — all current obligations after replace
 
@@ -529,24 +582,27 @@ Replaces all obligations. Passing an empty array clears all obligations.
 ### POST /tg/onboarding/debts
 
 **Stability:** Stable
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
-
-Replaces all debts. Sorts by APR descending; highest APR debt gets `isFocusDebt: true`.
+Replaces all debts. After creation, debts are sorted by APR descending; the highest-APR debt gets `isFocusDebt: true`.
 
 **Request body:**
-```typescript
+```json
 {
-  debts: Array<{
-    title: string;
-    type: DebtType;             // default "OTHER"
-    balance: number;            // kopecks
-    apr: number;                // decimal, e.g. 0.189
-    minPayment: number;         // kopecks per month
-    dueDay?: number;
-  }>;
+  "debts": [
+    { "title": "Кредит", "type": "CREDIT", "balance": 30000000, "apr": 0.189, "minPayment": 800000 }
+  ]
 }
 ```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `debts[].title` | string | Yes | |
+| `debts[].type` | DebtType | No | Default: `"OTHER"` |
+| `debts[].balance` | Int (kopecks) | Yes | |
+| `debts[].apr` | Float | Yes | Decimal fraction, e.g. 0.189 |
+| `debts[].minPayment` | Int (kopecks) | Yes | |
+| `debts[].dueDay` | Int | No | |
 
 **Response 200:** `Debt[]` — created debts in APR-descending order
 
@@ -555,33 +611,42 @@ Replaces all debts. Sorts by APR descending; highest APR debt gets `isFocusDebt:
 ### POST /tg/onboarding/ef
 
 **Stability:** Stable
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
-
-Upserts emergency fund record.
+Upserts the emergency fund record.
 
 **Request body:**
-```typescript
+```json
 {
-  currentAmount?: number;       // kopecks, default 0
-  targetMonths?: number;        // default 3
-  currency?: Currency;          // default "RUB"
+  "currentAmount": 500000,
+  "targetMonths": 3,
+  "currency": "RUB"
 }
 ```
 
-**Response 200:** `EmergencyFund` object
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `currentAmount` | Int (kopecks) | No | Default: 0 |
+| `targetMonths` | Int | No | Default: 3 |
+| `currency` | Currency | No | Default: `"RUB"` |
+
+**Response 200:** EmergencyFund object (`{id, userId, currentAmount, targetMonths, currency, updatedAt}`)
 
 ---
 
 ### POST /tg/onboarding/complete
 
 **Stability:** Stable
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
+Finalizes onboarding. Requires at least one active income.
 
-> **Calculation note:** Creates first Period with S2SResult stored. The `s2sDaily` stored in the Period record is a snapshot; subsequent dashboard reads recalculate it live.
-
-Requires at least one active income. Closes any existing ACTIVE period (marks it COMPLETED), calculates new period bounds and S2S, creates the first ACTIVE period, sets `user.onboardingDone = true`.
+Behavior:
+1. Closes any existing ACTIVE period (marks it COMPLETED)
+2. Calculates new period bounds from current income paydays
+3. Calculates S2S
+4. Creates the first ACTIVE period
+5. Sets `user.onboardingDone = true`
 
 **Request body:** none
 
@@ -593,69 +658,28 @@ Requires at least one active income. Closes any existing ACTIVE period (marks it
 }
 ```
 
-**Example:**
-```json
-// Response
-{
-  "period": {
-    "id": "cm8period789",
-    "userId": "cm8user456",
-    "startDate": "2026-03-20T00:00:00.000Z",
-    "endDate": "2026-04-05T00:00:00.000Z",
-    "totalIncome": 7500000,
-    "totalObligations": 2000000,
-    "totalDebtPayments": 500000,
-    "efContribution": 100000,
-    "reserve": 490000,
-    "s2sPeriod": 4410000,
-    "s2sDaily": 275625,
-    "status": "ACTIVE",
-    "daysTotal": 16,
-    "currency": "RUB",
-    "isProratedStart": true
-  },
-  "s2s": {
-    "totalIncome": 7500000,
-    "totalObligations": 2000000,
-    "totalDebtPayments": 500000,
-    "avalanchePool": 0,
-    "efContribution": 100000,
-    "reserve": 490000,
-    "residual": 4410000,
-    "s2sPeriod": 4410000,
-    "daysTotal": 16,
-    "daysLeft": 16,
-    "daysElapsed": 1,
-    "s2sDaily": 275625,
-    "s2sToday": 275625,
-    "status": "OK",
-    "s2sColor": "green",
-    "periodSpent": 0,
-    "periodRemaining": 4410000
-  }
-}
-```
+**Errors:**
+- `400` — no active income found
 
 ---
 
-## 9. Dashboard
+## 11. Dashboard
 
 ### GET /tg/dashboard
 
 **Stability:** Stable
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
+Returns the main dashboard payload. `s2sDaily` and `s2sToday` are computed live on every request using carry-over formula — they are not read from `Period.s2sDaily`. See [Section 7](#7-calculation-semantics).
 
-> **Calculation note:** `s2sDaily` and `s2sToday` are computed **live** on every request using carry-over formula. They are not read from `period.s2sDaily`. See [Section 2](#2-calculation-caveats).
-
-Returns the main dashboard payload. If user has no active period, returns zeroed fields.
+If the user has no active period, all numeric fields are 0 and all arrays are empty. `onboardingDone` reflects actual state.
 
 **Response 200:**
 ```typescript
 {
   onboardingDone: boolean;
   s2sToday: number;             // kopecks — remaining budget for today (LIVE)
-  s2sDaily: number;             // kopecks — per-day limit (carry-over adjusted, LIVE)
+  s2sDaily: number;             // kopecks — per-day limit, carry-over adjusted (LIVE)
   s2sStatus: "OK" | "WARNING" | "OVERSPENT" | "DEFICIT";
   daysLeft: number;
   daysTotal: number;
@@ -693,57 +717,52 @@ Returns the main dashboard payload. If user has no active period, returns zeroed
 **S2S status logic:**
 
 | Status | Condition |
-|---|---|
+|--------|-----------|
 | `DEFICIT` | `s2sPeriod <= 0` |
-| `OVERSPENT` | `todayExpenses > s2sDaily` |
+| `OVERSPENT` | `todaySpent > s2sDaily` |
 | `WARNING` | `s2sToday / s2sDaily <= 0.30` |
 | `OK` | None of the above |
 
 **Notes:**
-
-- `s2sDaily` is recalculated dynamically on every request: `round((s2sPeriod - totalPeriodSpent) / daysLeft)`. This implements carry-over — unspent budget rolls forward.
-- `daysLeft` uses `ceil((endDate - now) / 86400000)`, clamped to minimum 1.
-- When no active period: all numeric fields are 0, all arrays are empty.
+- `daysLeft` uses `max(1, ceil((endDate - now) / 86400000))`
+- `s2sDaily` in the response is `dynamicS2sDaily` (carry-over adjusted), NOT `Period.s2sDaily`
 
 ---
 
-## 10. Expenses
+## 12. Expenses
 
 ### POST /tg/expenses
 
 **Stability:** Stable
-
-**Auth:** X-TG-INIT-DATA
+**Auth:** x-tg-init-data
 
 Creates an expense in the current active period.
 
-> **Known gap:** No idempotency key. Retrying a failed request creates a duplicate. See [Open Issues](#19-open-issues).
+> **Known gap:** No idempotency key. Retrying a failed request creates a duplicate expense.
 
 **Request body:**
-```typescript
-{
-  amount: number;               // kopecks, required, > 0
-  note?: string;                // optional description
-}
-```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `amount` | Int (kopecks) | Yes | Must be > 0 |
+| `note` | string | No | Optional description |
 
 **Response 201:** `Expense` object
 
 **Errors:**
-- `400 { "error": "Invalid amount" }` — amount missing, not a number, or ≤ 0
-- `400 { "error": "No active period. Complete onboarding first." }` — no ACTIVE period found
+- `400 {"error": "Invalid amount"}` — amount missing, not a number, or <= 0
+- `400 {"error": "No active period. Complete onboarding first."}` — no ACTIVE period found
 
 ---
 
 ### GET /tg/expenses/today
 
 **Stability:** Stable
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
+Returns all expenses with `spentAt >= today 00:00:00` UTC, sorted by `spentAt` descending.
 
-Returns all expenses with `spentAt >= today 00:00:00` (server UTC time), sorted by `spentAt` descending.
-
-> **Timezone note:** "Today" is UTC midnight, not the user's local midnight. For a Moscow user (UTC+3), expenses between 00:00–03:00 Moscow time appear as "yesterday."
+> **Timezone note:** "Today" is UTC midnight, not the user's local midnight.
 
 **Response 200:** `Expense[]`
 
@@ -752,10 +771,9 @@ Returns all expenses with `spentAt >= today 00:00:00` (server UTC time), sorted 
 ### DELETE /tg/expenses/:id
 
 **Stability:** Stable
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
-
-Deletes an expense. Verifies ownership (user must own the expense).
+Deletes an expense. Verifies that the expense belongs to the requesting user.
 
 **Response 200:**
 ```json
@@ -763,52 +781,52 @@ Deletes an expense. Verifies ownership (user must own the expense).
 ```
 
 **Errors:**
-- `404` — expense not found or doesn't belong to user
+- `404` — expense not found or does not belong to user
 
 ---
 
 ### GET /tg/expenses
 
-**Stability:** Current Behavior
+**Stability:** Stable
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
-
-Returns paginated expense list **for the current active period only** (not all-time).
+Returns paginated expense list. Scoped to the current ACTIVE period if one exists; returns all expenses if no active period.
 
 **Query parameters:**
-- `limit` — integer, max 200, default 50
-- `offset` — integer, default 0
+
+| Parameter | Type | Default | Max |
+|-----------|------|---------|-----|
+| `limit` | Int | 50 | 200 |
+| `offset` | Int | 0 | — |
 
 **Response 200:**
 ```typescript
 {
   expenses: Expense[];
-  total: number;                // total count (for pagination)
+  total: number;                // total count for pagination
   periodId: string | null;      // active period ID, or null if none
 }
 ```
 
 ---
 
-## 11. Periods
+## 13. Periods
 
 ### GET /tg/periods/current
 
 **Stability:** Stable
-
-**Auth:** X-TG-INIT-DATA
+**Auth:** x-tg-init-data
 
 Returns the current ACTIVE period including all its expenses.
 
-**Response 200:** `Period & { expenses: Expense[] }` or `null` if no active period
+**Response 200:** `Period & { expenses: Expense[] }`, or `null` if no active period
 
 ---
 
 ### GET /tg/periods/last-completed
 
-**Stability:** Stable
-
-**Auth:** X-TG-INIT-DATA
+**Stability:** Needs Verification
+**Auth:** x-tg-init-data
 
 Returns a summary of the most recently completed period.
 
@@ -820,16 +838,16 @@ Returns a summary of the most recently completed period.
   endDate: string;
   daysTotal: number;
   s2sPeriod: number;            // kopecks — planned budget
-  s2sDaily: number;             // kopecks
+  s2sDaily: number;             // kopecks — stored snapshot
   totalSpent: number;           // kopecks — actual total expenses
   saved: number;                // kopecks — s2sPeriod - totalSpent (may be negative)
-  overspentDays: number;        // count of DailySnapshot records with isOverspent=true
+  overspentDays: number;        // count of days where daily spending exceeded s2sDaily
   currency: Currency;
   topExpenses: Array<{
     amount: number;
     note: string | null;
     spentAt: string;
-  }>;                           // top 5 by amount desc
+  }>;                           // top 5 expenses by amount desc
 }
 ```
 
@@ -840,12 +858,11 @@ Returns `null` if no completed period exists.
 ### POST /tg/periods/recalculate
 
 **Stability:** Stable
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
+Recomputes period bounds using `allPaydays` from current active incomes, then recalculates S2S using current income, obligations, debts, and EF. Updates the `Period` record in DB.
 
-> **Calculation note:** Recomputes period bounds using `allPaydays` from current active incomes, then recalculates S2S. Updates the `Period` record in DB.
-
-Recalculates the active period's S2S using current income, obligations, debts, and EF. Also recomputes period bounds from current paydays. Useful after editing income or payday settings.
+Use this after editing income, payday settings, or any other data that affects S2S.
 
 **Request body:** none
 
@@ -858,17 +875,16 @@ Recalculates the active period's S2S using current income, obligations, debts, a
 ```
 
 **Errors:**
-- `400 { "error": "No active period or income" }` — no active period or no active incomes
+- `400 {"error": "No active period or income"}` — no ACTIVE period or no active incomes found
 
 ---
 
-## 12. Incomes
+## 14. Incomes
 
 ### GET /tg/incomes
 
 **Stability:** Stable
-
-**Auth:** X-TG-INIT-DATA
+**Auth:** x-tg-init-data
 
 Returns all income records for the user, sorted by `createdAt` descending.
 
@@ -879,21 +895,19 @@ Returns all income records for the user, sorted by `createdAt` descending.
 ### POST /tg/incomes
 
 **Stability:** Stable
-
-**Auth:** X-TG-INIT-DATA
+**Auth:** x-tg-init-data
 
 Creates a new income record.
 
 **Request body:**
-```typescript
-{
-  title: string;                // required
-  amount: number;               // kopecks, required
-  paydays: number[];            // required
-  currency?: Currency;          // default "RUB"
-  frequency?: IncomeFrequency;  // default "MONTHLY"
-}
-```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `title` | string | Yes | |
+| `amount` | Int (kopecks) | Yes | |
+| `paydays` | Int[] | Yes | Days of month 1–31 |
+| `currency` | Currency | No | Default: `"RUB"` |
+| `frequency` | IncomeFrequency | No | Default: `"MONTHLY"` |
 
 **Response 201:** `Income` object
 
@@ -904,11 +918,12 @@ Creates a new income record.
 
 ### PATCH /tg/incomes/:id
 
-**Stability:** Provisional
+**Stability:** Stable
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
+Partially updates an income record. See [PATCH Semantics](#6-patch-semantics) for allowed fields.
 
-Partially updates an income record. See [PATCH Semantics](#5-patch-semantics) for allowed fields.
+Does NOT trigger period recalculation. Call `POST /tg/periods/recalculate` manually afterward if needed.
 
 **Response 200:** Updated `Income` object
 
@@ -920,23 +935,21 @@ Partially updates an income record. See [PATCH Semantics](#5-patch-semantics) fo
 ### DELETE /tg/incomes/:id
 
 **Stability:** Stable
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
-
-**Response 200:** `{ "ok": true }`
+**Response 200:** `{"ok": true}`
 
 **Errors:**
 - `404`
 
 ---
 
-## 13. Obligations
+## 15. Obligations
 
 ### GET /tg/obligations
 
 **Stability:** Stable
-
-**Auth:** X-TG-INIT-DATA
+**Auth:** x-tg-init-data
 
 Returns all obligations, sorted by `createdAt` descending.
 
@@ -947,18 +960,16 @@ Returns all obligations, sorted by `createdAt` descending.
 ### POST /tg/obligations
 
 **Stability:** Stable
-
-**Auth:** X-TG-INIT-DATA
+**Auth:** x-tg-init-data
 
 **Request body:**
-```typescript
-{
-  title: string;                // required
-  amount: number;               // kopecks, required
-  type?: ObligationType;        // default "OTHER"
-  dueDay?: number;              // day of month
-}
-```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `title` | string | Yes | |
+| `amount` | Int (kopecks) | Yes | |
+| `type` | ObligationType | No | Default: `"OTHER"` |
+| `dueDay` | Int | No | Day of month 1–31 |
 
 **Response 201:** `Obligation` object
 
@@ -966,59 +977,60 @@ Returns all obligations, sorted by `createdAt` descending.
 
 ### PATCH /tg/obligations/:id
 
-**Stability:** Provisional
+**Stability:** Stable
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
-
-See [PATCH Semantics](#5-patch-semantics) for allowed fields.
+See [PATCH Semantics](#6-patch-semantics) for allowed fields.
 
 **Response 200:** Updated `Obligation`
+
+**Errors:**
+- `404`
 
 ---
 
 ### DELETE /tg/obligations/:id
 
 **Stability:** Stable
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
+**Response 200:** `{"ok": true}`
 
-**Response 200:** `{ "ok": true }`
+**Errors:**
+- `404`
 
 ---
 
-## 14. Debts
+## 16. Debts
 
 ### GET /tg/debts
 
 **Stability:** Stable
-
-**Auth:** X-TG-INIT-DATA
+**Auth:** x-tg-init-data
 
 Returns active (non-paid-off) debts sorted by `apr` descending.
 
-**Response 200:** `Debt[]`
+**Response 200:** `Debt[]` (where `isPaidOff = false`)
 
 ---
 
 ### POST /tg/debts
 
 **Stability:** Stable
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
-
-Creates a new debt. If no focus debt exists, the new debt becomes the focus debt automatically.
+Creates a new debt. If no focus debt currently exists, the new debt becomes the focus debt automatically.
 
 **Request body:**
-```typescript
-{
-  title: string;                // required
-  balance: number;              // kopecks, required
-  apr: number;                  // required, decimal fraction e.g. 0.189
-  minPayment: number;           // kopecks, required
-  type?: DebtType;              // default "OTHER"
-  dueDay?: number;
-}
-```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `title` | string | Yes | |
+| `balance` | Int (kopecks) | Yes | |
+| `apr` | Float | Yes | Decimal fraction, e.g. 0.189 |
+| `minPayment` | Int (kopecks) | Yes | |
+| `type` | DebtType | No | Default: `"OTHER"` |
+| `dueDay` | Int | No | |
 
 **Response 201:** `Debt` object
 
@@ -1027,42 +1039,46 @@ Creates a new debt. If no focus debt exists, the new debt becomes the focus debt
 ### PATCH /tg/debts/:id
 
 **Stability:** Stable
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
+See [PATCH Semantics](#6-patch-semantics) for allowed/forbidden fields. `isFocusDebt` cannot be set via PATCH.
 
-See [PATCH Semantics](#5-patch-semantics) for allowed/forbidden fields. `isFocusDebt` cannot be set via PATCH.
+Does NOT trigger period recalculation. Call `POST /tg/periods/recalculate` manually afterward if needed.
 
 **Response 200:** Updated `Debt`
+
+**Errors:**
+- `404`
 
 ---
 
 ### DELETE /tg/debts/:id
 
 **Stability:** Stable
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
+Deletes the debt. If the deleted debt was the focus debt, focus is reassigned to the next highest-APR non-paid-off debt.
 
-Deletes debt. If the deleted debt was the focus debt, reassigns focus to next highest-APR debt.
+**Response 200:** `{"ok": true}`
 
-**Response 200:** `{ "ok": true }`
+**Errors:**
+- `404`
 
 ---
 
 ### POST /tg/debts/:id/payment
 
 **Stability:** Stable
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
-
-Records a payment on a debt. Reduces `balance` by `amount`. If balance reaches 0, sets `isPaidOff: true`, `isFocusDebt: false`, and reassigns focus to next debt.
+Records a payment on a debt. Reduces `balance` by `amount`. If the new balance reaches 0, sets `isPaidOff: true`, `isFocusDebt: false`, and reassigns focus to the next debt.
 
 **Request body:**
-```typescript
-{
-  amount: number;               // kopecks, required, > 0
-  isExtra?: boolean;            // default false — marks as extra (avalanche) payment
-}
-```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `amount` | Int (kopecks) | Yes | Must be > 0 |
+| `isExtra` | boolean | No | Default: false. Marks as an extra (avalanche) payment. |
 
 **Response 200:**
 ```typescript
@@ -1079,15 +1095,17 @@ Records a payment on a debt. Reduces `balance` by `amount`. If balance reaches 0
 }
 ```
 
+**Errors:**
+- `404` — debt not found or not owned by user
+
 ---
 
 ### GET /tg/debts/avalanche-plan
 
 **Stability:** Provisional
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
-
-Returns the avalanche repayment plan for all active debts. Estimates monthly extra from current period: `round(s2sPeriod × 0.10 / (daysTotal / 30))`.
+Returns the avalanche repayment plan for all active debts. Extra monthly payment is estimated from the current period: `round(s2sPeriod × 0.10 / (daysTotal / 30))`.
 
 **Response 200:**
 ```typescript
@@ -1105,20 +1123,19 @@ Returns the avalanche repayment plan for all active debts. Estimates monthly ext
   }>;
   totalDebt: number;            // kopecks
   totalMinPayments: number;     // kopecks
-  estimatedDebtFreeMonths: number; // sequential sum (simplified)
-  estimatedTotalInterest: number;  // kopecks
+  estimatedDebtFreeMonths: number;
+  estimatedTotalInterest: number; // kopecks
 }
 ```
 
 ---
 
-## 15. Me (Profile, Settings, Plan)
+## 17. User
 
 ### GET /tg/me/profile
 
-**Stability:** Provisional
-
-**Auth:** X-TG-INIT-DATA
+**Stability:** Stable
+**Auth:** x-tg-init-data
 
 Returns the full user record including profile and subscription.
 
@@ -1129,8 +1146,7 @@ Returns the full user record including profile and subscription.
 ### GET /tg/me/settings
 
 **Stability:** Stable
-
-**Auth:** X-TG-INIT-DATA
+**Auth:** x-tg-init-data
 
 **Response 200:** `UserSettings` object
 
@@ -1139,24 +1155,11 @@ Returns the full user record including profile and subscription.
 ### PATCH /tg/me/settings
 
 **Stability:** Stable
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
+Upserts user settings (creates if not exist, updates if exist). Only the fields listed in [PATCH Semantics](#6-patch-semantics) are accepted; others are silently ignored.
 
-Upserts user settings. Only the following fields are accepted (others are silently ignored).
-
-> **Dead setting:** `weeklyDigest` is accepted and stored, but no cron job sends a weekly digest. Setting it to `true` has no observable effect.
-
-```typescript
-{
-  morningNotifyTime?: string;       // "HH:MM"
-  eveningNotifyTime?: string;       // "HH:MM"
-  morningNotifyEnabled?: boolean;
-  eveningNotifyEnabled?: boolean;
-  paymentAlerts?: boolean;
-  deficitAlerts?: boolean;
-  weeklyDigest?: boolean;           // DEAD — stored but no handler
-}
-```
+**Request body:** any subset of `UserSettings` fields (see [PATCH Semantics](#6-patch-semantics))
 
 **Response 200:** Updated `UserSettings`
 
@@ -1165,8 +1168,7 @@ Upserts user settings. Only the following fields are accepted (others are silent
 ### GET /tg/me/plan
 
 **Stability:** Stable
-
-**Auth:** X-TG-INIT-DATA
+**Auth:** x-tg-init-data
 
 **Response 200:**
 ```typescript
@@ -1183,15 +1185,14 @@ A user is considered PRO if:
 
 ---
 
-## 16. Billing
+## 18. Billing
 
 ### POST /tg/billing/pro/checkout
 
 **Stability:** Provisional
+**Auth:** x-tg-init-data
 
-**Auth:** X-TG-INIT-DATA
-
-Creates a Telegram Stars invoice link for the PRO subscription (100 Stars / month). Calls the Telegram Bot API `createInvoiceLink` method.
+Creates a Telegram Stars invoice link for PRO subscription (100 Stars/month). Calls Telegram Bot API `createInvoiceLink`.
 
 **Request body:** none
 
@@ -1201,56 +1202,60 @@ Creates a Telegram Stars invoice link for the PRO subscription (100 Stars / mont
 ```
 
 **Errors:**
-- `400 { "error": "Already PRO" }` — user already has an active PRO subscription
+- `400 {"error": "Already PRO"}` — user already has an active PRO subscription
 - `502` — Telegram Bot API returned an error
 - `503` — BOT_TOKEN not configured
 
-**Flow after payment:**
-1. Telegram sends a `successful_payment` update to the bot
+**Payment flow:**
+1. Telegram sends `successful_payment` update to the bot
 2. Bot calls `POST /internal/activate-subscription` with `telegramId`, `chargeId`, `amount`
 3. API creates/updates the `Subscription` record and creates a `PaymentEvent`
 
 ---
 
-## 17. Internal Routes
+## 19. Internal Routes
 
-These routes are only for bot-to-API communication and are protected by `X-Internal-Key`.
+These routes are for bot-to-API communication only. Protected by `x-internal-key`.
 
 ### POST /internal/store-chat-id
 
 **Stability:** Stable
+**Auth:** x-internal-key
 
-Stores the user's `telegramChatId` (required for push notifications). Called by the bot when it receives any message from a user.
+Stores the user's `telegramChatId`, required for push notifications. Called by the bot on any message from a user.
 
 **Request body:**
-```typescript
-{
-  telegramId: string | number;  // required
-  chatId: string | number;      // required
-}
-```
 
-**Response 200:** `{ "ok": true }`
+| Field | Type | Required |
+|-------|------|----------|
+| `telegramId` | string \| number | Yes |
+| `chatId` | string \| number | Yes |
+
+**Response 200:** `{"ok": true}`
 
 **Errors:**
-- `400` — missing telegramId or chatId
+- `400` — missing `telegramId` or `chatId`
 
 ---
 
 ### POST /internal/activate-subscription
 
 **Stability:** Stable
+**Auth:** x-internal-key
 
-Activates (or renews) a PRO subscription after a successful Telegram Stars payment.
+Activates or renews a PRO subscription after a successful Telegram Stars payment.
+
+Behavior:
+- Upserts `Subscription` record: `status: ACTIVE`, `currentPeriodEnd = now + 30 days`
+- Creates a `PaymentEvent` record with `eventType: "subscription_activated"`
 
 **Request body:**
-```typescript
-{
-  telegramId: string | number;  // required
-  chargeId: string;             // Telegram payment charge ID, required
-  amount: number;               // Stars amount, required
-}
-```
+
+| Field | Type | Required |
+|-------|------|----------|
+| `telegramId` | string \| number | Yes |
+| `chargeId` | string | Yes — Telegram payment charge ID |
+| `amount` | number | Yes — Stars amount |
 
 **Response 200:**
 ```typescript
@@ -1261,45 +1266,33 @@ Activates (or renews) a PRO subscription after a successful Telegram Stars payme
 ```
 
 **Errors:**
-- `404 { "error": "User not found" }` — no user with this telegramId
-
-**Behavior:**
-- Upserts `Subscription` record (`status: ACTIVE`, `currentPeriodEnd = now + 30 days`)
-- Creates `PaymentEvent` record with `eventType: "subscription_activated"`
+- `404 {"error": "User not found"}` — no user with this telegramId
 
 ---
 
-## 18. Auth Appendix
+## 20. Auth/Security Appendix
 
-| Route Group | Actor | Auth Method | Prod-Safe | Dev Bypass Available | Notes |
-|-------------|-------|-------------|-----------|----------------------|-------|
-| `GET /health`, `GET /health/deep` | Anyone | None | Yes | N/A | Public |
-| `GET /tg/onboarding/status` | Telegram user | X-TG-INIT-DATA | Yes | Yes (dev only) | |
-| `POST /tg/onboarding/*` | Telegram user | X-TG-INIT-DATA | Yes | Yes (dev only) | |
-| `GET /tg/dashboard` | Telegram user | X-TG-INIT-DATA | Yes | Yes (dev only) | |
-| `POST /tg/expenses`, `GET /tg/expenses*`, `DELETE /tg/expenses/:id` | Telegram user | X-TG-INIT-DATA | Yes | Yes (dev only) | |
-| `GET /tg/periods/*`, `POST /tg/periods/recalculate` | Telegram user | X-TG-INIT-DATA | Yes | Yes (dev only) | |
-| `GET /tg/incomes`, `POST /tg/incomes`, `PATCH /tg/incomes/:id`, `DELETE /tg/incomes/:id` | Telegram user | X-TG-INIT-DATA | Yes | Yes (dev only) | |
-| `GET /tg/obligations`, `POST /tg/obligations`, `PATCH /tg/obligations/:id`, `DELETE /tg/obligations/:id` | Telegram user | X-TG-INIT-DATA | Yes | Yes (dev only) | |
-| `GET /tg/debts*`, `POST /tg/debts*`, `PATCH /tg/debts/:id`, `DELETE /tg/debts/:id` | Telegram user | X-TG-INIT-DATA | Yes | Yes (dev only) | |
-| `GET /tg/me/*`, `PATCH /tg/me/settings` | Telegram user | X-TG-INIT-DATA | Yes | Yes (dev only) | |
-| `POST /tg/billing/pro/checkout` | Telegram user | X-TG-INIT-DATA | Yes | Yes (dev only) | |
-| `POST /internal/store-chat-id` | Bot service | X-Internal-Key | Yes | No | Never proxied externally |
-| `POST /internal/activate-subscription` | Bot service | X-Internal-Key | Yes | No | Never proxied externally |
+| Route pattern | Actor | Auth method | Prod behavior | Dev behavior |
+|---------------|-------|-------------|---------------|--------------|
+| `/health*` | Anyone | None | None | None |
+| `/tg/*` | Telegram user | x-tg-init-data | HMAC-SHA256 + auth_date freshness (<1h) | x-tg-dev bypass available |
+| `/internal/*` | Bot service | x-internal-key | Must match ADMIN_KEY env var | Must match ADMIN_KEY env var |
 
-**Dev bypass details:** The `X-TG-DEV: <telegramId>` header bypasses HMAC validation entirely. It is guarded by `if (process.env.NODE_ENV !== 'production')` and is unreachable in production where `NODE_ENV=production` is set in the Dockerfile.
+**Dev bypass details:** The `x-tg-dev: <telegramId>` header bypasses HMAC validation. It is guarded by `if (process.env.NODE_ENV !== 'production')` and is unreachable in production where `NODE_ENV=production` is set in the Dockerfile. Internal routes have no dev bypass — they always require the correct ADMIN_KEY.
 
 ---
 
-## 19. Open Issues
+## 21. Known Caveats
 
-These items were previously inline TODO/VERIFY comments. Tracked here for visibility.
-
-| ID | Route | Issue | Priority |
-|----|-------|-------|----------|
-| OI-001 | `GET /tg/me/profile` | Exact fields returned not verified against code — `# TODO: verify exact fields returned` | Low |
-| OI-002 | `POST /tg/expenses` | No idempotency key — retrying creates a duplicate expense | Medium |
-| OI-003 | All `/tg/*` | No rate limiting on any endpoint | High |
-| OI-004 | `PATCH /tg/me/settings` | `weeklyDigest` field is a dead setting — no handler sends the digest | Medium |
-| OI-005 | Error format | `code` and `requestId` fields not implemented — current format is `{ error: string }` only | Medium |
-| OI-006 | `GET /tg/expenses` | Scoped to active period only — all-time expense history not exposed | Low |
+| ID | Route | Caveat |
+|----|-------|--------|
+| KC-001 | `GET /tg/expenses` | Scoped to active period if one exists. Returns all expenses if no active period. All-time history across multiple periods is not exposed. |
+| KC-002 | `PATCH /tg/debts/:id` | Does NOT trigger period recalculation. Call `POST /tg/periods/recalculate` manually after changes that affect S2S. |
+| KC-003 | `PATCH /tg/incomes/:id` | Does NOT trigger period recalculation. Call `POST /tg/periods/recalculate` manually after changes that affect S2S. |
+| KC-004 | `POST /tg/onboarding/income` | Replace semantics — deletes ALL existing incomes first. Not an append operation. |
+| KC-005 | `POST /tg/onboarding/complete` | Closes any existing ACTIVE period before creating the new one. The old period is marked COMPLETED. |
+| KC-006 | `POST /tg/expenses` | No idempotency key. Retrying a failed request will create a duplicate expense. |
+| KC-007 | `PATCH /tg/me/settings weeklyDigest` | Accepted and stored, but no cron job or handler sends a weekly digest. Dead setting. |
+| KC-008 | All `/tg/*` | No rate limiting on any endpoint. GAP: TD-001. |
+| KC-009 | Error format | No `requestId`/`traceId` in error responses. No machine-readable error `code` field. Both are planned. |
+| KC-010 | `GET /tg/expenses/today` | "Today" is UTC midnight, not the user's local midnight. Affects users in UTC+ timezones around midnight. |

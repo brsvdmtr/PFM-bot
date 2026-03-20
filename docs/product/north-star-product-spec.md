@@ -1,321 +1,183 @@
 ---
-title: "Product Spec: PFM Bot — Safe to Spend"
+title: "North Star Product Spec: PFM Bot — Safe to Spend"
 document_type: Normative
 status: Active
-source_of_truth: Yes
+source_of_truth: NO
 verified_against_code: Partial
 last_updated: "2026-03-20"
 related_docs:
-  - gap-analysis.md
-  - ../system/formulas-and-calculation-policy.md
-  - faq-mvp.md
-  - how-we-calculate-copy.md
+  - path: ../system/formulas-and-calculation-policy.md
+    relation: "canonical formula source"
+  - path: gap-analysis.md
+    relation: "known gaps registry"
+  - path: faq-mvp.md
+    relation: "user-facing explanation"
+  - path: how-we-calculate-copy.md
+    relation: "user-facing calculation copy"
 ---
 
-# Product Spec: PFM Bot — Safe to Spend
+# North Star Product Spec: PFM Bot — Safe to Spend
 
 **Version:** v0.1 MVP
 **Last updated:** 2026-03-20
 **Status:** Active development
 
-For calculation details, see: [formulas-and-calculation-policy.md](../system/formulas-and-calculation-policy.md)
+> This document is NOT the source of truth for calculation formulas.
+> For canonical formula definitions see: [formulas-and-calculation-policy.md](../system/formulas-and-calculation-policy.md)
 
 ---
 
-## Vision
+## 1. Product Vision
 
-> «Знаешь сколько можно потратить сегодня — не думаешь о деньгах»
+One number. One question answered.
 
-Человек открывает Telegram, нажимает одну кнопку — и видит одно число: сколько он может потратить сегодня, не нарушая своих финансовых целей. Никаких таблиц, никаких категорий, никакого ручного планирования.
+> **«Можно сегодня» — Safe to Spend Today**
 
----
+A person opens Telegram, taps once, and sees a single number: how much they can spend today without violating any of their financial goals. No spreadsheets. No categories. No manual planning.
 
-## Проблема
-
-Типичный пользователь:
-- Получает зарплату 1–2 раза в месяц. После зарплаты кажется «денег много», к концу периода — «денег нет».
-- Имеет кредиты и обязательные платежи, но не знает точно, сколько «свободных» денег осталось после всех вычетов.
-- Не ведёт бюджет, потому что классические инструменты требуют слишком много усилий (категории, теги, импорт).
-- Испытывает финансовую тревогу не из-за реального дефицита, а из-за отсутствия ясности.
-
-**Инсайт:** Людям не нужен полный финансовый учёт. Им нужен один простой ответ: «сегодня можно потратить X рублей».
+PFM-bot is the financial operating system for people who need one clear daily answer: **"Can I spend 3000₽ today?"**
 
 ---
 
-## Целевая аудитория
+## 2. Target Users
 
-### Первичная (v0.1)
-- Возраст 25–40 лет, Россия
-- Доход: 60 000 — 250 000 ₽/месяц
-- Получают зарплату 1–2 раза в месяц (аванс + основная)
-- Есть хотя бы один потребительский кредит или кредитная карта
-- Пользуются Telegram ежедневно
-- Не ведут бюджет или бросали после 2–3 недель
+### Primary (v0.1)
+- Age 25–40, Russia
+- Income: 60 000 — 250 000 ₽/month
+- Paid 1–2 times per month (advance + main salary)
+- Has at least one consumer loan or credit card
+- Uses Telegram daily
+- Does not track budget, or quit after 2–3 weeks
 
-### Вторичная
-- Фрилансеры с нерегулярным доходом (**не поддерживается**: движок игнорирует `IRREGULAR` frequency — [→ GAP-019])
-- Семейные пары, где один управляет бюджетом
-- Люди в процессе выплаты ипотеки/автокредита
+### Secondary
+- Freelancers with irregular income (not yet supported — engine ignores `IRREGULAR` frequency)
+- Couples where one person manages the shared budget
+- People actively paying off a mortgage or auto loan
 
-### Не целевая (v0.1)
-- Предприниматели с бизнес-расходами
-- Инвесторы (нет модуля инвестиций)
-- Пользователи с несколькими валютами одновременно
+### Not target (v0.1)
+- Business owners with business expenses
+- Investors (no investment module)
+- Users with multiple simultaneous currencies
+
+**Key insight:** These users are not accountants. They are not investors. They are everyday spenders who need a single daily decision helper, not a full budgeting system.
 
 ---
 
-## Ключевая метрика (North Star)
+## 3. Core Value Proposition
 
-**DAU opening dashboard** × **% пользователей, не вышедших за S2S лимит в течение периода**
+PFM-bot is **not** a budget tracker.
 
-Вспомогательные метрики:
+It is a **daily decision helper**.
+
+The difference:
+- A budget tracker records what happened and shows categories.
+- PFM-bot tells you what you can do right now.
+
+The S2S number already accounts for:
+- All upcoming mandatory payments in the current period
+- Minimum debt payments
+- A 10% reserve buffer (silent, not explained to the user)
+- Emergency fund contributions (until target is reached)
+- Extra payment toward the highest-APR debt (avalanche strategy)
+- Carry-over: yesterday's overspending reduces today's limit
+
+The user does not need to understand any of this. They see one number and act on it.
+
+---
+
+## 4. Feature Status
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Onboarding (income, obligations, debts, EF) | ✅ Implemented | Replaces all data on re-run |
+| Dashboard with S2S Today | ✅ Implemented | Carry-over mechanism |
+| Expense logging | ✅ Implemented | Manual, quick add |
+| Delete expense | ✅ Implemented | |
+| Period rollover (auto) | ✅ Implemented | Cron at 00:05 UTC, ~UTC offset gap |
+| Morning notifications | ✅ Implemented | Per-user timezone, in-memory dedup |
+| Evening notifications | ✅ Implemented | |
+| Payment due alerts | ✅ Implemented | For debts with dueDay |
+| Debt tracking (avalanche) | ✅ Implemented | isFocusDebt, APR-based |
+| Emergency fund tracking | ✅ Implemented | Target = obligations * targetMonths |
+| PRO subscription (Telegram Stars) | ✅ Implemented | 100 stars/month |
+| Two-payday income support | ✅ Implemented (fixed Mar 2026) | triggerPayday algorithm |
+| Settings (notification times, toggles) | ✅ Implemented | |
+| Payday editor in Settings | ✅ Implemented | Triggers recalculate |
+| Income management (add/edit/delete) | ✅ Implemented | |
+| Period history (last completed) | ✅ Implemented | |
+| Avalanche debt plan | ✅ Implemented | GET /tg/debts/avalanche-plan |
+| Analytics / Charts | ❌ Not implemented | Planned post-MVP |
+| Expense export | ❌ Not implemented | Planned, PRO feature |
+| Category tags on expenses | ❌ Not implemented | Planned |
+| Weekly digest | ❌ Not implemented (settings field exists) | Setting saved to DB but cron not built |
+| /delete user data bot command | ❌ Not implemented | GAP-008, P1 |
+| Multi-currency | ⚠️ Partial | RUB/USD enum, no conversion |
+
+---
+
+## 5. Known Product Gaps
+
+Full gap registry: [gap-analysis.md](gap-analysis.md)
+
+High-priority gaps that affect user trust or compliance:
+
+- **GAP-001**: Trigger payday not persisted in Period record — cannot audit which income fired for a given period
+- **GAP-003**: Notification dedup lost on container restart — morning notification may be sent twice in one day after a deploy
+- **GAP-004**: Period rollover timing off by UTC offset — Moscow users (UTC+3) get new period at 03:05 local time, not midnight
+- **GAP-007**: EF contribution does not auto-resume after target change — requires manual recalculate
+- **GAP-008**: /delete user data not implemented — compliance risk, P1
+
+---
+
+## 6. Product Principles
+
+**Show one number prominently**
+The "Можно сегодня" figure is the product. Everything else is secondary context.
+
+**Never show negative money to the user**
+S2S Today is floored at 0. The user sees 0, not -500₽. Status indicators (WARNING, OVERSPENT, DEFICIT) communicate the problem without showing a negative number.
+
+**Carry-over by default**
+Yesterday's overspending matters. The daily limit is always recalculated as `(period remaining) / (days left)`. There is no "reset" at midnight; the period budget is a running total.
+
+**Reserve is silent**
+The 10% reserve buffer is applied automatically and never displayed to the user as a line item. It simply reduces the available daily limit. Users who ask "why is my limit lower than expected?" can read the FAQ; the main UI never explains it proactively.
+
+**Honest about deficit**
+When obligations exceed income, the app shows DEFICIT status and S2S = 0. It does not hide the problem or show misleading positive numbers.
+
+**Minimal input, maximum insight**
+The onboarding takes 5 steps. After that, the user only logs expenses. Everything else (period creation, rollover, S2S recalculation) is automatic.
+
+---
+
+## 7. Monetization
+
+**FREE plan (all users):**
+- Full S2S calculation
+- Unlimited expense logging
+- Current period history
+- Morning/evening notifications
+- Debt and emergency fund tracking
+
+**PRO plan (100 XTR / month):**
+- Payment gateway: Telegram Stars (XTR) — **implemented**
+- Subscription period: 30 days from payment — **implemented**
+- PRO-exclusive features (analytics, export): **not yet implemented**
+- API-level gate enforcement: **not yet implemented** (GAP-020)
+
+Users who have paid for PRO receive `isPro: true` flag but currently get no additional capabilities beyond the free plan. This will be resolved when PRO-exclusive features are built.
+
+---
+
+## 8. North Star Metric
+
+**DAU opening dashboard** × **% of users who stay within S2S limit for the full period**
+
+Supporting metrics:
 - Retention D7 / D30
-- Onboarding completion rate (шаг 1 → шаг 5)
-- Средняя частота добавления расходов в день
-- % периодов, завершённых без дефицита
+- Onboarding completion rate (step 1 → step 5)
+- Average expense-logging frequency per day per user
+- % of periods completed without deficit
 
-**Статус сбора:** Ни одна метрика пока не инструментирована. Аналитика не реализована. См. [tracking-plan.md](tracking-plan.md).
-
----
-
-## Что такое S2S (Safe to Spend)
-
-Safe to Spend — единственное число, которое показывает приложение. Это сумма, которую пользователь может потратить сегодня, уже учитывая:
-- Все предстоящие обязательные платежи текущего периода
-- Минимальные платежи по долгам
-- Резервный буфер (10% от свободных средств)
-- Взнос в аварийный фонд
-- Дополнительный платёж по долгу с наибольшим APR (avalanche)
-- Перенос неизрасходованного лимита с предыдущих дней
-
-Подробная формула: [formulas-and-calculation-policy.md](../system/formulas-and-calculation-policy.md)
-
----
-
-## Экраны и навигация (v0.1)
-
-### Онбординг (5 шагов, однократный)
-1. **Welcome** — объяснение концепции S2S
-2. **Income** — сумма дохода + дни зарплаты (paydays: массив дней месяца)
-3. **Obligations** — обязательные платежи (аренда, коммуналка, подписки и др.)
-4. **Debts** — долги: баланс, APR, минимальный платёж
-5. **Emergency Fund** — текущий размер подушки безопасности + цель (default: 3 месяца расходов)
-6. **Result** — расчёт первого периода, показ S2S
-
-### Основные экраны
-| Экран | Назначение |
-|---|---|
-| `dashboard` | Главный: S2S сегодня, дневной лимит, прогресс периода, фокус-долг, EF |
-| `add-expense` | Быстрое добавление расхода (сумма + опциональная заметка) |
-| `history` | Расходы текущего периода, сгруппированные по дням |
-| `debts` | Список долгов + avalanche план + кнопка «внести платёж» |
-| `settings` | Уведомления, часовой пояс, ссылка на PRO |
-| `pro` | Экран подписки PRO (Telegram Stars / XTR) |
-| `period-summary` | Итоги завершённого периода (сохранено/перерасход, топ-расходы) |
-| `incomes` | CRUD для источников дохода |
-| `obligations` | CRUD для обязательных платежей |
-| `paydays` | Редактор дат зарплаты с пересчётом периода |
-
----
-
-## Список фич
-
-### Реализовано и проверено
-
-Перечисленные фичи работают в production и верифицированы в коде.
-
-| Фича | Заметки |
-|---|---|
-| Онбординг 5 шагов | `apps/api/src/index.ts`, `apps/web` |
-| S2S расчёт с carry-over | `apps/api/src/engine.ts` |
-| Период от зарплаты до зарплаты (1 или 2 даты) | |
-| Пропорциональный первый период (prorated start) | |
-| Быстрое добавление расхода (ручное) | Только ручной ввод. Импорт не реализован. |
-| История расходов текущего периода (paginated) | |
-| Удаление расхода | Только удаление. Редактирование не реализовано. |
-| Обязательные платежи (obligations) CRUD | |
-| Долги с APR + минимальные платежи CRUD | |
-| Avalanche стратегия (focus debt) | |
-| Аварийный фонд (EF) | |
-| Утренние и вечерние уведомления | |
-| Напоминания о платежах по долгам | |
-| Уведомление о начале нового периода | |
-| Автоматический rollover периода (cron 00:05 UTC) | |
-| DailySnapshot (cron 23:55 UTC) | |
-| Подписка PRO через Telegram Stars (100 XTR) | Платёж работает. PRO-exclusive фичи не реализованы. |
-| Telegram Mini App (Next.js 14) | |
-| Авторизация через Telegram initData | |
-| Настройки уведомлений (время, вкл/выкл) | |
-| Редактор дат зарплаты с recalculate | |
-| CRUD для доходов, обязательств, долгов | |
-| Bot commands: /start, /today, /spend, /help | |
-
-### Реализовано с известными проблемами
-
-| Фича | Проблема |
-|---|---|
-| Расчёт дохода при двух зарплатах | [→ GAP-001] Деление суммы неочевидно для пользователя — нет подсказки |
-| triggerPayday (определение какая зарплата запустила период) | [→ GAP-002] Не персистируется — пересчитывается при каждом запросе |
-| Уведомления утро/вечер | [→ GAP-003] Дедупликация in-memory — сбрасывается при рестарте контейнера |
-| Period rollover | [→ GAP-004] 00:05 UTC, не midnight пользователя — проблема для UTC+5 и выше |
-| DailySnapshot | [→ GAP-015] Сохраняется в 23:55 UTC, а не в 23:55 по часовому поясу пользователя |
-| Уведомление о дефиците | [→ GAP-014] `sendDeficitAlert` функция есть, в cron не вызывается |
-| weeklyDigest (настройка) | [→ GAP-013] Поле сохраняется в БД, cron не реализован — настройка не работает |
-| Нерегулярный доход (IRREGULAR) | [→ GAP-019] Поле `frequency` есть в схеме, движок игнорирует |
-
-### Запланировано / Не начато
-
-| Фича | Приоритет |
-|---|---|
-| Экспорт расходов (CSV / Excel) | High |
-| История по всем периодам (не только текущему) | High |
-| /delete команда для удаления данных пользователя | High — [→ GAP-008] |
-| Rate limiting на API | High — [→ GAP-009] |
-| Редактирование расхода (не только удаление) | Medium — [→ GAP-005] |
-| Категории расходов | Medium |
-| Недельный дайджест (реализация cron) | Medium — [→ GAP-013] |
-| Аналитика: дни с перерасходом | Medium |
-| Уведомление WARNING (S2S < 30%) | Medium |
-| Нерегулярный доход (IRREGULAR) — полная реализация | Medium — [→ GAP-019] |
-| PRO feature gates + реальные PRO-фичи | High — [→ GAP-020] |
-| Мультивалютность | Low |
-| Семейный аккаунт (shared budget) | Low |
-| Импорт выписки банка | Low |
-
-### Someday / Maybe
-
-| Фича |
-|---|
-| Автокатегоризация расходов через AI |
-| Прогноз расходов на следующий период |
-| Интеграция с банками (Open Banking API) |
-| Gamification (streaks, бейджи) |
-| Партнёрская программа |
-| Отдельное iOS/Android приложение |
-
----
-
-## Нецели (Non-goals) для v0.1
-
-- **Не** инструмент для ведения полного бюджета с категориями и лимитами по категориям
-- **Не** замена банковскому приложению
-- **Не** инвестиционный советник
-- **Не** учёт дохода в реальном времени (банковские хуки)
-- **Не** поддержка нескольких пользователей на один аккаунт
-- **Не** импорт исторических данных при первом использовании
-
----
-
-## Техническая архитектура (краткая)
-
-```
-Telegram Bot (Telegraf)
-    ↕ internal API (x-internal-key)
-Express API (port 3002)
-    ↕ Prisma ORM
-PostgreSQL
-    ↑
-Next.js 14 Mini App (web)
-    → API через NEXT_PUBLIC_API_URL
-    → Auth: X-TG-INIT-DATA header
-```
-
-**Monorepo:** pnpm workspaces
-- `apps/api` — Express + S2S engine + cron
-- `apps/bot` — Telegraf (webhooks, payments)
-- `apps/web` — Next.js 14 Mini App (единый файл MiniApp.tsx)
-- `packages/db` — Prisma client
-- `packages/shared` — общие утилиты, i18n
-
-**Deploy:** Docker Compose на VPS (Timeweb), домен mytodaylimit.ru
-
----
-
-## Критерии успеха для v0.1
-
-| Критерий | Целевое значение |
-|---|---|
-| Onboarding completion rate | > 70% |
-| D7 retention | > 40% |
-| D30 retention | > 20% |
-| DAU / MAU | > 25% |
-| % периодов без дефицита | > 60% |
-| Среднее число расходов/день/пользователь | > 1.5 |
-| Conversion FREE → PRO | > 5% после D14 |
-
-**Статус:** Ни один критерий не измеряется. Аналитика не реализована.
-
----
-
-## Монетизация
-
-**FREE план:**
-- Полный S2S расчёт
-- Неограниченное добавление расходов
-- История текущего периода
-- Базовые уведомления (утро/вечер)
-
-**PRO план (100 XTR / месяц):**
-- Платёжный шлюз: Telegram Stars (XTR) — **реализован**
-- Период подписки: 30 дней с момента оплаты — **реализован**
-- PRO-exclusive фичи (аналитика, экспорт): **не реализованы**
-- Gate-keeping на уровне API: **не реализован** — [→ GAP-020]
-
-Пользователи, оплатившие PRO, получают флаг `isPro: true` но не получают никаких дополнительных возможностей в текущей версии.
-
----
-
-## Известные риски для доверия пользователей (Known Product Risks)
-
-Следующие проблемы могут подорвать доверие пользователей к корректности расчётов:
-
-**Риск 1: Неверное число из-за дрейфа triggerPayday**
-Если пользователь меняет даты зарплаты после создания периода, `triggerPayday` пересчитывается на лету с новыми данными. Это может изменить, какой доход учитывается в текущем периоде, без какого-либо уведомления. Пользователь видит другое число — без объяснения почему.
-*Связано: [→ GAP-002]*
-
-**Риск 2: Дублирующиеся уведомления после рестарта контейнера**
-При рестарте API (деплой, OOM) дедупликация уведомлений сбрасывается. Пользователи могут получить повторное утреннее или вечернее сообщение. Это снижает доверие к системе уведомлений.
-*Связано: [→ GAP-003]*
-
-**Риск 3: Период не переходит в момент «местной полуночи»**
-Пользователи в UTC+5 и выше видят нулевой дашборд на несколько часов в день зарплаты: старый период истёк, новый ещё не создан. Выглядит как сломанное приложение.
-*Связано: [→ GAP-004]*
-
-**Риск 4: weeklyDigest и deficitAlerts обещают функционал, которого нет**
-Переключатели в настройках активны и сохраняются, но соответствующие уведомления не отправляются. Пользователь включает опцию и ждёт, что она сработает.
-*Связано: [→ GAP-013], [→ GAP-014]*
-
-**Риск 5: PRO подписка без PRO-ценности**
-Пользователь платит 100 XTR и не получает ничего сверх бесплатного плана. Нет PRO-exclusive экранов, экспорта, аналитики.
-*Связано: [→ GAP-020]*
-
----
-
-## Open Questions
-
-1. **PRO features definition**: Что конкретно входит в PRO? Список нужно зафиксировать до следующего маркетинга подписки.
-2. **IRREGULAR income UX**: Как должен работать нерегулярный доход в движке? Пользователь вводит сумму каждый период вручную? Или усредняется по истории?
-3. **Multi-currency**: Какова минимальная версия мультивалютности? USD + RUB для пользователей с валютными доходами?
-4. **Privacy / GDPR**: Нужна ли юридическая оценка для пользователей из ЕС? Текущий /delete gap (GAP-008) может быть проблемой.
-5. **Period history access**: Входит ли история за прошлые периоды в FREE или только в PRO?
-
----
-
-## Глоссарий
-
-| Термин | Определение |
-|---|---|
-| S2S (Safe to Spend) | Сумма, которую можно потратить сегодня без риска нарушить план |
-| Period | Интервал от одной зарплаты до следующей |
-| Payday | День месяца, когда приходит зарплата (1–28) |
-| triggerPayday | День зарплаты, запустивший текущий период. Вычисляется из endDate + allPaydays. Не персистируется. [→ GAP-002] |
-| Prorated start | Первый период неполный: начат не в день зарплаты, а с текущей даты |
-| Carry-over | Перенос неизрасходованного лимита: `(s2sPeriod - periodSpent) / daysLeft` |
-| s2sDaily (live) | Дневной лимит с учётом carry-over, пересчитывается на каждый запрос дашборда |
-| s2sPlanned | Базовый дневной лимит на момент создания периода, хранится в DailySnapshot |
-| Obligations | Обязательные платежи: аренда, коммуналка, подписки — вычитаются каждый период |
-| Avalanche | Стратегия погашения долгов: сначала самый высокий APR |
-| Focus debt | Текущий «цель» долг в avalanche-плане |
-| EF (Emergency Fund) | Аварийный фонд: цель = N месяцев обязательных расходов (default: 3) |
-| Reserve | Буфер 10% (или 5% при недостатке) от `afterFixed` |
-| DailySnapshot | Слепок состояния на конец дня (23:55 UTC), хранится в БД |
+**Collection status:** No metric is currently instrumented. Analytics not implemented. See [tracking-plan.md](tracking-plan.md).
