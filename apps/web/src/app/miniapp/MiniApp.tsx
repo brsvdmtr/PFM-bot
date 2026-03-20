@@ -1154,6 +1154,10 @@ function ProPaywall({ onBack, api }: { onBack: () => void; api: (path: string, o
 function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPaydays }: { api: (path: string, opts?: RequestInit) => Promise<any>; onOpenPro: () => void; onOpenIncomes: () => void; onOpenObligations: () => void; onOpenPaydays: () => void }) {
   const [settings, setSettings] = useState<any>(null);
   const [plan, setPlan] = useState<any>(null);
+  const [cashModal, setCashModal] = useState(false);
+  const [cashInput, setCashInput] = useState('');
+  const [cashSaving, setCashSaving] = useState(false);
+  const [cashDone, setCashDone] = useState(false);
 
   useEffect(() => {
     Promise.all([api('/tg/me/settings'), api('/tg/me/plan')]).then(([s, p]) => { setSettings(s); setPlan(p); });
@@ -1165,9 +1169,38 @@ function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPayd
     await api('/tg/me/settings', { method: 'PATCH', body: JSON.stringify({ [key]: val }) });
   };
 
+  const handleCashSave = async () => {
+    const amount = parseInt(cashInput.replace(/\D/g, ''), 10);
+    if (isNaN(amount) || amount < 0) return;
+    setCashSaving(true);
+    try {
+      await api('/tg/cash-anchor', { method: 'POST', body: JSON.stringify({ currentCash: amount }) });
+      setCashDone(true);
+      setTimeout(() => { setCashModal(false); setCashDone(false); setCashInput(''); }, 1200);
+    } finally { setCashSaving(false); }
+  };
+
   return (
     <div style={{ background: C.bg, minHeight: '100vh', padding: '20px 16px', paddingBottom: 90 }}>
       <p style={{ fontSize: 22, fontWeight: 700, marginBottom: 20, color: C.text }}>Настройки</p>
+
+      {/* Cash anchor modal */}
+      {cashModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 100, display: 'flex', alignItems: 'flex-end' }} onClick={() => setCashModal(false)}>
+          <div style={{ background: C.bgSecondary, borderRadius: '20px 20px 0 0', padding: '24px 20px 40px', width: '100%', boxSizing: 'border-box' }} onClick={e => e.stopPropagation()}>
+            <p style={{ fontSize: 18, fontWeight: 700, color: C.text, marginBottom: 6 }}>Текущий остаток</p>
+            <p style={{ fontSize: 13, color: C.textSec, marginBottom: 20 }}>Укажите, сколько у вас сейчас на руках. Это обновит дневной лимит с учётом реального баланса.</p>
+            <input
+              type="number" inputMode="numeric" placeholder="0"
+              value={cashInput} onChange={e => setCashInput(e.target.value)} autoFocus
+              style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: '14px 16px', fontSize: 20, fontWeight: 700, color: C.text, fontFamily: 'inherit', boxSizing: 'border-box', marginBottom: 16, outline: 'none' }}
+            />
+            <PrimaryBtn onClick={handleCashSave} disabled={cashSaving || cashDone}>
+              {cashDone ? '✓ Сохранено' : cashSaving ? 'Сохраняем...' : 'Обновить остаток'}
+            </PrimaryBtn>
+          </div>
+        </div>
+      )}
 
       {plan && (
         <Card style={{ marginBottom: 20, background: plan.plan === 'PRO' ? 'linear-gradient(145deg, #1E1535, #1A1028)' : C.surface, border: `1px solid ${plan.plan === 'PRO' ? C.accent : C.borderSubtle}` }}>
@@ -1186,6 +1219,7 @@ function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPayd
       {/* Budget management links */}
       <p style={{ fontSize: 12, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 10 }}>Бюджет</p>
       {[
+        { label: 'Текущий остаток', icon: '💵', desc: 'Обновить сколько денег на руках', onClick: () => setCashModal(true) },
         { label: 'Даты зарплаты', icon: '📅', desc: 'Когда приходят деньги', onClick: onOpenPaydays },
         { label: 'Доходы', icon: '💰', desc: 'Зарплата и другие поступления', onClick: onOpenIncomes },
         { label: 'Обязательства', icon: '📋', desc: 'Аренда, ЖКХ, подписки', onClick: onOpenObligations },
