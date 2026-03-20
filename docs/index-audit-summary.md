@@ -80,7 +80,7 @@ All `Verified` claims in individual documents refer to code-level verification (
 
 ### Audit Findings (Verification / Docs / Compliance)
 
-These do NOT require code changes. Each requires a specific verification action.
+These are verification, compliance, doc drift, or ops review items. Resolution may require either a code change or a spec/doc correction depending on the chosen path — they are not pure documentation tasks, but they are not tracked as product gaps because the root issue is an unverified or undocumented state, not a known behavior defect.
 
 | ID | Finding | Action needed | Priority |
 |----|---------|---------------|----------|
@@ -102,21 +102,22 @@ These do NOT require code changes. Each requires a specific verification action.
 
 ---
 
-## 2. Summary Counts
+## 3. Summary Counts
 
 | Category | Count |
 |----------|-------|
-| Total docs in registry | 36 (docs/adr/ deleted; redirect stubs removed) |
+| Total docs in registry | 36 (docs/adr/ deleted 2026-03-20) |
 | New this session | README.md |
 | Substantially rewritten this session | ~28 files |
-| Deleted (structural cleanup) | docs/adr/ — 7 redirect stubs deleted 2026-03-20 |
+| Deleted (structural cleanup) | docs/adr/ — 7 files deleted 2026-03-20 |
 | Remaining redirect stub | docs/ARCHITECTURE.md → docs/architecture/ARCHITECTURE.md |
 | Open product/tech gaps | 9 open (see docs/index.md § Known Gaps) |
-| Open audit findings (AU-*) | 8 open, 2 closed |
+| Open audit findings (AU-*) | 7 open (AU-002, 003, 004, 005, 006, 009, 010) |
+| Closed audit findings (AU-*) | 3 closed (AU-001, AU-007, AU-008) |
 
 ---
 
-## 3. Complete File List
+## 4. Complete File List
 
 | Path | Type | Status | SOT | Verified | Last action |
 |------|------|--------|-----|----------|-------------|
@@ -161,17 +162,17 @@ These do NOT require code changes. Each requires a specific verification action.
 
 ---
 
-## 4. Audit Findings (AU-*)
+## 5. Audit Findings (AU-*)
 
-> **What these are**: documentation-level gaps — unverified claims, placeholders, drift between docs and code.
-> These are NOT product gaps. They do not require code changes.
+> **What these are**: verification, compliance, doc drift, and ops review items. Resolution may require a code change or a spec/doc correction depending on chosen path. They are not tracked as product gaps because the root issue is an unverified or undocumented state, not a known behavior defect.
 > For product/tech open issues, see `docs/index.md § Known Gaps`.
+> For the canonical AU-* list, see **Section 2 § Audit Findings** above.
 
 ### Open Audit Findings
 
-See **Section 2 § Audit Findings** above for the current canonical list (AU-002 through AU-010).
+See **Section 2 § Audit Findings** above for the current canonical list (AU-002, 003, 004, 005, 006, 009, 010 — 7 open).
 
-This table is the legacy per-item format — the master list is in Section 2.
+This section contains only the closed-item record.
 
 ### Closed Audit Findings
 
@@ -183,7 +184,7 @@ This table is the legacy per-item format — the master list is in Section 2.
 
 ---
 
-## 5. Structural Changes
+## 6. Structural Changes
 
 ### ADR directory consolidation — COMPLETED
 
@@ -208,7 +209,7 @@ New file created at repo root. Previously did not exist. Contains: project descr
 
 ---
 
-## 6. What Improved
+## 7. What Improved
 
 Honest assessment compared to state before this session:
 
@@ -247,7 +248,7 @@ Honest assessment compared to state before this session:
 
 ---
 
-## 7. What Remains to Be Done
+## 8. What Remains to Be Done
 
 Honest remaining gaps after this session:
 
