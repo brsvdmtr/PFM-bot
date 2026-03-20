@@ -108,9 +108,25 @@ export function calculateS2S(input: S2SInput): S2SResult {
   const daysLeft = Math.max(1, daysTotal - daysElapsed + 1); // including today
 
   // ── Income for period ──
-  // For multi-payday incomes (e.g. paydays=[1,15]), allocate monthly/2 per period,
-  // since each period covers one payday, not two.
+  // Determine "trigger payday" = the payday that started this period.
+  // E.g. paydays=[1,15], period ends Apr 1  → trigger=15 (received Mar 15).
+  //      paydays=[1,15], period ends Apr 15 → trigger=1  (received Apr 1).
+  // Only count incomes whose payday matches the trigger, so two separate
+  // income entries (250k on 1st, 250k on 15th) each contribute only once
+  // per their respective period — not both every period.
+  const allPaydays = [...new Set(incomes.flatMap((inc) => inc.paydays))].sort((a, b) => a - b);
+  const endDay = periodEndDate.getDate();
+  const endDayIdx = allPaydays.indexOf(endDay);
+  const triggerPayday = endDayIdx > 0
+    ? allPaydays[endDayIdx - 1]
+    : allPaydays[allPaydays.length - 1];
+
   const totalIncome = incomes.reduce((sum, inc) => {
+    // If endDay doesn't match any known payday (e.g. after payday change), include all
+    const hasTrigger = endDayIdx !== -1 ? inc.paydays.includes(triggerPayday) : true;
+    if (!hasTrigger) return sum;
+    // Single-record multi-payday income (e.g. one record with paydays=[1,15]):
+    // divide monthly amount by payday count — each period gets one installment
     const payCount = Math.max(1, inc.paydays.length);
     return sum + Math.round(inc.amount / payCount);
   }, 0);

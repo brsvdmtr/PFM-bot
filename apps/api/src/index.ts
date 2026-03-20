@@ -503,10 +503,10 @@ tg.post('/onboarding/complete', async (req: AuthenticatedRequest, res) => {
     data: { status: 'COMPLETED' },
   });
 
-  // Calculate period bounds from first income's paydays
-  const paydays = incomes[0].paydays as number[];
+  // Calculate period bounds using ALL paydays from all incomes combined
+  const allPaydays = [...new Set(incomes.flatMap((inc) => inc.paydays as number[]))].sort((a, b) => a - b);
   const today = new Date();
-  const bounds = calculatePeriodBounds(paydays, today);
+  const bounds = calculatePeriodBounds(allPaydays, today);
 
   // Calculate S2S
   const totalPeriodIncome = incomes.reduce((sum, inc) => {
@@ -654,9 +654,9 @@ tg.post('/periods/recalculate', async (req: AuthenticatedRequest, res) => {
 
   const today = new Date();
 
-  // Recompute period bounds from current paydays (handles payday changes)
-  const paydays = incomes[0].paydays as number[];
-  const newBounds = calculatePeriodBounds(paydays, today);
+  // Recompute period bounds using ALL paydays from all incomes
+  const allPaydays = [...new Set(incomes.flatMap((inc) => inc.paydays as number[]))].sort((a, b) => a - b);
+  const newBounds = calculatePeriodBounds(allPaydays, today);
 
   const s2sResult = calculateS2S({
     incomes: incomes.map((inc) => ({ amount: inc.amount, paydays: inc.paydays as number[] })),
