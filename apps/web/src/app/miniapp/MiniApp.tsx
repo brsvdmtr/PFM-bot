@@ -66,6 +66,7 @@ interface DashboardData {
   daysLeft: number; daysTotal: number;
   periodStart: string; periodEnd: string;
   periodSpent: number; s2sPeriod: number;
+  periodRemaining?: number; totalDebtPaymentsRemaining?: number;
   todayExpenses: Expense[]; todayTotal: number;
   focusDebt: Debt | null;
   debts: Debt[];
@@ -634,7 +635,7 @@ function Dashboard({ data, onAddExpense, onOpenDebts, onOpenSummary, showSummary
         )}
         <div style={{ borderTop: '1px solid rgba(139,92,246,0.15)', paddingTop: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
           <span style={{ fontSize: 13, color: C.textSec }}>Осталось в периоде</span>
-          <span style={{ fontSize: 18, fontWeight: 700, color: C.green }}>{fmt(Math.max(0, data.s2sPeriod - data.periodSpent), data.currency)}</span>
+          <span style={{ fontSize: 18, fontWeight: 700, color: C.green }}>{fmt(data.periodRemaining ?? Math.max(0, data.s2sPeriod - data.periodSpent), data.currency)}</span>
         </div>
         {data.usesLiveWindow && data.cashOnHand != null && (
           <div style={{ borderTop: '1px solid rgba(139,92,246,0.15)', paddingTop: 14, marginTop: 0 }}>

@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import { prisma } from '@pfm/db';
 import { calculateS2S, calculatePeriodBounds } from './engine';
 import { getLastActualPayday, getNextActualPayday, getNextIncomeAmount } from './payday-calendar';
+import { DEFAULT_TZ, daysLeftInPeriod, getTodayLocalStart, getNextLocalDayStart, toLocalDate } from './period-utils';
 import {
   sendMorningNotification,
   sendEveningNotification,
@@ -54,14 +55,14 @@ function markNotified(userId: string, type: string): void {
 }
 
 /** Compute dynamic S2S for a user with an active period */
-async function computeS2S(userId: string) {
+async function computeS2S(userId: string, tz: string = DEFAULT_TZ) {
+  const todayLocalStart    = getTodayLocalStart(tz);
+  const tomorrowLocalStart = getNextLocalDayStart(tz);
+
   const [activePeriod, todayAgg, periodAgg] = await Promise.all([
     prisma.period.findFirst({ where: { userId, status: 'ACTIVE' } }),
     prisma.expense.aggregate({
-      where: {
-        userId,
-        spentAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
-      },
+      where: { userId, spentAt: { gte: todayLocalStart, lt: tomorrowLocalStart } },
       _sum: { amount: true },
     }),
     prisma.expense.aggregate({
@@ -75,10 +76,8 @@ async function computeS2S(userId: string) {
   const todayTotal = todayAgg._sum.amount ?? 0;
   const totalPeriodSpent = periodAgg._sum.amount ?? 0;
   const now = new Date();
-  // Use same formula as engine.ts: daysTotal - daysElapsed + 1
-  const msPerDay = 1000 * 60 * 60 * 24;
-  const daysElapsed = Math.max(1, Math.ceil((now.getTime() - activePeriod.startDate.getTime()) / msPerDay));
-  const daysLeft = Math.max(1, activePeriod.daysTotal - daysElapsed + 1);
+  // Timezone-aware daysLeft
+  const daysLeft = daysLeftInPeriod(activePeriod.endDate, now, tz);
 
   const periodRemaining = Math.max(0, activePeriod.s2sPeriod - totalPeriodSpent);
   const dynamicS2sDaily = Math.max(0, Math.round(periodRemaining / daysLeft));
@@ -116,7 +115,7 @@ cron.schedule('* * * * *', async () => {
         !hasNotified(user.id, 'morning')
       ) {
         markNotified(user.id, 'morning');
-        const s2s = await computeS2S(user.id);
+        const s2s = await computeS2S(user.id, user.timezone ?? DEFAULT_TZ);
         if (s2s) {
           await sendMorningNotification(
             user.telegramChatId,
@@ -136,7 +135,7 @@ cron.schedule('* * * * *', async () => {
         !hasNotified(user.id, 'evening')
       ) {
         markNotified(user.id, 'evening');
-        const s2s = await computeS2S(user.id);
+        const s2s = await computeS2S(user.id, user.timezone ?? DEFAULT_TZ);
         if (s2s) {
           await sendEveningNotification(
             user.telegramChatId,
@@ -308,9 +307,11 @@ cron.schedule('5 0 * * *', async () => {
         const { incomes, obligations, debts, emergencyFund: ef } = user;
         if (incomes.length === 0) continue;
 
-        // Calculate new period bounds using ALL paydays from all incomes
+        // Calculate new period bounds using ALL paydays from all incomes (timezone-aware)
+        const userTz = (user as any).timezone ?? DEFAULT_TZ;
         const allPaydays = [...new Set(incomes.flatMap((i: any) => i.paydays as number[]))].sort((a: number, b: number) => a - b);
-        const bounds = calculatePeriodBounds(allPaydays, now);
+        const localNow = toLocalDate(now, userTz);
+        const bounds = calculatePeriodBounds(allPaydays, localNow);
 
         // Calculate S2S for new period
         const s2sResult = calculateS2S({

@@ -5,6 +5,14 @@ import { prisma } from '@pfm/db';
 import { calculateS2S, calculatePeriodBounds, computeReservedUpcoming, computeLiveWindow, computeRemainingDebtReservations } from './engine';
 import { determineFocusDebt, buildAvalanchePlan } from './avalanche';
 import { getLastActualPayday, getNextActualPayday, getNextIncomeAmount } from './payday-calendar';
+import {
+  DEFAULT_TZ,
+  daysLeftInPeriod,
+  getTodayLocalStart,
+  getNextLocalDayStart,
+  toLocalDate,
+  computeDebtPeriodSummaries,
+} from './period-utils';
 
 // ── Types ──────────────────────────────────────────────
 
@@ -128,12 +136,15 @@ async function ensureUser(req: AuthenticatedRequest, _res: Response, next: NextF
 
 /** Trigger a recalculate of the active period for a user (non-throwing) */
 async function triggerRecalculate(userId: string): Promise<void> {
-  const [incomes, obligations, debts, ef] = await Promise.all([
+  const [incomes, obligations, debts, ef, tzUser] = await Promise.all([
     prisma.income.findMany({ where: { userId, isActive: true } }),
     prisma.obligation.findMany({ where: { userId, isActive: true } }),
     prisma.debt.findMany({ where: { userId, isPaidOff: false } }),
     prisma.emergencyFund.findUnique({ where: { userId } }),
+    prisma.user.findUnique({ where: { id: userId }, select: { timezone: true } }),
   ]);
+
+  const tz = tzUser?.timezone ?? DEFAULT_TZ;
 
   const activePeriod = await prisma.period.findFirst({ where: { userId, status: 'ACTIVE' } });
   if (!activePeriod || incomes.length === 0) return;
@@ -143,9 +154,11 @@ async function triggerRecalculate(userId: string): Promise<void> {
     _sum: { amount: true },
   });
 
-  const today = new Date();
+  // Use local date for period boundary calculation so "today" matches user's wall clock
+  const todayUtc = new Date();
+  const localToday = toLocalDate(todayUtc, tz);
   const allPaydays = [...new Set(incomes.flatMap((inc) => inc.paydays as number[]))].sort((a, b) => a - b);
-  const newBounds = calculatePeriodBounds(allPaydays, today);
+  const newBounds = calculatePeriodBounds(allPaydays, localToday);
 
   const s2sResult = calculateS2S({
     incomes: incomes.map((inc) => ({ amount: inc.amount, paydays: inc.paydays as number[] })),
@@ -154,7 +167,7 @@ async function triggerRecalculate(userId: string): Promise<void> {
     emergencyFund: { currentAmount: ef?.currentAmount ?? 0, targetMonths: ef?.targetMonths ?? 3 },
     periodStartDate: newBounds.start,
     periodEndDate: newBounds.end,
-    today,
+    today: todayUtc,
     totalExpensesInPeriod: totalExpenses._sum.amount ?? 0,
     todayExpenses: 0,
     isProratedStart: newBounds.isProratedStart,
@@ -162,8 +175,8 @@ async function triggerRecalculate(userId: string): Promise<void> {
   });
 
   const allUseRuCalendar = incomes.some((inc) => (inc as any).useRussianWorkCalendar);
-  const lastIncomeDateAuto = getLastActualPayday(allPaydays, today, allUseRuCalendar);
-  const nextIncomeDateAuto = getNextActualPayday(allPaydays, today, allUseRuCalendar);
+  const lastIncomeDateAuto = getLastActualPayday(allPaydays, todayUtc, allUseRuCalendar);
+  const nextIncomeDateAuto = getNextActualPayday(allPaydays, todayUtc, allUseRuCalendar);
   const nextIncomeAmountAuto = nextIncomeDateAuto
     ? getNextIncomeAmount(incomes.map(i => ({ amount: i.amount, paydays: i.paydays as number[] })), nextIncomeDateAuto)
     : 0;
@@ -238,6 +251,12 @@ tg.get('/onboarding/status', async (req: AuthenticatedRequest, res) => {
 tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
   const userId = req.userId!;
 
+  // Resolve user timezone first (needed for local-day expense filtering)
+  const tzUser = await prisma.user.findUnique({ where: { id: userId }, select: { timezone: true } });
+  const tz = tzUser?.timezone ?? DEFAULT_TZ;
+  const todayLocalStart   = getTodayLocalStart(tz);
+  const tomorrowLocalStart = getNextLocalDayStart(tz);
+
   const [user, activePeriod, todayExpenses, periodExpenses, incomes] = await Promise.all([
     prisma.user.findUnique({
       where: { id: userId },
@@ -250,12 +269,11 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
     prisma.period.findFirst({
       where: { userId, status: 'ACTIVE' },
     }),
+    // Today's expenses bounded by local midnight (not UTC midnight)
     prisma.expense.findMany({
       where: {
         userId,
-        spentAt: {
-          gte: new Date(new Date().setHours(0, 0, 0, 0)),
-        },
+        spentAt: { gte: todayLocalStart, lt: tomorrowLocalStart },
       },
       orderBy: { spentAt: 'desc' },
     }),
@@ -286,10 +304,8 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
   const todayTotal = todayExpenses.reduce((sum, e) => sum + e.amount, 0);
   const totalPeriodSpent = periodExpenses._sum.amount ?? 0;
   const now = new Date();
-  // Use same formula as engine.ts: daysTotal - daysElapsed + 1
-  const msPerDay = 1000 * 60 * 60 * 24;
-  const daysElapsed = Math.max(1, Math.ceil((now.getTime() - activePeriod.startDate.getTime()) / msPerDay));
-  const daysLeft = Math.max(1, activePeriod.daysTotal - daysElapsed + 1);
+  // Timezone-aware daysLeft: differenceInCalendarDays(periodEnd, today) in user's local TZ
+  const daysLeft = daysLeftInPeriod(activePeriod.endDate, now, tz);
 
   // Compute payday dates
   const allUseRuCalendar = incomes.some((i) => (i as any).useRussianWorkCalendar);
@@ -308,7 +324,19 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
     paidByDebt.set(ev.debtId, (paidByDebt.get(ev.debtId) ?? 0) + ev.amountMinor);
   }
 
-  // Compute reserves — obligations use existing logic, debts use payment-aware remaining amounts
+  // Per-debt period summaries: required / paid / remaining / status
+  const debtPeriodSummaries = computeDebtPeriodSummaries(
+    user.debts.map((d) => ({ id: d.id, minPayment: d.minPayment, dueDay: d.dueDay })),
+    paidByDebt,
+    { startDate: activePeriod.startDate, endDate: activePeriod.endDate },
+    tz,
+  );
+  const totalDebtPaymentsRemaining = debtPeriodSummaries.reduce(
+    (sum, d) => sum + d.remainingRequiredThisPeriod, 0,
+  );
+  const summaryByDebtId = new Map(debtPeriodSummaries.map((s) => [s.debtId, s]));
+
+  // Compute upcoming reserves — payment-aware remaining amounts
   const reservedUpcomingObligations = nextIncomeDate
     ? computeReservedUpcoming(
         user.obligations.map((o) => ({ amount: o.amount, dueDay: o.dueDay })),
@@ -363,9 +391,8 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
     });
     const expensesSinceAnchor = expensesSinceAnchorAgg._sum.amount ?? 0;
 
-    // Today's expenses since anchor (intersection of today AND since anchor)
-    const todayStart = new Date(now);
-    todayStart.setHours(0, 0, 0, 0);
+    // Today's expenses since anchor (intersection of today AND since anchor) — local midnight
+    const todayStart = todayLocalStart;
     const todayAnchorStart = anchorAt > todayStart ? anchorAt : todayStart;
     const todayExpSinceAnchorAgg = await prisma.expense.aggregate({
       where: { userId, spentAt: { gte: todayAnchorStart } },
@@ -413,15 +440,27 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
           type: focusDebt.type,
         }
       : null,
-    debts: user.debts.map((d) => ({
-      id: d.id,
-      title: d.title,
-      apr: d.apr,
-      balance: d.balance,
-      minPayment: d.minPayment,
-      type: d.type,
-      isFocusDebt: d.isFocusDebt,
-    })),
+    periodRemaining,
+    totalDebtPaymentsRemaining,
+    debts: user.debts.map((d) => {
+      const ps = summaryByDebtId.get(d.id);
+      return {
+        id: d.id,
+        title: d.title,
+        apr: d.apr,
+        balance: d.balance,
+        minPayment: d.minPayment,
+        type: d.type,
+        isFocusDebt: d.isFocusDebt,
+        dueDay: d.dueDay,
+        currentPeriodPayment: ps ? {
+          required: ps.requiredMinForPeriod,
+          paid: ps.paidRequiredThisPeriod,
+          remaining: ps.remainingRequiredThisPeriod,
+          status: ps.status,
+        } : null,
+      };
+    }),
     emergencyFund: user.emergencyFund
       ? {
           currentAmount: user.emergencyFund.currentAmount,
@@ -435,7 +474,7 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
     lastIncomeDate: lastIncomeDate ?? null,
     nextIncomeDate: nextIncomeDate ?? null,
     nextIncomeAmount: nextIncomeAmount,
-    daysToNextIncome: nextIncomeDate ? Math.max(1, Math.ceil((nextIncomeDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))) : null,
+    daysToNextIncome: nextIncomeDate ? daysLeftInPeriod(nextIncomeDate, now, tz) : null,
     reservedUpcoming: reservesResult.reservedUpcoming,
     reservedUpcomingObligations: reservesResult.reservedUpcomingObligations,
     reservedUpcomingDebtPayments: reservesResult.reservedUpcomingDebtPayments,
