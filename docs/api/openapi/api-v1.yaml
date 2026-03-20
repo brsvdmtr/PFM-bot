@@ -1,77 +1,93 @@
 openapi: 3.0.3
 
 # document_type: Normative
-# status: Active — Partial (error model pending)
-# source_of_truth: YES — for API contract
-# verified_against_code: Partial
+# status: Active
+# source_of_truth: YES
+# verified_against_code: Yes
 # last_updated: "2026-03-20"
 
 info:
   title: PFM Bot API
+  version: "1"
   description: |
     Personal Finance Manager — Telegram Mini App backend.
 
-    **Base URL:** https://mytodaylimit.ru/api
+    **Base URL:** `https://mytodaylimit.ru`
 
-    **Monetary values:** All `Int` money fields are in **minor units** (kopecks for RUB, cents for USD).
-    Example: `15000000` = 150 000.00 ₽
+    **Monetary values:** All money fields are integers in **minor units**
+    (kopecks for RUB, cents for USD). Example: `15000000` = 150 000.00 ₽
 
     **Authentication:**
-    - Telegram Mini App routes (`/tg/*`): send `X-TG-INIT-DATA` header containing the
-      URL-encoded `window.Telegram.WebApp.initData` string. The API validates it using HMAC-SHA256
-      with the bot token. auth_date freshness is validated — requests older than 1 hour are
-      rejected (implemented 2026-03-20).
-    - Internal routes (`/internal/*`): send `X-Internal-Key` header equal to the `ADMIN_KEY`
+    - `/tg/*` routes: `x-tg-init-data` header containing the URL-encoded
+      `window.Telegram.WebApp.initData` string. Validated via HMAC-SHA256 with
+      the bot token. `auth_date` must be < 1 hour old.
+    - `/internal/*` routes: `x-internal-key` header equal to the `ADMIN_KEY`
       environment variable. Used by the bot service only.
+    - Dev bypass (non-production only): `x-tg-dev: <telegramId>` skips HMAC.
 
-    **Calculation policy:** Routes that return `s2sToday`/`s2sDaily` use live calculation,
-    not the stored `period.s2sDaily`. See formulas-and-calculation-policy.md for details.
+    **Calculation policy:** `s2sToday` and `s2sDaily` in dashboard and
+    recalculate responses are computed live on every request, not read from the
+    stored `Period.s2sDaily` snapshot. See formulas-and-calculation-policy.md.
 
-    **Error format:** Current: `{ "error": "string" }`. Target (not yet implemented):
-    `{ "error": "string", "code": "ERROR_CODE", "requestId": "uuid" }`.
-  version: "1"
+    **Error format (current):** `{ "error": "string" }`. A machine-readable
+    `code` field and `requestId` are planned but not yet implemented.
+
   contact:
     name: PFM Bot
 
 servers:
-  - url: https://mytodaylimit.ru/api
+  - url: https://mytodaylimit.ru
     description: Production
+  - url: http://localhost:3002
+    description: Local development
 
-# ── Security Schemes ─────────────────────────────────────────────────────────
+# ── Security Schemes ──────────────────────────────────────────────────────────
 
 components:
   securitySchemes:
-    TelegramInitData:
+    TelegramAuth:
       type: apiKey
       in: header
-      name: X-TG-INIT-DATA
+      name: x-tg-init-data
       description: |
-        Telegram WebApp initData string (URL-encoded). Validated with HMAC-SHA256:
-        secretKey = HMAC-SHA256("WebAppData", BOT_TOKEN)
-        hash = HMAC-SHA256(secretKey, sorted_data_check_string)
-        auth_date freshness: rejected if Date.now()/1000 - auth_date > 3600 (1 hour).
-        This check was added 2026-03-20; prior to that date auth_date was not validated.
+        URL-encoded Telegram WebApp initData string.
+        Validated using HMAC-SHA256; auth_date must be less than 1 hour old.
+        In non-production environments, `x-tg-dev: <telegramId>` may be used
+        instead to bypass HMAC validation.
 
     InternalKey:
       type: apiKey
       in: header
-      name: X-Internal-Key
-      description: Must equal ADMIN_KEY environment variable. Bot-to-API only.
+      name: x-internal-key
+      description: |
+        Must equal the ADMIN_KEY environment variable.
+        Used exclusively by the bot service for internal routes.
 
-# ── Reusable Schemas ─────────────────────────────────────────────────────────
+  # ── Reusable Schemas ─────────────────────────────────────────────────────────
 
   schemas:
 
-    # ── Enums ──────────────────────────────────────────────────────────────
+    # --- Primitives ---
+
+    MoneyAmount:
+      type: integer
+      description: "Amount in minor units (kopecks for RUB, cents for USD). Example: 150000 = 1500.00 ₽"
+      example: 15000000
 
     Currency:
       type: string
       enum: [RUB, USD]
-      description: ISO 4217-style currency code
+      description: ISO 4217 currency code (subset)
+      example: RUB
 
-    IncomeFrequency:
+    S2SStatus:
       type: string
-      enum: [MONTHLY, BIWEEKLY, WEEKLY, IRREGULAR]
+      enum: [OK, WARNING, OVERSPENT, DEFICIT]
+      description: |
+        DEFICIT: s2sPeriod <= 0
+        OVERSPENT: today's spending exceeds s2sDaily
+        WARNING: s2sToday / s2sDaily <= 0.30
+        OK: none of the above
 
     ObligationType:
       type: string
@@ -81,32 +97,20 @@ components:
       type: string
       enum: [CREDIT, MORTGAGE, CREDIT_CARD, CAR_LOAN, PERSONAL_LOAN, OTHER]
 
-    PeriodStatus:
+    IncomeFrequency:
       type: string
-      enum: [ACTIVE, COMPLETED, DEFICIT]
+      enum: [MONTHLY, BIWEEKLY, WEEKLY, IRREGULAR]
 
-    ExpenseSource:
-      type: string
-      enum: [MANUAL, IMPORT]
+    # --- Core entities ---
 
-    SubscriptionStatus:
-      type: string
-      enum: [ACTIVE, CANCELLED, EXPIRED]
-
-    S2SStatus:
-      type: string
-      enum: [OK, WARNING, OVERSPENT, DEFICIT]
-      description: |
-        - OK: within budget
-        - WARNING: s2sToday / s2sDaily <= 0.30
-        - OVERSPENT: todayExpenses > s2sDaily
-        - DEFICIT: s2sPeriod <= 0
-
-    S2SColor:
-      type: string
-      enum: [green, orange, red]
-
-    # ── Core Models ────────────────────────────────────────────────────────
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
+          example: "No active period. Complete onboarding first."
 
     Income:
       type: object
@@ -115,17 +119,13 @@ components:
         id:
           type: string
           description: CUID
-          example: cm8abc123
         userId:
           type: string
-          example: cm8user456
         title:
           type: string
-          example: Зарплата
         amount:
-          type: integer
-          description: Minor units (kopecks). Full monthly amount.
-          example: 15000000
+          $ref: '#/components/schemas/MoneyAmount'
+          description: Kopecks per month
         currency:
           $ref: '#/components/schemas/Currency'
         frequency:
@@ -136,11 +136,10 @@ components:
             type: integer
             minimum: 1
             maximum: 31
-          description: Days of month when income arrives
+          description: Days of month when income is received
           example: [5, 20]
         isActive:
           type: boolean
-          default: true
         createdAt:
           type: string
           format: date-time
@@ -150,34 +149,27 @@ components:
 
     Obligation:
       type: object
-      required: [id, userId, title, type, amount, currency, isActive, createdAt, updatedAt]
+      required: [id, userId, title, type, amount, isActive, createdAt, updatedAt]
       properties:
         id:
           type: string
-          example: cm8ob001
         userId:
           type: string
         title:
           type: string
-          example: Аренда
         type:
           $ref: '#/components/schemas/ObligationType'
         amount:
-          type: integer
-          description: Minor units (kopecks) per month
-          example: 3000000
-        currency:
-          $ref: '#/components/schemas/Currency'
+          $ref: '#/components/schemas/MoneyAmount'
+          description: Kopecks per month
         dueDay:
           type: integer
-          nullable: true
           minimum: 1
           maximum: 31
+          nullable: true
           description: Day of month payment is due
-          example: 10
         isActive:
           type: boolean
-          default: true
         createdAt:
           type: string
           format: date-time
@@ -187,52 +179,37 @@ components:
 
     Debt:
       type: object
-      required: [id, userId, title, type, balance, apr, minPayment, currency, isFocusDebt, isPaidOff, createdAt, updatedAt]
+      required: [id, userId, title, type, balance, apr, minPayment, isFocusDebt, isPaidOff, createdAt, updatedAt]
       properties:
         id:
           type: string
-          example: cm8debt001
         userId:
           type: string
         title:
           type: string
-          example: Кредитная карта Тинькофф
         type:
           $ref: '#/components/schemas/DebtType'
         balance:
-          type: integer
-          description: Minor units (kopecks) — current remaining balance
-          example: 15000000
-        originalAmount:
-          type: integer
-          nullable: true
-          description: Minor units (kopecks) — balance at time of creation
-          example: 20000000
+          $ref: '#/components/schemas/MoneyAmount'
+          description: Current remaining balance in kopecks
         apr:
           type: number
           format: float
-          description: Annual percentage rate as decimal fraction (e.g. 0.189 = 18.9%)
-          minimum: 0
-          maximum: 1
-          example: 0.289
+          description: Annual percentage rate as a decimal fraction (e.g. 0.189 = 18.9%)
+          example: 0.189
         minPayment:
-          type: integer
-          description: Minor units (kopecks) per month
-          example: 300000
-        currency:
-          $ref: '#/components/schemas/Currency'
+          $ref: '#/components/schemas/MoneyAmount'
+          description: Minimum monthly payment in kopecks
         dueDay:
           type: integer
-          nullable: true
           minimum: 1
           maximum: 31
-          example: 25
+          nullable: true
         isFocusDebt:
           type: boolean
-          description: This debt receives extra avalanche payments
+          description: Whether this debt receives the avalanche extra payment
         isPaidOff:
           type: boolean
-          default: false
         paidOffAt:
           type: string
           format: date-time
@@ -244,21 +221,28 @@ components:
           type: string
           format: date-time
 
-    DebtPayment:
+    Expense:
       type: object
-      required: [id, debtId, amount, isExtra, paidAt]
+      required: [id, userId, periodId, amount, source, spentAt, createdAt]
       properties:
         id:
           type: string
-        debtId:
+        userId:
+          type: string
+        periodId:
           type: string
         amount:
-          type: integer
-          description: Minor units (kopecks)
-        isExtra:
-          type: boolean
-          description: True if this is an extra avalanche payment above minimum
-        paidAt:
+          $ref: '#/components/schemas/MoneyAmount'
+        note:
+          type: string
+          nullable: true
+        source:
+          type: string
+          enum: [MANUAL, IMPORT]
+        spentAt:
+          type: string
+          format: date-time
+        createdAt:
           type: string
           format: date-time
 
@@ -268,7 +252,6 @@ components:
       properties:
         id:
           type: string
-          example: cm8period789
         userId:
           type: string
         startDate:
@@ -278,43 +261,33 @@ components:
           type: string
           format: date-time
         totalIncome:
-          type: integer
-          description: Minor units (kopecks) — income attributed to this period
-          example: 7500000
+          $ref: '#/components/schemas/MoneyAmount'
         totalObligations:
-          type: integer
-          description: Minor units (kopecks) — obligations (prorated if isProratedStart)
-          example: 2000000
+          $ref: '#/components/schemas/MoneyAmount'
         totalDebtPayments:
-          type: integer
-          description: Minor units (kopecks) — sum of min payments (prorated if isProratedStart)
-          example: 500000
+          $ref: '#/components/schemas/MoneyAmount'
         efContribution:
-          type: integer
-          description: Minor units (kopecks) — emergency fund allocation
-          example: 100000
+          $ref: '#/components/schemas/MoneyAmount'
         reserve:
-          type: integer
-          description: Minor units (kopecks) — 10% buffer
-          example: 490000
+          $ref: '#/components/schemas/MoneyAmount'
         s2sPeriod:
-          type: integer
-          description: Minor units (kopecks) — total safe to spend for the entire period
-          example: 4410000
+          $ref: '#/components/schemas/MoneyAmount'
+          description: Total safe-to-spend for the entire period
         s2sDaily:
-          type: integer
-          description: Minor units (kopecks) — snapshot daily limit at period creation
-          example: 275625
+          $ref: '#/components/schemas/MoneyAmount'
+          description: >
+            SNAPSHOT taken at period creation or recalculation.
+            The live carry-over adjusted value is computed on each request —
+            see GET /tg/dashboard.
         status:
-          $ref: '#/components/schemas/PeriodStatus'
+          type: string
+          enum: [ACTIVE, COMPLETED, DEFICIT]
         daysTotal:
           type: integer
-          example: 16
         currency:
           $ref: '#/components/schemas/Currency'
         isProratedStart:
           type: boolean
-          description: True when period started mid-cycle (onboarding not on payday)
         createdAt:
           type: string
           format: date-time
@@ -322,55 +295,93 @@ components:
           type: string
           format: date-time
 
-    Expense:
+    S2SResult:
       type: object
-      required: [id, userId, periodId, amount, currency, source, spentAt, createdAt]
+      description: >
+        Live S2S calculation result. s2sDaily and s2sToday are computed on
+        every request using carry-over formula, not read from Period.s2sDaily.
+      required: [totalIncome, totalObligations, totalDebtPayments, avalanchePool, efContribution, reserve, residual, s2sPeriod, daysTotal, daysLeft, daysElapsed, s2sDaily, s2sToday, status, s2sColor, periodSpent, periodRemaining]
+      properties:
+        totalIncome:
+          $ref: '#/components/schemas/MoneyAmount'
+          description: Income attributed to this period
+        totalObligations:
+          $ref: '#/components/schemas/MoneyAmount'
+        totalDebtPayments:
+          $ref: '#/components/schemas/MoneyAmount'
+          description: Sum of debt minimum payments
+        avalanchePool:
+          $ref: '#/components/schemas/MoneyAmount'
+          description: Extra allocation to focus debt
+        efContribution:
+          $ref: '#/components/schemas/MoneyAmount'
+        reserve:
+          $ref: '#/components/schemas/MoneyAmount'
+          description: "10% buffer (reduced to 5% or 0 if budget is tight)"
+        residual:
+          $ref: '#/components/schemas/MoneyAmount'
+          description: Raw s2sPeriod before max(0) clamp
+        s2sPeriod:
+          $ref: '#/components/schemas/MoneyAmount'
+          description: Total safe to spend for the entire period
+        daysTotal:
+          type: integer
+        daysLeft:
+          type: integer
+        daysElapsed:
+          type: integer
+        s2sDaily:
+          $ref: '#/components/schemas/MoneyAmount'
+          description: "Per-day limit, carry-over adjusted (LIVE: (s2sPeriod - periodSpent) / daysLeft)"
+        s2sToday:
+          $ref: '#/components/schemas/MoneyAmount'
+          description: Remaining budget for today after expenses (LIVE)
+        status:
+          $ref: '#/components/schemas/S2SStatus'
+        s2sColor:
+          type: string
+          enum: [green, orange, red]
+        periodSpent:
+          $ref: '#/components/schemas/MoneyAmount'
+          description: Total expenses in period so far
+        periodRemaining:
+          $ref: '#/components/schemas/MoneyAmount'
+          description: "s2sPeriod - periodSpent, clamped to 0"
+
+    UserSettings:
+      type: object
+      required: [id, userId, morningNotifyTime, eveningNotifyTime, morningNotifyEnabled, eveningNotifyEnabled, paymentAlerts, deficitAlerts, weeklyDigest, createdAt, updatedAt]
       properties:
         id:
           type: string
-          example: cm8exp001
         userId:
           type: string
-        periodId:
+        morningNotifyTime:
           type: string
-        amount:
-          type: integer
-          description: Minor units (kopecks)
-          example: 65000
-        currency:
-          $ref: '#/components/schemas/Currency'
-        note:
+          pattern: '^\d{2}:\d{2}$'
+          example: "09:00"
+          description: Default "09:00"
+        eveningNotifyTime:
           type: string
-          nullable: true
-          example: Кофе
-        source:
-          $ref: '#/components/schemas/ExpenseSource'
-        spentAt:
-          type: string
-          format: date-time
+          pattern: '^\d{2}:\d{2}$'
+          example: "21:00"
+          description: Default "21:00"
+        morningNotifyEnabled:
+          type: boolean
+        eveningNotifyEnabled:
+          type: boolean
+        paymentAlerts:
+          type: boolean
+        deficitAlerts:
+          type: boolean
+        weeklyDigest:
+          type: boolean
+          description: >
+            DEAD SETTING — accepted and stored, but no cron job or handler
+            sends a weekly digest. Setting to true has no observable effect.
         createdAt:
           type: string
           format: date-time
-
-    EmergencyFund:
-      type: object
-      required: [id, userId, currentAmount, targetMonths, currency, updatedAt]
-      properties:
-        id:
-          type: string
-        userId:
-          type: string
-        currentAmount:
-          type: integer
-          description: Minor units (kopecks)
-          example: 500000
-        targetMonths:
-          type: integer
-          description: Number of months of obligations to cover
-          default: 3
-          example: 3
-        currency:
-          $ref: '#/components/schemas/Currency'
         updatedAt:
           type: string
           format: date-time
@@ -387,10 +398,11 @@ components:
           type: string
           example: PRO
         status:
-          $ref: '#/components/schemas/SubscriptionStatus'
+          type: string
+          enum: [ACTIVE, CANCELLED, EXPIRED]
         starsPrice:
           type: integer
-          description: Telegram Stars amount paid
+          description: Telegram Stars amount
           example: 100
         telegramChargeId:
           type: string
@@ -407,7 +419,6 @@ components:
           nullable: true
         cancelAtPeriodEnd:
           type: boolean
-          default: false
         createdAt:
           type: string
           format: date-time
@@ -415,246 +426,137 @@ components:
           type: string
           format: date-time
 
-    UserSettings:
+    DashboardResponse:
       type: object
-      required: [id, userId, morningNotifyTime, eveningNotifyTime, morningNotifyEnabled, eveningNotifyEnabled, paymentAlerts, deficitAlerts, weeklyDigest, createdAt, updatedAt]
+      required: [onboardingDone, s2sToday, s2sDaily, s2sStatus, daysLeft, daysTotal, periodStart, periodEnd, periodSpent, s2sPeriod, todayExpenses, todayTotal, focusDebt, debts, emergencyFund, currency]
       properties:
-        id:
-          type: string
-        userId:
-          type: string
-        morningNotifyTime:
-          type: string
-          pattern: '^[0-2][0-9]:[0-5][0-9]$'
-          description: Local time HH:MM
-          default: "09:00"
-          example: "09:00"
-        eveningNotifyTime:
-          type: string
-          pattern: '^[0-2][0-9]:[0-5][0-9]$'
-          default: "21:00"
-          example: "21:00"
-        morningNotifyEnabled:
+        onboardingDone:
           type: boolean
-          default: true
-        eveningNotifyEnabled:
-          type: boolean
-          default: true
-        paymentAlerts:
-          type: boolean
-          default: true
-        deficitAlerts:
-          type: boolean
-          default: true
-        weeklyDigest:
-          type: boolean
-          default: false
-          description: |
-            DEAD SETTING: Accepted and stored, but no cron handler sends a weekly digest.
-            Setting this to true has no observable effect in the current implementation.
-        createdAt:
-          type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
-
-    S2SResult:
-      type: object
-      required: [totalIncome, totalObligations, totalDebtPayments, avalanchePool, efContribution, reserve, residual, s2sPeriod, daysTotal, daysLeft, daysElapsed, s2sDaily, s2sToday, status, s2sColor, periodSpent, periodRemaining]
-      properties:
-        totalIncome:
-          type: integer
-          description: Minor units (kopecks)
-          example: 7500000
-        totalObligations:
-          type: integer
-          description: Minor units (kopecks)
-          example: 2000000
-        totalDebtPayments:
-          type: integer
-          description: Minor units (kopecks) — sum of minimum payments
-          example: 500000
-        avalanchePool:
-          type: integer
-          description: Minor units (kopecks) — extra towards focus debt
-          example: 0
-        efContribution:
-          type: integer
-          description: Minor units (kopecks) — towards emergency fund
-          example: 100000
-        reserve:
-          type: integer
-          description: Minor units (kopecks) — 10% buffer
-          example: 490000
-        residual:
-          type: integer
-          description: Minor units (kopecks) — raw s2sPeriod before max(0)
-          example: 4410000
-        s2sPeriod:
-          type: integer
-          description: Minor units (kopecks) — total safe to spend for period
-          example: 4410000
-        daysTotal:
-          type: integer
-          example: 16
+        s2sToday:
+          $ref: '#/components/schemas/MoneyAmount'
+          description: Remaining budget for today (LIVE)
+        s2sDaily:
+          $ref: '#/components/schemas/MoneyAmount'
+          description: >
+            Per-day limit, carry-over adjusted (LIVE).
+            This is dynamicS2sDaily, NOT Period.s2sDaily.
+        s2sStatus:
+          $ref: '#/components/schemas/S2SStatus'
         daysLeft:
           type: integer
-          description: Days remaining including today, minimum 1
-          example: 16
-        daysElapsed:
+        daysTotal:
           type: integer
-          example: 1
-        s2sDaily:
-          type: integer
-          description: Minor units (kopecks) — per-day limit (carry-over adjusted)
-          example: 275625
-        s2sToday:
-          type: integer
-          description: Minor units (kopecks) — remaining today after expenses
-          example: 275625
-        status:
-          $ref: '#/components/schemas/S2SStatus'
-        s2sColor:
-          $ref: '#/components/schemas/S2SColor'
+        periodStart:
+          type: string
+          format: date-time
+        periodEnd:
+          type: string
+          format: date-time
         periodSpent:
-          type: integer
-          description: Minor units (kopecks) — total expenses so far
-          example: 0
-        periodRemaining:
-          type: integer
-          description: Minor units (kopecks) — s2sPeriod - periodSpent, clamped to 0
-          example: 4410000
-
-    AvalanchePlanItem:
-      type: object
-      required: [debtId, title, balance, apr, minPayment, isFocus, order, estimatedMonths, totalInterest]
-      properties:
-        debtId:
-          type: string
-        title:
-          type: string
-        balance:
-          type: integer
-          description: Minor units (kopecks)
-        apr:
-          type: number
-          format: float
-        minPayment:
-          type: integer
-          description: Minor units (kopecks)
-        isFocus:
-          type: boolean
-          description: True for the first (highest APR) debt
-        order:
-          type: integer
-          description: Payoff order (1 = first)
-        estimatedMonths:
-          type: integer
-          description: Estimated months to pay off this debt
-        totalInterest:
-          type: integer
-          description: Minor units (kopecks) — estimated total interest paid
-
-    AvalanchePlan:
-      type: object
-      required: [items, totalDebt, totalMinPayments, estimatedDebtFreeMonths, estimatedTotalInterest]
-      properties:
-        items:
+          $ref: '#/components/schemas/MoneyAmount'
+        s2sPeriod:
+          $ref: '#/components/schemas/MoneyAmount'
+        todayExpenses:
           type: array
           items:
-            $ref: '#/components/schemas/AvalanchePlanItem'
-        totalDebt:
-          type: integer
-          description: Minor units (kopecks) — sum of all active debt balances
-        totalMinPayments:
-          type: integer
-          description: Minor units (kopecks) — sum of all min payments
-        estimatedDebtFreeMonths:
-          type: integer
-          description: Sequential sum of months (simplified estimate)
-        estimatedTotalInterest:
-          type: integer
-          description: Minor units (kopecks) — estimated total interest across all debts
+            $ref: '#/components/schemas/Expense'
+        todayTotal:
+          $ref: '#/components/schemas/MoneyAmount'
+        focusDebt:
+          nullable: true
+          type: object
+          required: [id, title, apr, balance, minPayment, type]
+          properties:
+            id:
+              type: string
+            title:
+              type: string
+            apr:
+              type: number
+              format: float
+            balance:
+              $ref: '#/components/schemas/MoneyAmount'
+            minPayment:
+              $ref: '#/components/schemas/MoneyAmount'
+            type:
+              $ref: '#/components/schemas/DebtType'
+        debts:
+          type: array
+          items:
+            type: object
+            required: [id, title, apr, balance, minPayment, type, isFocusDebt]
+            properties:
+              id:
+                type: string
+              title:
+                type: string
+              apr:
+                type: number
+                format: float
+              balance:
+                $ref: '#/components/schemas/MoneyAmount'
+              minPayment:
+                $ref: '#/components/schemas/MoneyAmount'
+              type:
+                $ref: '#/components/schemas/DebtType'
+              isFocusDebt:
+                type: boolean
+        emergencyFund:
+          nullable: true
+          type: object
+          required: [currentAmount, targetAmount]
+          properties:
+            currentAmount:
+              $ref: '#/components/schemas/MoneyAmount'
+            targetAmount:
+              $ref: '#/components/schemas/MoneyAmount'
+              description: obligations_sum × targetMonths
+        currency:
+          $ref: '#/components/schemas/Currency'
 
-    # ── Error ──────────────────────────────────────────────────────────────
-
-    Error:
-      type: object
-      required: [error]
-      properties:
-        error:
-          type: string
-          description: Human-readable error message
-          example: Invalid amount
-        code:
-          type: string
-          description: Machine-readable error code (optional, not always present)
-          example: INVALID_AMOUNT
-
-  # ── Reusable Responses ──────────────────────────────────────────────────
+  # ── Reusable Responses ────────────────────────────────────────────────────────
 
   responses:
     Unauthorized:
-      description: Missing or invalid authentication header
+      description: Missing, invalid, or stale authentication header
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Error'
+            $ref: '#/components/schemas/ErrorResponse'
           example:
-            error: Invalid Telegram init data
+            error: "Stale init data"
 
     NotFound:
-      description: Resource not found or not owned by authenticated user
+      description: Resource not found or not owned by user
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Error'
+            $ref: '#/components/schemas/ErrorResponse'
           example:
-            error: Not found
+            error: "Not found"
 
     BadRequest:
-      description: Missing or invalid request fields
+      description: Validation failure — missing or invalid fields
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Error'
-
-    InternalError:
-      description: Unhandled server error
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-
-    OkTrue:
-      description: Success
-      content:
-        application/json:
-          schema:
-            type: object
-            required: [ok]
-            properties:
-              ok:
-                type: boolean
-                example: true
+            $ref: '#/components/schemas/ErrorResponse'
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 paths:
 
-  # ── Health ────────────────────────────────────────────────────────────────
+  # ── Health ──────────────────────────────────────────────────────────────────
 
   /health:
     get:
-      summary: Liveness check
+      summary: Basic health check
       operationId: getHealth
-      x-stability: stable
       tags: [Health]
-      security: []
+      x-stability: stable
       responses:
         '200':
-          description: API is running
+          description: Service is running
           content:
             application/json:
               schema:
@@ -670,14 +572,14 @@ paths:
 
   /health/deep:
     get:
-      summary: Deep health check (includes DB)
+      summary: Deep health check including database
       operationId: getHealthDeep
-      x-stability: stable
       tags: [Health]
-      security: []
+      x-stability: stable
+      description: Runs `SELECT 1` against the database to verify connectivity.
       responses:
         '200':
-          description: API and DB are healthy
+          description: Service and database are healthy
           content:
             application/json:
               schema:
@@ -694,11 +596,12 @@ paths:
                     type: string
                     format: date-time
         '503':
-          description: Database unreachable
+          description: Database unavailable
           content:
             application/json:
               schema:
                 type: object
+                required: [ok, db, error]
                 properties:
                   ok:
                     type: boolean
@@ -709,16 +612,16 @@ paths:
                   error:
                     type: string
 
-  # ── Onboarding ────────────────────────────────────────────────────────────
+  # ── Onboarding ───────────────────────────────────────────────────────────────
 
   /tg/onboarding/status:
     get:
-      summary: Get onboarding completion status
+      summary: Get onboarding status
       operationId: getOnboardingStatus
-      x-stability: stable
       tags: [Onboarding]
+      x-stability: stable
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       responses:
         '200':
           description: Onboarding status
@@ -730,22 +633,21 @@ paths:
                 properties:
                   onboardingDone:
                     type: boolean
-                    example: false
         '401':
           $ref: '#/components/responses/Unauthorized'
 
   /tg/onboarding/income:
     post:
-      summary: Set income (step 1)
-      description: |
-        Deletes all existing incomes and creates one new record.
-        Also updates user.primaryCurrency.
-        Idempotent — safe to call multiple times.
+      summary: Set income (replace semantics)
       operationId: postOnboardingIncome
-      x-stability: stable
       tags: [Onboarding]
+      x-stability: stable
+      description: >
+        Deletes ALL existing income records for the user, then creates one new
+        income. Also updates user.primaryCurrency. This is replace semantics,
+        not append.
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       requestBody:
         required: true
         content:
@@ -755,9 +657,8 @@ paths:
               required: [amount, paydays]
               properties:
                 amount:
-                  type: integer
-                  description: Minor units (kopecks), must be > 0
-                  example: 15000000
+                  $ref: '#/components/schemas/MoneyAmount'
+                  description: Must be > 0
                 paydays:
                   type: array
                   items:
@@ -765,14 +666,13 @@ paths:
                     minimum: 1
                     maximum: 31
                   minItems: 1
-                  description: Days of month when income arrives (1–2 items supported)
                   example: [5, 20]
                 currency:
                   $ref: '#/components/schemas/Currency'
+                  description: Default "RUB"
                 title:
                   type: string
-                  default: Основной доход
-                  example: Зарплата
+                  description: Default "Основной доход"
       responses:
         '200':
           description: Created income record
@@ -787,13 +687,13 @@ paths:
 
   /tg/onboarding/obligations:
     post:
-      summary: Set obligations (step 2)
-      description: Replaces all obligations. Pass empty array to clear.
+      summary: Set obligations (replace semantics)
       operationId: postOnboardingObligations
-      x-stability: stable
       tags: [Onboarding]
+      x-stability: stable
+      description: Replaces all obligations. Pass an empty array to clear all.
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       requestBody:
         required: true
         content:
@@ -810,21 +710,17 @@ paths:
                     properties:
                       title:
                         type: string
-                        example: Аренда квартиры
                       type:
                         $ref: '#/components/schemas/ObligationType'
                       amount:
-                        type: integer
-                        description: Minor units (kopecks)
-                        example: 3000000
+                        $ref: '#/components/schemas/MoneyAmount'
                       dueDay:
                         type: integer
                         minimum: 1
                         maximum: 31
-                        nullable: true
       responses:
         '200':
-          description: All current obligations after replace
+          description: All obligations after replace
           content:
             application/json:
               schema:
@@ -838,15 +734,15 @@ paths:
 
   /tg/onboarding/debts:
     post:
-      summary: Set debts (step 3)
-      description: |
-        Replaces all debts. Sorts by APR descending; highest APR debt
-        gets isFocusDebt=true automatically. Pass empty array to clear.
+      summary: Set debts (replace semantics)
       operationId: postOnboardingDebts
-      x-stability: stable
       tags: [Onboarding]
+      x-stability: stable
+      description: >
+        Replaces all debts. Sorts by APR descending; highest-APR debt gets
+        isFocusDebt=true.
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       requestBody:
         required: true
         content:
@@ -863,27 +759,20 @@ paths:
                     properties:
                       title:
                         type: string
-                        example: Кредитная карта
                       type:
                         $ref: '#/components/schemas/DebtType'
                       balance:
-                        type: integer
-                        description: Minor units (kopecks)
-                        example: 15000000
+                        $ref: '#/components/schemas/MoneyAmount'
                       apr:
                         type: number
                         format: float
-                        description: Decimal fraction e.g. 0.189 = 18.9%
-                        example: 0.289
+                        description: Decimal fraction, e.g. 0.189
                       minPayment:
-                        type: integer
-                        description: Minor units (kopecks) per month
-                        example: 300000
+                        $ref: '#/components/schemas/MoneyAmount'
                       dueDay:
                         type: integer
                         minimum: 1
                         maximum: 31
-                        nullable: true
       responses:
         '200':
           description: Created debts in APR-descending order
@@ -900,13 +789,13 @@ paths:
 
   /tg/onboarding/ef:
     post:
-      summary: Set emergency fund (step 4)
-      description: Upserts emergency fund record.
+      summary: Set emergency fund
       operationId: postOnboardingEf
-      x-stability: stable
       tags: [Onboarding]
+      x-stability: stable
+      description: Upserts the emergency fund record.
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       requestBody:
         required: true
         content:
@@ -915,49 +804,55 @@ paths:
               type: object
               properties:
                 currentAmount:
-                  type: integer
-                  description: Minor units (kopecks)
-                  default: 0
-                  example: 500000
+                  $ref: '#/components/schemas/MoneyAmount'
+                  description: Default 0
                 targetMonths:
                   type: integer
-                  default: 3
-                  example: 3
+                  description: Default 3
                 currency:
                   $ref: '#/components/schemas/Currency'
+                  description: Default "RUB"
       responses:
         '200':
           description: Emergency fund record
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/EmergencyFund'
+                type: object
+                required: [id, userId, currentAmount, targetMonths, currency, updatedAt]
+                properties:
+                  id:
+                    type: string
+                  userId:
+                    type: string
+                  currentAmount:
+                    $ref: '#/components/schemas/MoneyAmount'
+                  targetMonths:
+                    type: integer
+                  currency:
+                    $ref: '#/components/schemas/Currency'
+                  updatedAt:
+                    type: string
+                    format: date-time
         '401':
           $ref: '#/components/responses/Unauthorized'
 
   /tg/onboarding/complete:
     post:
-      summary: Complete onboarding and create first period (step 5)
-      description: |
-        Requires at least one active income. Marks any existing ACTIVE period as COMPLETED.
-        Calculates period bounds and S2S, creates first ACTIVE period, sets onboardingDone=true.
-        x-calculation-policy: s2sDaily stored in Period is a creation-time snapshot.
-        Subsequent dashboard reads recalculate live. See formulas-and-calculation-policy.md.
+      summary: Complete onboarding and create first period
       operationId: postOnboardingComplete
-      x-stability: stable
-      x-calculation-policy: "s2sDaily in response is live; period.s2sDaily is a snapshot"
       tags: [Onboarding]
+      x-stability: stable
+      description: >
+        Finalizes onboarding. Requires at least one active income.
+        Closes any existing ACTIVE period (marks it COMPLETED), calculates
+        new period bounds and S2S, creates the first ACTIVE period,
+        sets user.onboardingDone=true.
       security:
-        - TelegramInitData: []
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
+        - TelegramAuth: []
       responses:
         '200':
-          description: Created period and S2S breakdown
+          description: Created period and S2S result
           content:
             application/json:
               schema:
@@ -969,151 +864,53 @@ paths:
                   s2s:
                     $ref: '#/components/schemas/S2SResult'
         '400':
-          description: Income missing
+          description: No active income found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-              example:
-                error: Income required before completing onboarding
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  # ── Dashboard ────────────────────────────────────────────────────────────
+  # ── Dashboard ────────────────────────────────────────────────────────────────
 
   /tg/dashboard:
     get:
-      summary: Main dashboard
-      description: |
-        Returns S2S metrics, today's expenses, focus debt, and emergency fund summary.
-        s2sDaily and s2sToday are recalculated dynamically on every call (carry-over).
-        They are NOT read from period.s2sDaily in the database.
-        Returns zeroed fields if no active period.
-        See formulas-and-calculation-policy.md for the carry-over formula.
+      summary: Get main dashboard data
       operationId: getDashboard
-      x-stability: stable
-      x-calculation-policy: "s2sDaily and s2sToday are LIVE — computed each request, not from DB"
       tags: [Dashboard]
+      x-stability: stable
+      description: >
+        Returns the main dashboard payload. s2sDaily and s2sToday are computed
+        live on every request using carry-over formula — they are NOT read from
+        Period.s2sDaily. If user has no active period, all numeric fields are 0
+        and all arrays are empty.
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       responses:
         '200':
-          description: Dashboard payload
+          description: Dashboard data
           content:
             application/json:
               schema:
-                type: object
-                required: [onboardingDone, s2sToday, s2sDaily, daysLeft, daysTotal, periodSpent, s2sPeriod, todayExpenses, todayTotal]
-                properties:
-                  onboardingDone:
-                    type: boolean
-                  s2sToday:
-                    type: integer
-                    description: Minor units (kopecks) — remaining budget today
-                    example: 210000
-                  s2sDaily:
-                    type: integer
-                    description: Minor units (kopecks) — per-day limit (carry-over adjusted)
-                    example: 275000
-                  s2sStatus:
-                    $ref: '#/components/schemas/S2SStatus'
-                  daysLeft:
-                    type: integer
-                    example: 14
-                  daysTotal:
-                    type: integer
-                    example: 16
-                  periodStart:
-                    type: string
-                    format: date-time
-                  periodEnd:
-                    type: string
-                    format: date-time
-                  periodSpent:
-                    type: integer
-                    description: Minor units (kopecks) — total period expenses
-                    example: 275000
-                  s2sPeriod:
-                    type: integer
-                    description: Minor units (kopecks)
-                    example: 4410000
-                  todayExpenses:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Expense'
-                  todayTotal:
-                    type: integer
-                    description: Minor units (kopecks) — sum of todayExpenses
-                    example: 65000
-                  focusDebt:
-                    nullable: true
-                    type: object
-                    properties:
-                      id:
-                        type: string
-                      title:
-                        type: string
-                      apr:
-                        type: number
-                        format: float
-                      balance:
-                        type: integer
-                        description: Minor units (kopecks)
-                      minPayment:
-                        type: integer
-                        description: Minor units (kopecks)
-                      type:
-                        $ref: '#/components/schemas/DebtType'
-                  debts:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                        title:
-                          type: string
-                        apr:
-                          type: number
-                          format: float
-                        balance:
-                          type: integer
-                          description: Minor units (kopecks)
-                        minPayment:
-                          type: integer
-                          description: Minor units (kopecks)
-                        type:
-                          $ref: '#/components/schemas/DebtType'
-                        isFocusDebt:
-                          type: boolean
-                  emergencyFund:
-                    nullable: true
-                    type: object
-                    properties:
-                      currentAmount:
-                        type: integer
-                        description: Minor units (kopecks)
-                      targetAmount:
-                        type: integer
-                        description: Minor units (kopecks) — obligations_sum × targetMonths
-                  currency:
-                    $ref: '#/components/schemas/Currency'
+                $ref: '#/components/schemas/DashboardResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  # ── Expenses ─────────────────────────────────────────────────────────────
+  # ── Expenses ─────────────────────────────────────────────────────────────────
 
   /tg/expenses:
     post:
-      summary: Create expense
-      description: |
-        Creates an expense in the current active period.
-        WARNING: No idempotency key — retrying a failed request creates a duplicate expense.
-      operationId: postExpense
-      x-stability: stable
+      summary: Create an expense
+      operationId: createExpense
       tags: [Expenses]
+      x-stability: stable
+      description: >
+        Creates an expense in the current active period.
+        WARNING: No idempotency key — retrying a failed request creates a
+        duplicate expense.
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       requestBody:
         required: true
         content:
@@ -1123,13 +920,11 @@ paths:
               required: [amount]
               properties:
                 amount:
-                  type: integer
-                  description: Minor units (kopecks), must be > 0
-                  example: 65000
+                  $ref: '#/components/schemas/MoneyAmount'
+                  description: Must be > 0
                 note:
                   type: string
                   nullable: true
-                  example: Кофе
       responses:
         '201':
           description: Created expense
@@ -1138,20 +933,31 @@ paths:
               schema:
                 $ref: '#/components/schemas/Expense'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: Invalid amount or no active period
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidAmount:
+                  value:
+                    error: "Invalid amount"
+                noActivePeriod:
+                  value:
+                    error: "No active period. Complete onboarding first."
         '401':
           $ref: '#/components/responses/Unauthorized'
 
     get:
-      summary: List expenses (paginated)
-      description: |
-        Returns expenses for the current active period ONLY — not all-time history.
-        Scoped to active period by design (current behavior, may change).
+      summary: List expenses (paginated, scoped to active period)
       operationId: listExpenses
-      x-stability: current-behavior
       tags: [Expenses]
+      x-stability: stable
+      description: >
+        Returns paginated expense list. Scoped to the current ACTIVE period if
+        one exists; returns all expenses if no active period.
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       parameters:
         - name: limit
           in: query
@@ -1166,12 +972,12 @@ paths:
             default: 0
       responses:
         '200':
-          description: Paginated expense list
+          description: Paginated expenses
           content:
             application/json:
               schema:
                 type: object
-                required: [expenses, total]
+                required: [expenses, total, periodId]
                 properties:
                   expenses:
                     type: array
@@ -1183,20 +989,22 @@ paths:
                   periodId:
                     type: string
                     nullable: true
+                    description: Active period ID, or null if none
         '401':
           $ref: '#/components/responses/Unauthorized'
 
   /tg/expenses/today:
     get:
-      summary: Today's expenses
-      description: |
-        Returns all expenses with spentAt >= today 00:00:00 UTC (server time), sorted by spentAt desc.
-        Note: "today" boundary is UTC midnight, not user's local midnight.
+      summary: Get today's expenses
       operationId: getTodayExpenses
-      x-stability: stable
       tags: [Expenses]
+      x-stability: stable
+      description: >
+        Returns all expenses with spentAt >= today 00:00:00 UTC, sorted by
+        spentAt descending. Note: "today" is UTC midnight, not the user's
+        local midnight.
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       responses:
         '200':
           description: Today's expenses
@@ -1211,12 +1019,13 @@ paths:
 
   /tg/expenses/{id}:
     delete:
-      summary: Delete expense
+      summary: Delete an expense
       operationId: deleteExpense
-      x-stability: stable
       tags: [Expenses]
+      x-stability: stable
+      description: Deletes an expense. Verifies that the expense belongs to the requesting user.
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       parameters:
         - name: id
           in: path
@@ -1225,25 +1034,33 @@ paths:
             type: string
       responses:
         '200':
-          $ref: '#/components/responses/OkTrue'
+          description: Expense deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
 
-  # ── Periods ───────────────────────────────────────────────────────────────
+  # ── Periods ──────────────────────────────────────────────────────────────────
 
   /tg/periods/current:
     get:
       summary: Get current active period
       operationId: getCurrentPeriod
-      x-stability: stable
       tags: [Periods]
+      x-stability: stable
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       responses:
         '200':
-          description: Active period with expenses, or null
+          description: Current active period with expenses, or null if none
           content:
             application/json:
               schema:
@@ -1263,18 +1080,20 @@ paths:
     get:
       summary: Get last completed period summary
       operationId: getLastCompletedPeriod
-      x-stability: stable
       tags: [Periods]
+      x-stability: needs-verification
+      description: Returns a summary of the most recently completed period, or null.
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       responses:
         '200':
-          description: Completed period summary, or null
+          description: Last completed period summary, or null if none
           content:
             application/json:
               schema:
                 nullable: true
                 type: object
+                required: [id, startDate, endDate, daysTotal, s2sPeriod, s2sDaily, totalSpent, saved, overspentDays, currency, topExpenses]
                 properties:
                   id:
                     type: string
@@ -1287,31 +1106,29 @@ paths:
                   daysTotal:
                     type: integer
                   s2sPeriod:
-                    type: integer
-                    description: Minor units (kopecks)
+                    $ref: '#/components/schemas/MoneyAmount'
                   s2sDaily:
-                    type: integer
-                    description: Minor units (kopecks)
+                    $ref: '#/components/schemas/MoneyAmount'
+                    description: Stored snapshot
                   totalSpent:
-                    type: integer
-                    description: Minor units (kopecks)
+                    $ref: '#/components/schemas/MoneyAmount'
                   saved:
                     type: integer
-                    description: Minor units (kopecks) — may be negative (overspent)
+                    description: "s2sPeriod - totalSpent (may be negative)"
                   overspentDays:
                     type: integer
-                    description: Count of days where daily spending exceeded s2sPlanned
+                    description: Count of days where spending exceeded s2sDaily
                   currency:
                     $ref: '#/components/schemas/Currency'
                   topExpenses:
                     type: array
-                    maxItems: 5
+                    description: Top 5 expenses by amount desc
                     items:
                       type: object
+                      required: [amount, spentAt]
                       properties:
                         amount:
-                          type: integer
-                          description: Minor units (kopecks)
+                          $ref: '#/components/schemas/MoneyAmount'
                         note:
                           type: string
                           nullable: true
@@ -1323,26 +1140,20 @@ paths:
 
   /tg/periods/recalculate:
     post:
-      summary: Recalculate active period S2S
-      description: |
-        Recomputes period bounds and S2S using current income, obligations, debts, and EF.
-        Call after editing income or payday settings.
-        See formulas-and-calculation-policy.md for recalculation behavior.
+      summary: Recalculate active period
       operationId: recalculatePeriod
-      x-stability: stable
-      x-calculation-policy: "Recomputes period bounds from allPaydays; updates Period record in DB"
       tags: [Periods]
+      x-stability: stable
+      description: >
+        Recomputes period bounds using allPaydays from current active incomes,
+        then recalculates S2S using current income, obligations, debts, and EF.
+        Updates the Period record in DB. Use after editing income, paydays,
+        obligations, or debts.
       security:
-        - TelegramInitData: []
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
+        - TelegramAuth: []
       responses:
         '200':
-          description: Updated S2S result
+          description: Recalculation result
           content:
             application/json:
               schema:
@@ -1355,27 +1166,29 @@ paths:
                   s2s:
                     $ref: '#/components/schemas/S2SResult'
         '400':
-          description: No active period or no incomes
+          description: No active period or no active incomes
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "No active period or income"
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  # ── Incomes ───────────────────────────────────────────────────────────────
+  # ── Incomes ──────────────────────────────────────────────────────────────────
 
   /tg/incomes:
     get:
-      summary: List incomes
+      summary: List all incomes
       operationId: listIncomes
-      x-stability: stable
       tags: [Incomes]
+      x-stability: stable
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       responses:
         '200':
-          description: All income records sorted by createdAt desc
+          description: All income records, sorted by createdAt desc
           content:
             application/json:
               schema:
@@ -1386,12 +1199,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 
     post:
-      summary: Create income
+      summary: Create an income
       operationId: createIncome
-      x-stability: stable
       tags: [Incomes]
+      x-stability: stable
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       requestBody:
         required: true
         content:
@@ -1402,16 +1215,15 @@ paths:
               properties:
                 title:
                   type: string
-                  example: Зарплата
                 amount:
-                  type: integer
-                  description: Minor units (kopecks)
-                  example: 15000000
+                  $ref: '#/components/schemas/MoneyAmount'
                 paydays:
                   type: array
                   items:
                     type: integer
-                  example: [15]
+                    minimum: 1
+                    maximum: 31
+                  minItems: 1
                 currency:
                   $ref: '#/components/schemas/Currency'
                 frequency:
@@ -1430,12 +1242,15 @@ paths:
 
   /tg/incomes/{id}:
     patch:
-      summary: Update income
+      summary: Update an income (partial)
       operationId: updateIncome
-      x-stability: provisional
       tags: [Incomes]
+      x-stability: stable
+      description: >
+        Partial update. Allowed fields: title, amount, paydays, currency,
+        frequency, isActive. Does NOT trigger period recalculation.
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       parameters:
         - name: id
           in: path
@@ -1452,12 +1267,14 @@ paths:
                 title:
                   type: string
                 amount:
-                  type: integer
-                  description: Minor units (kopecks)
+                  $ref: '#/components/schemas/MoneyAmount'
                 paydays:
                   type: array
                   items:
                     type: integer
+                    minimum: 1
+                    maximum: 31
+                  minItems: 1
                 currency:
                   $ref: '#/components/schemas/Currency'
                 frequency:
@@ -1477,12 +1294,12 @@ paths:
           $ref: '#/components/responses/NotFound'
 
     delete:
-      summary: Delete income
+      summary: Delete an income
       operationId: deleteIncome
-      x-stability: stable
       tags: [Incomes]
+      x-stability: stable
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       parameters:
         - name: id
           in: path
@@ -1491,25 +1308,33 @@ paths:
             type: string
       responses:
         '200':
-          $ref: '#/components/responses/OkTrue'
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
 
-  # ── Obligations ────────────────────────────────────────────────────────────
+  # ── Obligations ───────────────────────────────────────────────────────────────
 
   /tg/obligations:
     get:
-      summary: List obligations
+      summary: List all obligations
       operationId: listObligations
-      x-stability: stable
       tags: [Obligations]
+      x-stability: stable
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       responses:
         '200':
-          description: All obligations sorted by createdAt desc
+          description: All obligations, sorted by createdAt desc
           content:
             application/json:
               schema:
@@ -1520,12 +1345,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 
     post:
-      summary: Create obligation
+      summary: Create an obligation
       operationId: createObligation
-      x-stability: stable
       tags: [Obligations]
+      x-stability: stable
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       requestBody:
         required: true
         content:
@@ -1536,18 +1361,14 @@ paths:
               properties:
                 title:
                   type: string
-                  example: Аренда
                 amount:
-                  type: integer
-                  description: Minor units (kopecks)
-                  example: 3000000
+                  $ref: '#/components/schemas/MoneyAmount'
                 type:
                   $ref: '#/components/schemas/ObligationType'
                 dueDay:
                   type: integer
                   minimum: 1
                   maximum: 31
-                  nullable: true
       responses:
         '201':
           description: Created obligation
@@ -1562,12 +1383,13 @@ paths:
 
   /tg/obligations/{id}:
     patch:
-      summary: Update obligation
+      summary: Update an obligation (partial)
       operationId: updateObligation
-      x-stability: provisional
       tags: [Obligations]
+      x-stability: stable
+      description: Allowed fields: title, amount, type, dueDay, isActive.
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       parameters:
         - name: id
           in: path
@@ -1584,12 +1406,13 @@ paths:
                 title:
                   type: string
                 amount:
-                  type: integer
-                  description: Minor units (kopecks)
+                  $ref: '#/components/schemas/MoneyAmount'
                 type:
                   $ref: '#/components/schemas/ObligationType'
                 dueDay:
                   type: integer
+                  minimum: 1
+                  maximum: 31
                   nullable: true
                 isActive:
                   type: boolean
@@ -1606,12 +1429,12 @@ paths:
           $ref: '#/components/responses/NotFound'
 
     delete:
-      summary: Delete obligation
+      summary: Delete an obligation
       operationId: deleteObligation
-      x-stability: stable
       tags: [Obligations]
+      x-stability: stable
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       parameters:
         - name: id
           in: path
@@ -1620,26 +1443,34 @@ paths:
             type: string
       responses:
         '200':
-          $ref: '#/components/responses/OkTrue'
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
 
-  # ── Debts ─────────────────────────────────────────────────────────────────
+  # ── Debts ─────────────────────────────────────────────────────────────────────
 
   /tg/debts:
     get:
       summary: List active debts
-      description: Returns non-paid-off debts sorted by APR descending.
       operationId: listDebts
-      x-stability: stable
       tags: [Debts]
+      x-stability: stable
+      description: Returns non-paid-off debts sorted by APR descending.
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       responses:
         '200':
-          description: Active debts
+          description: Active debts sorted by APR desc
           content:
             application/json:
               schema:
@@ -1650,15 +1481,15 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 
     post:
-      summary: Create debt
-      description: |
+      summary: Create a debt
+      operationId: createDebt
+      tags: [Debts]
+      x-stability: stable
+      description: >
         Creates a new debt. If no focus debt currently exists, the new debt
         becomes the focus debt automatically.
-      operationId: createDebt
-      x-stability: stable
-      tags: [Debts]
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       requestBody:
         required: true
         content:
@@ -1669,27 +1500,20 @@ paths:
               properties:
                 title:
                   type: string
-                  example: Кредитная карта
                 balance:
-                  type: integer
-                  description: Minor units (kopecks)
-                  example: 15000000
+                  $ref: '#/components/schemas/MoneyAmount'
                 apr:
                   type: number
                   format: float
-                  description: Decimal fraction e.g. 0.189 = 18.9%
-                  example: 0.289
+                  description: Decimal fraction, e.g. 0.189 = 18.9%
                 minPayment:
-                  type: integer
-                  description: Minor units (kopecks)
-                  example: 300000
+                  $ref: '#/components/schemas/MoneyAmount'
                 type:
                   $ref: '#/components/schemas/DebtType'
                 dueDay:
                   type: integer
                   minimum: 1
                   maximum: 31
-                  nullable: true
       responses:
         '201':
           description: Created debt
@@ -1704,36 +1528,74 @@ paths:
 
   /tg/debts/avalanche-plan:
     get:
-      summary: Get avalanche repayment plan
-      description: |
-        Returns the full avalanche plan for all active debts. Monthly extra is estimated
-        as round(s2sPeriod × 0.10 / (daysTotal / 30)) from the current period.
+      summary: Get avalanche debt repayment plan
       operationId: getAvalanchePlan
-      x-stability: provisional
       tags: [Debts]
+      x-stability: provisional
+      description: >
+        Returns the avalanche repayment plan for all active debts.
+        Extra monthly payment is estimated from current period:
+        round(s2sPeriod × 0.10 / (daysTotal / 30)).
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       responses:
         '200':
           description: Avalanche plan
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AvalanchePlan'
+                type: object
+                required: [items, totalDebt, totalMinPayments, estimatedDebtFreeMonths, estimatedTotalInterest]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [debtId, title, balance, apr, minPayment, isFocus, order, estimatedMonths, totalInterest]
+                      properties:
+                        debtId:
+                          type: string
+                        title:
+                          type: string
+                        balance:
+                          $ref: '#/components/schemas/MoneyAmount'
+                        apr:
+                          type: number
+                          format: float
+                        minPayment:
+                          $ref: '#/components/schemas/MoneyAmount'
+                        isFocus:
+                          type: boolean
+                        order:
+                          type: integer
+                          description: 1 = first to pay off
+                        estimatedMonths:
+                          type: integer
+                        totalInterest:
+                          $ref: '#/components/schemas/MoneyAmount'
+                  totalDebt:
+                    $ref: '#/components/schemas/MoneyAmount'
+                  totalMinPayments:
+                    $ref: '#/components/schemas/MoneyAmount'
+                  estimatedDebtFreeMonths:
+                    type: integer
+                  estimatedTotalInterest:
+                    $ref: '#/components/schemas/MoneyAmount'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
   /tg/debts/{id}:
     patch:
-      summary: Update debt
-      description: |
-        Allowed fields: title, type, balance, apr, minPayment, dueDay.
-        Forbidden: isFocusDebt (managed automatically — cannot be set via PATCH).
+      summary: Update a debt (partial)
       operationId: updateDebt
-      x-stability: stable
       tags: [Debts]
+      x-stability: stable
+      description: >
+        Allowed fields: title, type, balance, apr, minPayment, dueDay.
+        isFocusDebt cannot be set via PATCH — it is managed automatically.
+        Does NOT trigger period recalculation.
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       parameters:
         - name: id
           in: path
@@ -1752,16 +1614,19 @@ paths:
                 type:
                   $ref: '#/components/schemas/DebtType'
                 balance:
-                  type: integer
-                  description: Minor units (kopecks)
+                  $ref: '#/components/schemas/MoneyAmount'
+                  description: Must be > 0 if provided
                 apr:
                   type: number
                   format: float
+                  description: Decimal fraction 0–1 if provided
                 minPayment:
-                  type: integer
-                  description: Minor units (kopecks)
+                  $ref: '#/components/schemas/MoneyAmount'
+                  description: Must be >= 0 if provided
                 dueDay:
                   type: integer
+                  minimum: 1
+                  maximum: 31
                   nullable: true
       responses:
         '200':
@@ -1776,15 +1641,15 @@ paths:
           $ref: '#/components/responses/NotFound'
 
     delete:
-      summary: Delete debt
-      description: |
-        Deletes debt. If it was the focus debt, reassigns focus to next
-        highest-APR debt.
+      summary: Delete a debt
       operationId: deleteDebt
-      x-stability: stable
       tags: [Debts]
+      x-stability: stable
+      description: >
+        Deletes the debt. If the deleted debt was the focus debt, focus is
+        reassigned to the next highest-APR non-paid-off debt.
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       parameters:
         - name: id
           in: path
@@ -1793,7 +1658,15 @@ paths:
             type: string
       responses:
         '200':
-          $ref: '#/components/responses/OkTrue'
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -1801,15 +1674,16 @@ paths:
 
   /tg/debts/{id}/payment:
     post:
-      summary: Record debt payment
-      description: |
-        Reduces debt balance by amount. If balance reaches 0, sets isPaidOff=true
-        and reassigns focus debt.
-      operationId: postDebtPayment
-      x-stability: stable
+      summary: Record a debt payment
+      operationId: createDebtPayment
       tags: [Debts]
+      x-stability: stable
+      description: >
+        Records a payment on a debt. Reduces balance by amount. If balance
+        reaches 0, sets isPaidOff=true, isFocusDebt=false, and reassigns focus
+        to the next debt.
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       parameters:
         - name: id
           in: path
@@ -1825,16 +1699,15 @@ paths:
               required: [amount]
               properties:
                 amount:
-                  type: integer
-                  description: Minor units (kopecks), must be > 0
-                  example: 300000
+                  $ref: '#/components/schemas/MoneyAmount'
+                  description: Must be > 0
                 isExtra:
                   type: boolean
                   default: false
-                  description: True if this is an extra (avalanche) payment above minimum
+                  description: Marks as an extra (avalanche) payment
       responses:
         '200':
-          description: Payment result
+          description: Payment recorded
           content:
             application/json:
               schema:
@@ -1845,70 +1718,46 @@ paths:
                     type: boolean
                     example: true
                   payment:
-                    $ref: '#/components/schemas/DebtPayment'
+                    type: object
+                    required: [id, debtId, amount, isExtra, paidAt]
+                    properties:
+                      id:
+                        type: string
+                      debtId:
+                        type: string
+                      amount:
+                        $ref: '#/components/schemas/MoneyAmount'
+                      isExtra:
+                        type: boolean
+                      paidAt:
+                        type: string
+                        format: date-time
                   newBalance:
-                    type: integer
-                    description: Minor units (kopecks) — balance after payment
-                    example: 14700000
-        '400':
-          $ref: '#/components/responses/BadRequest'
+                    $ref: '#/components/schemas/MoneyAmount'
+                    description: Balance after payment
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
 
-  # ── Me ────────────────────────────────────────────────────────────────────
+  # ── User ──────────────────────────────────────────────────────────────────────
 
   /tg/me/profile:
     get:
       summary: Get user profile
       operationId: getProfile
-      x-stability: provisional
-      tags: [Me]
+      tags: [User]
+      x-stability: stable
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       responses:
         '200':
-          description: User with profile and subscription
+          description: User record with profile and subscription
           content:
             application/json:
               schema:
                 type: object
-                # TODO: verify exact fields — returns full Prisma User record
-                properties:
-                  id:
-                    type: string
-                  telegramId:
-                    type: string
-                    nullable: true
-                  firstName:
-                    type: string
-                    nullable: true
-                  onboardingDone:
-                    type: boolean
-                  timezone:
-                    type: string
-                    example: Europe/Moscow
-                  locale:
-                    type: string
-                    example: ru
-                  primaryCurrency:
-                    $ref: '#/components/schemas/Currency'
-                  godMode:
-                    type: boolean
-                  profile:
-                    nullable: true
-                    type: object
-                    properties:
-                      displayName:
-                        type: string
-                        nullable: true
-                      avatarUrl:
-                        type: string
-                        nullable: true
-                  subscription:
-                    nullable: true
-                    $ref: '#/components/schemas/Subscription'
+                description: User record including profile and subscription fields
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -1916,10 +1765,10 @@ paths:
     get:
       summary: Get user settings
       operationId: getSettings
+      tags: [User]
       x-stability: stable
-      tags: [Me]
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       responses:
         '200':
           description: User settings
@@ -1931,17 +1780,16 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 
     patch:
-      summary: Update settings
-      description: |
-        Only these fields are accepted (others silently ignored):
-        morningNotifyTime, eveningNotifyTime, morningNotifyEnabled,
-        eveningNotifyEnabled, paymentAlerts, deficitAlerts, weeklyDigest.
-        NOTE: weeklyDigest is a dead setting — stored but no handler sends a digest.
-      operationId: patchSettings
+      summary: Update user settings (partial)
+      operationId: updateSettings
+      tags: [User]
       x-stability: stable
-      tags: [Me]
+      description: >
+        Upserts user settings. Only the listed fields are accepted; others are
+        silently ignored. weeklyDigest is a dead setting — it is stored but no
+        handler sends a weekly digest.
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       requestBody:
         required: true
         content:
@@ -1951,12 +1799,10 @@ paths:
               properties:
                 morningNotifyTime:
                   type: string
-                  pattern: '^[0-2][0-9]:[0-5][0-9]$'
-                  example: "09:00"
+                  pattern: '^\d{2}:\d{2}$'
                 eveningNotifyTime:
                   type: string
-                  pattern: '^[0-2][0-9]:[0-5][0-9]$'
-                  example: "21:00"
+                  pattern: '^\d{2}:\d{2}$'
                 morningNotifyEnabled:
                   type: boolean
                 eveningNotifyEnabled:
@@ -1967,6 +1813,7 @@ paths:
                   type: boolean
                 weeklyDigest:
                   type: boolean
+                  description: DEAD SETTING — stored but no handler sends a digest
       responses:
         '200':
           description: Updated settings
@@ -1979,15 +1826,15 @@ paths:
 
   /tg/me/plan:
     get:
-      summary: Get subscription plan
-      description: |
-        Returns plan=PRO if user has godMode=true OR an ACTIVE subscription
-        with currentPeriodEnd > now.
+      summary: Get user plan and subscription
       operationId: getPlan
+      tags: [User]
       x-stability: stable
-      tags: [Me]
+      description: >
+        A user is PRO if user.godMode=true, OR subscription.status="ACTIVE"
+        AND subscription.currentPeriodEnd > now.
       security:
-        - TelegramInitData: []
+        - TelegramAuth: []
       responses:
         '200':
           description: Plan info
@@ -1995,7 +1842,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [plan, godMode]
+                required: [plan, godMode, subscription]
                 properties:
                   plan:
                     type: string
@@ -2004,29 +1851,29 @@ paths:
                     type: boolean
                   subscription:
                     nullable: true
-                    $ref: '#/components/schemas/Subscription'
+                    allOf:
+                      - $ref: '#/components/schemas/Subscription'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  # ── Billing ────────────────────────────────────────────────────────────────
+  # ── Billing ───────────────────────────────────────────────────────────────────
 
   /tg/billing/pro/checkout:
     post:
-      summary: Create PRO subscription invoice
-      description: |
-        Creates a Telegram Stars invoice link (100 Stars / 1 month).
-        After payment, the bot calls /internal/activate-subscription.
-      operationId: checkoutPro
-      x-stability: provisional
+      summary: Create Telegram Stars PRO checkout invoice
+      operationId: createProCheckout
       tags: [Billing]
+      x-stability: provisional
+      description: >
+        Creates a Telegram Stars invoice link for PRO subscription (100 Stars/month).
+        Calls Telegram Bot API createInvoiceLink.
+
+        Payment flow after success:
+        1. Telegram sends successful_payment to the bot
+        2. Bot calls POST /internal/activate-subscription
+        3. API activates the subscription
       security:
-        - TelegramInitData: []
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
+        - TelegramAuth: []
       responses:
         '200':
           description: Invoice URL
@@ -2038,43 +1885,41 @@ paths:
                 properties:
                   invoiceUrl:
                     type: string
-                    description: Telegram invoice link
-                    example: https://t.me/$invoiceABC
+                    example: "https://t.me/$invoice..."
         '400':
-          description: User already PRO
+          description: Already PRO
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
               example:
-                error: Already PRO
+                error: "Already PRO"
         '401':
           $ref: '#/components/responses/Unauthorized'
         '502':
-          description: Telegram Bot API error
+          description: Telegram Bot API returned an error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: BOT_TOKEN not configured
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
 
-  # ── Internal ──────────────────────────────────────────────────────────────
+  # ── Internal ──────────────────────────────────────────────────────────────────
 
   /internal/store-chat-id:
     post:
-      summary: Store Telegram chat ID for a user
-      description: |
-        Called by the bot when it receives any message. Required for push notifications.
-        Internal route — requires X-Internal-Key. Never proxied externally by nginx.
+      summary: Store user's Telegram chat ID
       operationId: storeChatId
-      x-stability: stable
-      x-internal-only: true
       tags: [Internal]
+      x-stability: stable
+      description: >
+        Stores the user's telegramChatId, required for push notifications.
+        Called by the bot on any message from a user.
       security:
         - InternalKey: []
       requestBody:
@@ -2089,31 +1934,40 @@ paths:
                   oneOf:
                     - type: string
                     - type: integer
-                  example: "123456789"
                 chatId:
                   oneOf:
                     - type: string
                     - type: integer
-                  example: "123456789"
       responses:
         '200':
-          $ref: '#/components/responses/OkTrue'
+          description: Stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: Missing telegramId or chatId
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
   /internal/activate-subscription:
     post:
       summary: Activate PRO subscription after Telegram Stars payment
-      description: |
-        Upserts Subscription (status=ACTIVE, currentPeriodEnd = now + 30 days).
-        Creates PaymentEvent record.
-        Internal route — requires X-Internal-Key. Never proxied externally by nginx.
       operationId: activateSubscription
-      x-stability: stable
-      x-internal-only: true
       tags: [Internal]
+      x-stability: stable
+      description: >
+        Activates or renews a PRO subscription after successful Telegram Stars payment.
+        Upserts Subscription record (status=ACTIVE, currentPeriodEnd=now+30d).
+        Creates PaymentEvent with eventType="subscription_activated".
       security:
         - InternalKey: []
       requestBody:
@@ -2128,15 +1982,12 @@ paths:
                   oneOf:
                     - type: string
                     - type: integer
-                  example: "123456789"
                 chargeId:
                   type: string
                   description: Telegram payment charge ID
-                  example: "charge_abc123"
                 amount:
                   type: integer
                   description: Stars amount paid
-                  example: 100
       responses:
         '200':
           description: Subscription activated
@@ -2158,32 +2009,36 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
               example:
-                error: User not found
+                error: "User not found"
 
 # ── Tags ──────────────────────────────────────────────────────────────────────
 
 tags:
   - name: Health
-    description: Service health checks
+    description: Service and database health checks. No authentication required.
   - name: Onboarding
-    description: 5-step onboarding flow
+    description: >
+      5-step onboarding flow. Steps 1–4 use replace semantics and can be called
+      in any order. Step 5 (complete) creates the first period and must be last.
   - name: Dashboard
-    description: Main dashboard metrics
+    description: Main dashboard data with live S2S calculations.
   - name: Expenses
-    description: Expense tracking
+    description: Expense CRUD. All writes require an active period.
   - name: Periods
-    description: Budget period management
+    description: Period management and S2S recalculation.
   - name: Incomes
-    description: Income records CRUD
+    description: Income CRUD. Changes do not auto-recalculate the period.
   - name: Obligations
-    description: Fixed monthly obligation CRUD
+    description: Obligation CRUD.
   - name: Debts
-    description: Debt tracking and avalanche planning
-  - name: Me
-    description: User profile, settings, and subscription plan
+    description: Debt CRUD, payments, and avalanche plan.
+  - name: User
+    description: User profile, settings, and plan/subscription info.
   - name: Billing
-    description: Telegram Stars subscription billing
+    description: Telegram Stars billing for PRO subscription.
   - name: Internal
-    description: Bot-to-API internal routes (X-Internal-Key auth)
+    description: >
+      Internal routes for bot-to-API communication.
+      Protected by x-internal-key. Not externally accessible in production.
