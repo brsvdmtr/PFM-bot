@@ -57,7 +57,8 @@ type NavTab = 'dashboard' | 'history' | 'debts' | 'settings';
 type S2SColor = 'green' | 'orange' | 'red';
 
 interface TgUser { id: number; first_name: string; last_name?: string; username?: string; language_code?: string; }
-interface Debt { id: string; title: string; apr: number; balance: number; minPayment: number; type: string; isFocusDebt: boolean; }
+interface DebtPeriodPayment { required: number; paid: number; remaining: number; status: 'PAID' | 'PARTIAL' | 'UNPAID'; }
+interface Debt { id: string; title: string; apr: number; balance: number; minPayment: number; type: string; isFocusDebt: boolean; dueDay?: number | null; currentPeriodPayment?: DebtPeriodPayment | null; }
 interface Expense { id: string; amount: number; note?: string; spentAt: string; }
 interface DashboardData {
   onboardingDone: boolean;
@@ -894,6 +895,11 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
   const [newDebt, setNewDebt] = useState({ title: '', type: 'CREDIT_CARD', balance: '', apr: '', minPayment: '', dueDay: '' });
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
+  const [paymentModal, setPaymentModal] = useState<{ debt: Debt; kind: 'REQUIRED_MIN_PAYMENT' | 'EXTRA_PRINCIPAL_PAYMENT' } | null>(null);
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentNote, setPaymentNote] = useState('');
+  const [paymentSaving, setPaymentSaving] = useState(false);
+  const [paymentError, setPaymentError] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -944,6 +950,28 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
   const handleDelete = async (id: string) => {
     await api(`/tg/debts/${id}`, { method: 'DELETE' });
     await Promise.all([load(), onRefresh()]);
+  };
+
+  const handlePayment = async () => {
+    if (!paymentModal) return;
+    const amountRub = parseFloat(paymentAmount);
+    if (isNaN(amountRub) || amountRub <= 0) { setPaymentError('Укажите корректную сумму'); return; }
+    setPaymentSaving(true); setPaymentError('');
+    try {
+      await api(`/tg/debts/${paymentModal.debt.id}/payments`, {
+        method: 'POST',
+        body: JSON.stringify({ amountMinor: Math.round(amountRub * 100), kind: paymentModal.kind, note: paymentNote || undefined }),
+      });
+      setPaymentModal(null); setPaymentAmount(''); setPaymentNote('');
+      await Promise.all([load(), onRefresh()]);
+    } catch { setPaymentError('Ошибка сохранения'); }
+    setPaymentSaving(false);
+  };
+
+  const paymentBadge = (status: 'PAID' | 'PARTIAL' | 'UNPAID') => {
+    if (status === 'PAID')    return { label: 'Оплачен ✓',   color: C.green,  bg: C.greenBg };
+    if (status === 'PARTIAL') return { label: 'Частично',    color: C.orange, bg: C.orangeBg };
+    return                           { label: 'Не оплачен',  color: C.red,    bg: C.redBg };
   };
 
   const totalDebt = debts.reduce((s, d) => s + d.balance, 0);
@@ -1024,6 +1052,36 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
                   <span>переплата {fmt(plan.items[i].totalInterest, currency)}</span>
                 </div>
               )}
+
+              {/* Period payment status */}
+              {d.currentPeriodPayment && (
+                <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderSubtle}` }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, color: C.textTertiary }}>Обязательный платёж</span>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: paymentBadge(d.currentPeriodPayment.status).color, background: paymentBadge(d.currentPeriodPayment.status).bg, padding: '2px 8px', borderRadius: 10 }}>
+                      {paymentBadge(d.currentPeriodPayment.status).label}
+                    </span>
+                  </div>
+                  {/* Progress bar */}
+                  <div style={{ height: 4, background: C.elevated, borderRadius: 2, overflow: 'hidden', marginBottom: 4 }}>
+                    <div style={{ height: '100%', borderRadius: 2, background: d.currentPeriodPayment.status === 'PAID' ? C.green : C.orange, width: `${Math.min(100, d.currentPeriodPayment.required > 0 ? (d.currentPeriodPayment.paid / d.currentPeriodPayment.required) * 100 : 0)}%`, transition: 'width 0.3s' }} />
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.textTertiary }}>
+                    <span>Оплачено: {fmt(d.currentPeriodPayment.paid, currency)}</span>
+                    {d.currentPeriodPayment.remaining > 0 && <span>Осталось: {fmt(d.currentPeriodPayment.remaining, currency)}</span>}
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <button
+                      onClick={() => { setPaymentModal({ debt: d, kind: 'REQUIRED_MIN_PAYMENT' }); setPaymentAmount(''); setPaymentNote(''); setPaymentError(''); }}
+                      style={{ flex: 1, padding: '8px 0', background: C.accentBg, border: `1px solid ${C.accent}40`, borderRadius: 8, color: C.accentLight, fontSize: 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}
+                    >Внести платёж</button>
+                    <button
+                      onClick={() => { setPaymentModal({ debt: d, kind: 'EXTRA_PRINCIPAL_PAYMENT' }); setPaymentAmount(''); setPaymentNote(''); setPaymentError(''); }}
+                      style={{ flex: 1, padding: '8px 0', background: C.greenBg, border: `1px solid ${C.green}40`, borderRadius: 8, color: C.green, fontSize: 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}
+                    >Досрочное погашение</button>
+                  </div>
+                </div>
+              )}
             </Card>
           ))}
         </>
@@ -1070,6 +1128,48 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
         <button onClick={() => setShowAdd(true)} style={{ width: '100%', padding: '16px 0', background: 'transparent', border: `1px dashed ${C.border}`, borderRadius: 10, color: C.accent, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer', marginTop: 8 }}>
           + Добавить долг
         </button>
+      )}
+
+      {/* Payment modal */}
+      {paymentModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'flex-end', zIndex: 200 }}>
+          <div style={{ background: C.bgSecondary, borderRadius: '20px 20px 0 0', width: '100%', padding: '24px 20px 40px', boxSizing: 'border-box' }}>
+            <p style={{ fontSize: 17, fontWeight: 700, color: C.text, marginBottom: 4 }}>
+              {paymentModal.kind === 'REQUIRED_MIN_PAYMENT' ? 'Внести платёж' : 'Досрочное погашение'}
+            </p>
+            <p style={{ fontSize: 13, color: C.textTertiary, marginBottom: 16 }}>{paymentModal.debt.title}</p>
+
+            {paymentModal.kind === 'REQUIRED_MIN_PAYMENT' && paymentModal.debt.currentPeriodPayment && paymentModal.debt.currentPeriodPayment.remaining > 0 && (
+              <div style={{ background: C.accentBg, border: `1px solid ${C.accent}30`, borderRadius: 10, padding: '10px 14px', marginBottom: 14 }}>
+                <p style={{ fontSize: 13, color: C.accentLight }}>
+                  Осталось оплатить: <strong>{fmt(paymentModal.debt.currentPeriodPayment.remaining, currency)}</strong>
+                </p>
+              </div>
+            )}
+
+            <input
+              type="number" inputMode="decimal"
+              value={paymentAmount}
+              onChange={(e) => setPaymentAmount(e.target.value)}
+              placeholder="Сумма ₽"
+              autoFocus
+              style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: '14px 16px', fontSize: 20, fontWeight: 700, color: C.text, fontFamily: 'inherit', outline: 'none', marginBottom: 10, boxSizing: 'border-box' }}
+            />
+            <input
+              value={paymentNote}
+              onChange={(e) => setPaymentNote(e.target.value)}
+              placeholder="Комментарий (необязательно)"
+              style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: '12px 16px', fontSize: 14, color: C.text, fontFamily: 'inherit', outline: 'none', marginBottom: 14, boxSizing: 'border-box' }}
+            />
+            {paymentError && <p style={{ fontSize: 13, color: C.red, marginBottom: 10 }}>⚠ {paymentError}</p>}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <PrimaryBtn onClick={handlePayment} disabled={paymentSaving} style={{ flex: 1 }}>
+                {paymentSaving ? '...' : 'Подтвердить'}
+              </PrimaryBtn>
+              <button onClick={() => { setPaymentModal(null); setPaymentError(''); }} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>Отмена</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -383,6 +383,34 @@ export interface UpcomingReserves {
   reservedUpcoming: number;
 }
 
+export interface DebtReservationInput {
+  debtId: string;
+  minPayment: number;
+  dueDay?: number | null;
+  /** Sum of REQUIRED_MIN_PAYMENT events already recorded this period */
+  paidThisPeriod: number;
+}
+
+/**
+ * Compute reserved upcoming debt payments, accounting for what has
+ * already been paid toward each debt's minimum payment this period.
+ *
+ * remainingRequired = max(0, minPayment - paidThisPeriod)
+ * Only reserves debts whose dueDay falls in [today, nextIncomeDate).
+ */
+export function computeRemainingDebtReservations(
+  debts: DebtReservationInput[],
+  today: Date,
+  nextIncomeDate: Date,
+): number {
+  return debts.reduce((sum, d) => {
+    if (d.dueDay == null) return sum;
+    if (!isDueDayInWindow(d.dueDay, today, nextIncomeDate)) return sum;
+    const remaining = Math.max(0, d.minPayment - d.paidThisPeriod);
+    return sum + remaining;
+  }, 0);
+}
+
 /**
  * Compute upcoming reserved amounts for obligations and debts
  * whose dueDay falls in [today, nextIncomeDate).

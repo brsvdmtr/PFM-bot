@@ -2,7 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
 import { prisma } from '@pfm/db';
-import { calculateS2S, calculatePeriodBounds, computeReservedUpcoming, computeLiveWindow } from './engine';
+import { calculateS2S, calculatePeriodBounds, computeReservedUpcoming, computeLiveWindow, computeRemainingDebtReservations } from './engine';
 import { determineFocusDebt, buildAvalanchePlan } from './avalanche';
 import { getLastActualPayday, getNextActualPayday, getNextIncomeAmount } from './payday-calendar';
 
@@ -298,24 +298,44 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
   const nextIncomeDate = activePeriod.nextIncomeDate || getNextActualPayday(allPaydayNums, now, allUseRuCalendar);
   const nextIncomeAmount = activePeriod.nextIncomeAmount || (nextIncomeDate ? getNextIncomeAmount(incomes.map(i => ({ amount: i.amount, paydays: i.paydays as number[] })), nextIncomeDate) : 0);
 
-  // Debts already paid this cycle (since period start) → exclude from reservation
-  const paidThisCycle = await prisma.debtPayment.findMany({
-    where: { debt: { userId }, paidAt: { gte: activePeriod.startDate } },
-    select: { debtId: true },
+  // Aggregate REQUIRED_MIN_PAYMENT events for current period to compute per-debt remaining
+  const periodPaymentEvents = await prisma.debtPaymentEvent.findMany({
+    where: { userId, periodId: activePeriod.id, kind: 'REQUIRED_MIN_PAYMENT', deletedAt: null },
+    select: { debtId: true, amountMinor: true },
   });
-  const paidDebtIds = new Set(paidThisCycle.map((p) => p.debtId));
+  const paidByDebt = new Map<string, number>();
+  for (const ev of periodPaymentEvents) {
+    paidByDebt.set(ev.debtId, (paidByDebt.get(ev.debtId) ?? 0) + ev.amountMinor);
+  }
 
-  // Compute reserves — only debts with explicit dueDay in window AND not yet paid
-  const reservesResult = nextIncomeDate
+  // Compute reserves — obligations use existing logic, debts use payment-aware remaining amounts
+  const reservedUpcomingObligations = nextIncomeDate
     ? computeReservedUpcoming(
         user.obligations.map((o) => ({ amount: o.amount, dueDay: o.dueDay })),
-        user.debts
-          .filter((d) => !paidDebtIds.has(d.id))
-          .map((d) => ({ minPayment: d.minPayment, dueDay: d.dueDay })),
+        [],
+        now,
+        nextIncomeDate,
+      ).reservedUpcomingObligations
+    : 0;
+
+  const reservedUpcomingDebtPayments = nextIncomeDate
+    ? computeRemainingDebtReservations(
+        user.debts.map((d) => ({
+          debtId: d.id,
+          minPayment: d.minPayment,
+          dueDay: d.dueDay,
+          paidThisPeriod: paidByDebt.get(d.id) ?? 0,
+        })),
         now,
         nextIncomeDate,
       )
-    : { reservedUpcomingObligations: 0, reservedUpcomingDebtPayments: 0, reservedUpcoming: 0 };
+    : 0;
+
+  const reservesResult = {
+    reservedUpcomingObligations,
+    reservedUpcomingDebtPayments,
+    reservedUpcoming: reservedUpcomingObligations + reservedUpcomingDebtPayments,
+  };
 
   // Dynamic S2S with carry-over: recalculate daily from remaining budget
   const periodRemaining = Math.max(0, activePeriod.s2sPeriod - totalPeriodSpent);
@@ -1015,11 +1035,34 @@ tg.delete('/obligations/:id', async (req: AuthenticatedRequest, res) => {
 // ── Debts ───────────────────────────────────────────────
 
 tg.get('/debts', async (req: AuthenticatedRequest, res) => {
-  const debts = await prisma.debt.findMany({
-    where: { userId: req.userId!, isPaidOff: false },
-    orderBy: { apr: 'desc' },
+  const userId = req.userId!;
+  const [debts, activePeriod] = await Promise.all([
+    prisma.debt.findMany({ where: { userId, isPaidOff: false }, orderBy: { apr: 'desc' } }),
+    prisma.period.findFirst({ where: { userId, status: 'ACTIVE' } }),
+  ]);
+
+  if (!activePeriod) {
+    res.json(debts.map((d) => ({ ...d, currentPeriodPayment: null })));
+    return;
+  }
+
+  const paymentEvents = await prisma.debtPaymentEvent.findMany({
+    where: { userId, periodId: activePeriod.id, kind: 'REQUIRED_MIN_PAYMENT', deletedAt: null },
+    select: { debtId: true, amountMinor: true },
   });
-  res.json(debts);
+  const paidByDebt = new Map<string, number>();
+  for (const ev of paymentEvents) {
+    paidByDebt.set(ev.debtId, (paidByDebt.get(ev.debtId) ?? 0) + ev.amountMinor);
+  }
+
+  const enriched = debts.map((d) => {
+    const paid = paidByDebt.get(d.id) ?? 0;
+    const remaining = Math.max(0, d.minPayment - paid);
+    const status: 'PAID' | 'PARTIAL' | 'UNPAID' =
+      paid >= d.minPayment ? 'PAID' : paid > 0 ? 'PARTIAL' : 'UNPAID';
+    return { ...d, currentPeriodPayment: { required: d.minPayment, paid, remaining, status } };
+  });
+  res.json(enriched);
 });
 
 tg.post('/debts', async (req: AuthenticatedRequest, res) => {
@@ -1143,6 +1186,133 @@ tg.post('/debts/:id/payment', async (req: AuthenticatedRequest, res) => {
   }
 
   res.json({ ok: true, payment, newBalance });
+});
+
+// ── DebtPaymentEvent CRUD ────────────────────────────────────────────────────
+
+tg.post('/debts/:debtId/payments', async (req: AuthenticatedRequest, res) => {
+  const userId = req.userId!;
+  const debtId = req.params.debtId as string;
+  const { amountMinor, kind = 'REQUIRED_MIN_PAYMENT', note, paymentDate } = req.body;
+
+  if (!amountMinor || typeof amountMinor !== 'number' || amountMinor <= 0) {
+    res.status(400).json({ error: 'amountMinor must be a positive number' });
+    return;
+  }
+  if (!['REQUIRED_MIN_PAYMENT', 'EXTRA_PRINCIPAL_PAYMENT'].includes(kind)) {
+    res.status(400).json({ error: 'Invalid kind' });
+    return;
+  }
+
+  const [debt, activePeriod] = await Promise.all([
+    prisma.debt.findFirst({ where: { id: debtId, userId } }),
+    prisma.period.findFirst({ where: { userId, status: 'ACTIVE' } }),
+  ]);
+  if (!debt) { res.status(404).json({ error: 'Debt not found' }); return; }
+  if (!activePeriod) { res.status(400).json({ error: 'No active period' }); return; }
+
+  const amount = Math.round(amountMinor);
+
+  // For EXTRA_PRINCIPAL_PAYMENT: reduce debt balance
+  if (kind === 'EXTRA_PRINCIPAL_PAYMENT') {
+    const newBalance = Math.max(0, debt.balance - amount);
+    await prisma.debt.update({
+      where: { id: debtId },
+      data: {
+        balance: newBalance,
+        isPaidOff: newBalance === 0,
+        paidOffAt: newBalance === 0 ? new Date() : null,
+        isFocusDebt: newBalance === 0 ? false : debt.isFocusDebt,
+      },
+    });
+    if (newBalance === 0) {
+      const remaining = await prisma.debt.findMany({
+        where: { userId, isPaidOff: false },
+        orderBy: { apr: 'desc' },
+      });
+      if (remaining.length > 0) {
+        const focusId = determineFocusDebt(remaining.map((d) => ({ id: d.id, title: d.title, balance: d.balance, apr: d.apr, minPayment: d.minPayment, type: d.type })));
+        if (focusId) {
+          await prisma.debt.updateMany({ where: { userId }, data: { isFocusDebt: false } });
+          await prisma.debt.update({ where: { id: focusId }, data: { isFocusDebt: true } });
+        }
+      }
+    }
+  }
+
+  const event = await prisma.debtPaymentEvent.create({
+    data: {
+      userId,
+      debtId,
+      periodId: activePeriod.id,
+      amountMinor: amount,
+      kind: kind as any,
+      source: 'MANUAL',
+      note: note ?? null,
+      paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
+    },
+  });
+
+  try { await triggerRecalculate(userId); } catch { /* non-blocking */ }
+  res.status(201).json(event);
+});
+
+tg.patch('/debts/:debtId/payments/:paymentId', async (req: AuthenticatedRequest, res) => {
+  const userId = req.userId!;
+  const { debtId, paymentId } = req.params as { debtId: string; paymentId: string };
+  const { amountMinor, note, paymentDate } = req.body;
+
+  const event = await prisma.debtPaymentEvent.findFirst({
+    where: { id: paymentId, debtId, userId, deletedAt: null },
+  });
+  if (!event) { res.status(404).json({ error: 'Payment not found' }); return; }
+
+  if (amountMinor !== undefined && event.kind === 'EXTRA_PRINCIPAL_PAYMENT') {
+    res.status(400).json({ error: 'Cannot edit amount on EXTRA_PRINCIPAL_PAYMENT; delete and recreate' });
+    return;
+  }
+
+  const data: Record<string, any> = {};
+  if (amountMinor !== undefined) data.amountMinor = Math.round(amountMinor);
+  if (note !== undefined) data.note = note;
+  if (paymentDate !== undefined) data.paymentDate = new Date(paymentDate);
+
+  const updated = await prisma.debtPaymentEvent.update({ where: { id: paymentId }, data });
+  try { await triggerRecalculate(userId); } catch { /* non-blocking */ }
+  res.json(updated);
+});
+
+tg.delete('/debts/:debtId/payments/:paymentId', async (req: AuthenticatedRequest, res) => {
+  const userId = req.userId!;
+  const { debtId, paymentId } = req.params as { debtId: string; paymentId: string };
+
+  const event = await prisma.debtPaymentEvent.findFirst({
+    where: { id: paymentId, debtId, userId, deletedAt: null },
+  });
+  if (!event) { res.status(404).json({ error: 'Payment not found' }); return; }
+
+  // For EXTRA_PRINCIPAL_PAYMENT: recompute balance from scratch using remaining events
+  if (event.kind === 'EXTRA_PRINCIPAL_PAYMENT') {
+    const [debt, otherExtras] = await Promise.all([
+      prisma.debt.findUnique({ where: { id: debtId } }),
+      prisma.debtPaymentEvent.aggregate({
+        where: { debtId, kind: 'EXTRA_PRINCIPAL_PAYMENT', deletedAt: null, id: { not: paymentId } },
+        _sum: { amountMinor: true },
+      }),
+    ]);
+    if (debt) {
+      const totalExtra = otherExtras._sum.amountMinor ?? 0;
+      const restoredBalance = Math.max(0, (debt.originalAmount ?? debt.balance) - totalExtra);
+      await prisma.debt.update({
+        where: { id: debtId },
+        data: { balance: restoredBalance, isPaidOff: false, paidOffAt: null },
+      });
+    }
+  }
+
+  await prisma.debtPaymentEvent.update({ where: { id: paymentId }, data: { deletedAt: new Date() } });
+  try { await triggerRecalculate(userId); } catch { /* non-blocking */ }
+  res.json({ ok: true });
 });
 
 // Avalanche plan

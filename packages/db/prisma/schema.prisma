@@ -57,6 +57,16 @@ enum SubscriptionStatus {
   EXPIRED
 }
 
+enum DebtPaymentKind {
+  REQUIRED_MIN_PAYMENT
+  EXTRA_PRINCIPAL_PAYMENT
+}
+
+enum DebtPaymentSource {
+  MANUAL
+  SYSTEM
+}
+
 // ── Core Models ────────────────────────────────────────
 
 model User {
@@ -72,16 +82,17 @@ model User {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  profile       UserProfile?
-  settings      UserSettings?
-  incomes       Income[]
-  obligations   Obligation[]
-  debts         Debt[]
-  periods       Period[]
-  expenses      Expense[]
-  emergencyFund EmergencyFund?
-  subscription  Subscription?
-  paymentEvents PaymentEvent[]
+  profile            UserProfile?
+  settings           UserSettings?
+  incomes            Income[]
+  obligations        Obligation[]
+  debts              Debt[]
+  periods            Period[]
+  expenses           Expense[]
+  emergencyFund      EmergencyFund?
+  subscription       Subscription?
+  paymentEvents      PaymentEvent[]
+  debtPaymentEvents  DebtPaymentEvent[]
 }
 
 model UserProfile {
@@ -163,8 +174,9 @@ model Debt {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  payments DebtPayment[]
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payments      DebtPayment[]
+  paymentEvents DebtPaymentEvent[]
 }
 
 model DebtPayment {
@@ -204,9 +216,10 @@ model Period {
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt
 
-  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expenses       Expense[]
-  dailySnapshots DailySnapshot[]
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expenses          Expense[]
+  dailySnapshots    DailySnapshot[]
+  debtPaymentEvents DebtPaymentEvent[]
 
   @@index([userId, status])
 }
@@ -241,6 +254,30 @@ model DailySnapshot {
   period Period @relation(fields: [periodId], references: [id], onDelete: Cascade)
 
   @@unique([periodId, date])
+}
+
+// ── Debt Payment Events ────────────────────────────────
+
+model DebtPaymentEvent {
+  id          String            @id @default(cuid())
+  userId      String
+  debtId      String
+  periodId    String
+  amountMinor Int
+  paymentDate DateTime          @default(now())
+  kind        DebtPaymentKind
+  source      DebtPaymentSource @default(MANUAL)
+  note        String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  deletedAt   DateTime?
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  debt   Debt   @relation(fields: [debtId], references: [id], onDelete: Cascade)
+  period Period @relation(fields: [periodId], references: [id], onDelete: Cascade)
+
+  @@index([userId, periodId])
+  @@index([debtId, periodId])
 }
 
 // ── Emergency Fund ─────────────────────────────────────
