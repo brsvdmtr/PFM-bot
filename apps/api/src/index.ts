@@ -653,6 +653,11 @@ tg.post('/periods/recalculate', async (req: AuthenticatedRequest, res) => {
   });
 
   const today = new Date();
+
+  // Recompute period bounds from current paydays (handles payday changes)
+  const paydays = incomes[0].paydays as number[];
+  const newBounds = calculatePeriodBounds(paydays, today);
+
   const s2sResult = calculateS2S({
     incomes: incomes.map((inc) => ({ amount: inc.amount, paydays: inc.paydays as number[] })),
     obligations: obligations.map((o) => ({ amount: o.amount })),
@@ -661,18 +666,22 @@ tg.post('/periods/recalculate', async (req: AuthenticatedRequest, res) => {
       minPayment: d.minPayment, isFocusDebt: d.isFocusDebt,
     })),
     emergencyFund: { currentAmount: ef?.currentAmount ?? 0, targetMonths: ef?.targetMonths ?? 3 },
-    periodStartDate: activePeriod.startDate,
-    periodEndDate: activePeriod.endDate,
+    periodStartDate: newBounds.start,
+    periodEndDate: newBounds.end,
     today,
     totalExpensesInPeriod: totalExpenses._sum.amount ?? 0,
     todayExpenses: 0,
-    isProratedStart: activePeriod.isProratedStart,
-    fullPeriodDays: activePeriod.daysTotal,
+    isProratedStart: newBounds.isProratedStart,
+    fullPeriodDays: newBounds.fullPeriodDays,
   });
 
   await prisma.period.update({
     where: { id: activePeriod.id },
     data: {
+      startDate: newBounds.start,
+      endDate: newBounds.end,
+      daysTotal: s2sResult.daysTotal,
+      isProratedStart: newBounds.isProratedStart,
       totalIncome: s2sResult.totalIncome,
       totalObligations: s2sResult.totalObligations,
       totalDebtPayments: s2sResult.totalDebtPayments,

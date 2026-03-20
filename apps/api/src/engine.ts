@@ -108,7 +108,12 @@ export function calculateS2S(input: S2SInput): S2SResult {
   const daysLeft = Math.max(1, daysTotal - daysElapsed + 1); // including today
 
   // ── Income for period ──
-  const totalIncome = incomes.reduce((sum, inc) => sum + inc.amount, 0);
+  // For multi-payday incomes (e.g. paydays=[1,15]), allocate monthly/2 per period,
+  // since each period covers one payday, not two.
+  const totalIncome = incomes.reduce((sum, inc) => {
+    const payCount = Math.max(1, inc.paydays.length);
+    return sum + Math.round(inc.amount / payCount);
+  }, 0);
 
   // ── Obligations for period ──
   let totalObligations = obligations.reduce((sum, o) => sum + o.amount, 0);
