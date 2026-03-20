@@ -19,7 +19,7 @@ last_updated: "2026-03-20"
 
 > **Two types of unresolved items exist in this document. They are different:**
 >
-> - **Audit Findings (AU-*)** — documentation-level gaps: unverified claims, missing placeholders, drift between docs and code, docs not yet code-verified. These do not require code changes — they require verification, doc updates, or confirmation.
+> - **Audit Findings (AU-*)** — verification, compliance, doc drift, or ops review items: unverified claims, missing placeholders, undocumented behavior, or environment confirmations. Their resolution may require verification, documentation updates, environment confirmation, or in some cases a code/spec correction depending on the chosen resolution path. They are not tracked as product gaps because the root issue is an unverified or undocumented state, not a known behavior defect.
 > - **Product / Tech Gaps** — real open issues in the product, code, or infrastructure. These require code changes. See `docs/index.md § Known Gaps` and `docs/product/gap-analysis.md` for the canonical list.
 >
 > Do not conflate AU-* findings with product gaps. They have different owners and resolution paths.
@@ -56,7 +56,7 @@ All `Verified` claims in individual documents refer to code-level verification (
 > **Glossary for this section:**
 > - **Product gap** — affects product behavior, logic correctness, or user data. Requires a code or schema change.
 > - **Technical debt** — implementation shortcut or missing feature. Same resolution path as product gap.
-> - **Audit finding** — verification, compliance, doc drift, or ops review item. Does NOT require code changes — requires grep, manual check, doc update, or environment confirmation.
+> - **Audit finding** — verification, compliance, doc drift, or ops review item. Resolution may require verification, a doc update, environment confirmation, or in some cases a code/spec correction. Not tracked as a product gap because the root issue is an unverified or undocumented state, not a known behavior defect.
 > - IDs may be shared: e.g. `GAP-001 / TD-011` = same issue tracked in both gap-analysis and technical-debt-register.
 
 ### P1 — Product Gaps (Need Code)
