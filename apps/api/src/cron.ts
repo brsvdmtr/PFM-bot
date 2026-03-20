@@ -74,10 +74,10 @@ async function computeS2S(userId: string) {
   const todayTotal = todayAgg._sum.amount ?? 0;
   const totalPeriodSpent = periodAgg._sum.amount ?? 0;
   const now = new Date();
-  const daysLeft = Math.max(
-    1,
-    Math.ceil((activePeriod.endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)),
-  );
+  // Use same formula as engine.ts: daysTotal - daysElapsed + 1
+  const msPerDay = 1000 * 60 * 60 * 24;
+  const daysElapsed = Math.max(1, Math.ceil((now.getTime() - activePeriod.startDate.getTime()) / msPerDay));
+  const daysLeft = Math.max(1, activePeriod.daysTotal - daysElapsed + 1);
 
   const periodRemaining = Math.max(0, activePeriod.s2sPeriod - totalPeriodSpent);
   const dynamicS2sDaily = Math.max(0, Math.round(periodRemaining / daysLeft));
@@ -186,7 +186,7 @@ cron.schedule('55 23 * * *', async () => {
       );
       const periodRemaining = Math.max(0, period.s2sPeriod - totalPeriodSpent);
       const s2sPlanned = Math.max(0, Math.round(periodRemaining / daysLeft));
-      const s2sActual = s2sPlanned - todayTotal;
+      const s2sActual = Math.max(0, s2sPlanned - todayTotal);
 
       await prisma.dailySnapshot.upsert({
         where: { periodId_date: { periodId: period.id, date: today } },

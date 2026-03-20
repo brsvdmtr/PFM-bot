@@ -1,3 +1,11 @@
+---
+title: "ADR-007: Timezone Handling and Period Boundary Strategy"
+document_type: ADR
+status: Accepted
+last_updated: "2026-03-20"
+owner: Dmitriy
+---
+
 # ADR-007: Timezone Handling and Period Boundary Strategy
 
 **Status**: Accepted
@@ -29,6 +37,10 @@ PFM Bot runs on a single VPS in UTC. Users are predominantly in Russia (UTC+3 to
 
 Each `User` row stores `timezone String @default("Europe/Moscow")` — a full IANA timezone string (e.g., `"Europe/Moscow"`, `"Asia/Yekaterinburg"`). No UTC offset is stored; the IANA string is the source of truth and handles DST automatically.
 
+### auth_date: timezone-agnostic
+
+`auth_date` in Telegram's initData is a Unix timestamp (seconds since epoch), which is always UTC-based. The freshness check (`Date.now()/1000 - auth_date > 3600`) is correctly timezone-agnostic — it compares two Unix timestamps regardless of the user's timezone.
+
 ### Notification dispatch
 
 The notification cron (`apps/api/src/cron.ts`) runs every minute (`* * * * *`). For each eligible user, it computes the current `HH:MM` in their timezone using `Intl.DateTimeFormat`:
@@ -58,9 +70,26 @@ Period `startDate` and `endDate` in the `Period` table store **UTC midnight valu
 
 Period rollover cron fires at **00:05 UTC** (`5 0 * * *`) and marks periods whose `endDate <= today (UTC midnight)` as `COMPLETED` and creates new periods.
 
-This means:
-- A user with payday on the 15th has their period roll over at 00:05 UTC on the 15th, which is 03:05 AM Moscow time (UTC+3), or 08:05 AM Yekaterinburg time (UTC+5).
-- The rollover is up to ±12 hours off from the user's actual local midnight.
+**Concrete drift examples:**
+
+| User timezone | Period rollover (UTC time) | User's local time at rollover | Drift from user's midnight |
+|--------------|---------------------------|-------------------------------|---------------------------|
+| Moscow (UTC+3) | 00:05 UTC | 03:05 AM Moscow | +3 hours |
+| Yekaterinburg (UTC+5) | 00:05 UTC | 05:05 AM Yekaterinburg | +5 hours |
+| Vladivostok (UTC+10) | 00:05 UTC | 10:05 AM Vladivostok | +10 hours |
+
+**Worst-case example (Vladivostok, UTC+10):** A user in Vladivostok with a payday on the 15th will have their period roll over at 10:05 AM local time on the 15th, not at midnight. Any expense recorded between midnight and 10:05 AM on the 15th will be attributed to the old (ending) period, not the new one.
+
+### DailySnapshot timing
+
+`DailySnapshot` is saved at **23:55 UTC** by the cron job. This means:
+
+| User timezone | Snapshot time (UTC) | User's local time at snapshot |
+|--------------|---------------------|-------------------------------|
+| Moscow (UTC+3) | 23:55 UTC | 02:55 AM Moscow (next day) |
+| Vladivostok (UTC+10) | 23:55 UTC | 09:55 AM Vladivostok |
+
+For Moscow users, the snapshot is near end-of-day (02:55 AM is close enough — most users are asleep). For Vladivostok users, the snapshot is taken at 09:55 AM local time — a mid-morning snapshot, not an end-of-day summary. This means `overspentDays` in the last-completed period report may not accurately reflect the Vladivostok user's actual end-of-day spending.
 
 ### "Today's expenses" calculation
 
@@ -77,11 +106,12 @@ This means:
 - **IANA strings handle DST**: Russia abolished DST in 2014, but users in other timezones (e.g., `Europe/Berlin`) get correct behavior at DST transitions.
 - **Simple period DB schema**: UTC midnight dates are consistent and easily queried (`endDate <= today`). No per-user UTC offset math at query time.
 - **Fallback to Moscow**: If an invalid timezone string is stored, `currentTimeInTZ` falls back to `Europe/Moscow` silently.
+- **auth_date check is timezone-agnostic**: Unix timestamps are always UTC-based; the 1-hour freshness check is correct for all users regardless of timezone.
 
 ### Negative / Tradeoffs
 - **Period boundaries are not at user's midnight**: For a Vladivostok user (UTC+10), the period rolls over at 10:05 AM local time, not at midnight. Expenses recorded at 10:00 AM on payday day go into the old period.
 - **"Today's expenses" uses UTC midnight**: A Moscow user's "today" in the app starts at 03:00 AM Moscow time. Late-night expenses (midnight to 03:00 AM) appear as "yesterday."
-- **Daily snapshot at 23:55 UTC**: `DailySnapshot` is saved at 23:55 UTC. For Moscow users, this is 02:55 AM local time — reasonably close to "end of day." For Vladivostok users, it's 09:55 AM local time — a snapshot of mid-day, not end-of-day.
+- **DailySnapshot at 23:55 UTC is wrong for eastern users**: For Vladivostok users, the snapshot is taken at 09:55 AM local time — a snapshot of mid-day spending, not end-of-day. The `overspentDays` metric in last-period reports is unreliable for UTC+7 and higher timezones.
 - **Notification dedup lost on restart**: In-memory `notifLog` is cleared on API process restart. A restart at exactly 09:00 could double-send morning notifications.
 - **Every-minute cron iterates all users**: As user count grows, the notification cron iterates every onboarded user every minute. With 10 000 users, this is 10 000 `Intl.DateTimeFormat` computations + 10 000 DB time comparisons per minute.
 

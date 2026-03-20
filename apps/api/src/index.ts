@@ -217,7 +217,10 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
   const todayTotal = todayExpenses.reduce((sum, e) => sum + e.amount, 0);
   const totalPeriodSpent = periodExpenses._sum.amount ?? 0;
   const now = new Date();
-  const daysLeft = Math.max(1, Math.ceil((activePeriod.endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
+  // Use same formula as engine.ts: daysTotal - daysElapsed + 1
+  const msPerDay = 1000 * 60 * 60 * 24;
+  const daysElapsed = Math.max(1, Math.ceil((now.getTime() - activePeriod.startDate.getTime()) / msPerDay));
+  const daysLeft = Math.max(1, activePeriod.daysTotal - daysElapsed + 1);
 
   // Dynamic S2S with carry-over: recalculate daily from remaining budget
   const periodRemaining = Math.max(0, activePeriod.s2sPeriod - totalPeriodSpent);
