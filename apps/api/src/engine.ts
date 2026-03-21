@@ -290,15 +290,13 @@ export function calculatePeriodBounds(paydays: number[], fromDate: Date): Period
     }
 
     const fullPeriodDays = daysBetween(periodStart, periodEnd);
-    const isProrated = day !== payday;
-    const actualStart = isProrated ? startOfDay(fromDate) : periodStart;
 
     return {
-      start: actualStart,
+      start: periodStart,
       end: periodEnd,
-      daysTotal: daysBetween(actualStart, periodEnd),
+      daysTotal: fullPeriodDays,
       fullPeriodDays,
-      isProratedStart: isProrated,
+      isProratedStart: false,
     };
   }
 
@@ -319,15 +317,13 @@ export function calculatePeriodBounds(paydays: number[], fromDate: Date): Period
     }
 
     const fullPeriodDays = daysBetween(periodStart, periodEnd);
-    const isProrated = startOfDay(fromDate).getTime() !== periodStart.getTime();
-    const actualStart = isProrated ? startOfDay(fromDate) : periodStart;
 
     return {
-      start: actualStart,
+      start: periodStart,
       end: periodEnd,
-      daysTotal: daysBetween(actualStart, periodEnd),
+      daysTotal: fullPeriodDays,
       fullPeriodDays,
-      isProratedStart: isProrated,
+      isProratedStart: false,
     };
   }
 

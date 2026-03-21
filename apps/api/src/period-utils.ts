@@ -212,3 +212,155 @@ export function computeDebtPeriodSummaries(
     };
   });
 }
+
+// ── Canonical Period Bounds ──────────────────────────────────────────────────
+
+export interface CanonicalPeriodBounds {
+  start: Date;           // UTC instant = local midnight of previous payday in tz
+  end: Date;             // UTC instant = local midnight of next payday in tz
+  daysTotal: number;
+  fullPeriodDays: number;
+  isProratedStart: false;
+}
+
+/**
+ * Compute canonical pay-period boundaries from a salary schedule.
+ *
+ * ALWAYS returns the calendar-correct payday boundaries — never uses "today"
+ * as the period start. This is the authoritative boundary source for all
+ * period creation, recalculation, and self-heal logic.
+ *
+ * Returns UTC instants representing local midnight in tz (e.g. for Moscow
+ * UTC+3, March 13 00:00 Moscow = 2026-03-12T21:00:00Z).
+ *
+ * Test case (paydays=[1,13], Moscow, now=2026-03-20T23:45Z = March 21 02:45 local):
+ *   start = 2026-03-12T21:00:00Z  (March 13 00:00 Moscow)
+ *   end   = 2026-03-31T21:00:00Z  (April 1  00:00 Moscow)
+ *   daysTotal = 19
+ */
+export function calculateCanonicalPeriodBounds(
+  paydays: number[],
+  nowUtc: Date,
+  tz: string,
+): CanonicalPeriodBounds {
+  if (paydays.length === 0) {
+    // No paydays: return a 30-day window from today
+    const todayStart = startOfLocalDay(nowUtc, tz);
+    const zoned = toZonedTime(nowUtc, tz);
+    const endRaw = new Date(zoned.getFullYear(), zoned.getMonth() + 1, zoned.getDate(), 0, 0, 0, 0);
+    const end = fromZonedTime(endRaw, tz);
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const daysTotal = Math.round((end.getTime() - todayStart.getTime()) / msPerDay);
+    return { start: todayStart, end, daysTotal, fullPeriodDays: daysTotal, isProratedStart: false };
+  }
+
+  const sorted = [...paydays].sort((a, b) => a - b);
+  const zoned = toZonedTime(nowUtc, tz);
+  const day   = zoned.getDate();
+  const month = zoned.getMonth(); // 0-indexed
+  const year  = zoned.getFullYear();
+
+  /**
+   * UTC instant for local midnight of (y, m, d) in tz.
+   * Clamps d to the last day of the month to handle paydays like 31 in Feb.
+   */
+  function localMidnightUtc(y: number, m: number, d: number): Date {
+    const lastDay = new Date(y, m + 1, 0).getDate();
+    const clamped = Math.min(d, lastDay);
+    return fromZonedTime(new Date(y, m, clamped, 0, 0, 0, 0), tz);
+  }
+
+  /** Safe previous-month (y, m) — handles January boundary */
+  function prevYM(y: number, m: number): [number, number] {
+    return m === 0 ? [y - 1, 11] : [y, m - 1];
+  }
+
+  /** Safe next-month (y, m) — handles December boundary */
+  function nextYM(y: number, m: number): [number, number] {
+    return m === 11 ? [y + 1, 0] : [y, m + 1];
+  }
+
+  let start: Date;
+  let end: Date;
+
+  if (sorted.length === 1) {
+    const payday = sorted[0];
+    if (day >= payday) {
+      start = localMidnightUtc(year, month, payday);
+      const [ny, nm] = nextYM(year, month);
+      end = localMidnightUtc(ny, nm, payday);
+    } else {
+      const [py, pm] = prevYM(year, month);
+      start = localMidnightUtc(py, pm, payday);
+      end = localMidnightUtc(year, month, payday);
+    }
+  } else if (sorted.length === 2) {
+    const [a, b] = sorted;
+    if (day >= b) {
+      // Period: this month's b → next month's a
+      start = localMidnightUtc(year, month, b);
+      const [ny, nm] = nextYM(year, month);
+      end = localMidnightUtc(ny, nm, a);
+    } else if (day >= a) {
+      // Period: this month's a → this month's b
+      start = localMidnightUtc(year, month, a);
+      end = localMidnightUtc(year, month, b);
+    } else {
+      // Period: last month's b → this month's a
+      const [py, pm] = prevYM(year, month);
+      start = localMidnightUtc(py, pm, b);
+      end = localMidnightUtc(year, month, a);
+    }
+  } else {
+    // 3+ paydays: find bracket [lastPayday≤today, firstPayday>today]
+    let startDay = -1, endDay = -1;
+    let startY = year, startM = month;
+    let endY = year, endM = month;
+
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      if (sorted[i] <= day) { startDay = sorted[i]; break; }
+    }
+    for (const pd of sorted) {
+      if (pd > day) { endDay = pd; break; }
+    }
+
+    if (startDay === -1) {
+      const [py, pm] = prevYM(year, month);
+      startY = py; startM = pm;
+      startDay = sorted[sorted.length - 1];
+    }
+    if (endDay === -1) {
+      const [ny, nm] = nextYM(year, month);
+      endY = ny; endM = nm;
+      endDay = sorted[0];
+    }
+
+    start = localMidnightUtc(startY, startM, startDay);
+    end = localMidnightUtc(endY, endM, endDay);
+  }
+
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const daysTotal = Math.round((end.getTime() - start.getTime()) / msPerDay);
+
+  return {
+    start,
+    end,
+    daysTotal,
+    fullPeriodDays: daysTotal,
+    isProratedStart: false,
+  };
+}
+
+/**
+ * 1-based day number within the period for today, timezone-aware.
+ * Day 1 = period start local midnight.
+ *
+ * Example: periodStart = March 13, today = March 21 → dayNumber = 9
+ */
+export function dayNumberInPeriod(periodStartUtc: Date, nowUtc: Date, tz: string): number {
+  const startMidnight = startOfLocalDay(periodStartUtc, tz);
+  const todayMidnight = startOfLocalDay(nowUtc, tz);
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const elapsed = Math.round((todayMidnight.getTime() - startMidnight.getTime()) / msPerDay);
+  return Math.max(1, elapsed + 1);
+}

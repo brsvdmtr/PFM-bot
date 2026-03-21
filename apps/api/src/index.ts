@@ -2,7 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
 import { prisma } from '@pfm/db';
-import { calculateS2S, calculatePeriodBounds, computeReservedUpcoming, computeLiveWindow, computeRemainingDebtReservations } from './engine';
+import { calculateS2S, computeReservedUpcoming, computeLiveWindow, computeRemainingDebtReservations } from './engine';
 import { determineFocusDebt, buildAvalanchePlan } from './avalanche';
 import { getLastActualPayday, getNextActualPayday, getNextIncomeAmount } from './payday-calendar';
 import {
@@ -12,6 +12,8 @@ import {
   getNextLocalDayStart,
   toLocalDate,
   computeDebtPeriodSummaries,
+  calculateCanonicalPeriodBounds,
+  dayNumberInPeriod,
 } from './period-utils';
 
 // ── Types ──────────────────────────────────────────────
@@ -154,11 +156,10 @@ async function triggerRecalculate(userId: string): Promise<void> {
     _sum: { amount: true },
   });
 
-  // Use local date for period boundary calculation so "today" matches user's wall clock
+  // Use canonical salary-schedule boundaries — never "today" as period start
   const todayUtc = new Date();
-  const localToday = toLocalDate(todayUtc, tz);
   const allPaydays = [...new Set(incomes.flatMap((inc) => inc.paydays as number[]))].sort((a, b) => a - b);
-  const newBounds = calculatePeriodBounds(allPaydays, localToday);
+  const newBounds = calculateCanonicalPeriodBounds(allPaydays, todayUtc, tz);
 
   const s2sResult = calculateS2S({
     incomes: incomes.map((inc) => ({ amount: inc.amount, paydays: inc.paydays as number[] })),
@@ -257,7 +258,8 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
   const todayLocalStart   = getTodayLocalStart(tz);
   const tomorrowLocalStart = getNextLocalDayStart(tz);
 
-  const [user, activePeriod, todayExpenses, periodExpenses, incomes] = await Promise.all([
+  const now = new Date();
+  const [user, activePeriodRaw, todayExpenses, periodExpenses, incomes] = await Promise.all([
     prisma.user.findUnique({
       where: { id: userId },
       include: {
@@ -285,13 +287,14 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
     prisma.income.findMany({ where: { userId, isActive: true } }),
   ]);
 
-  if (!user || !activePeriod) {
+  if (!user || !activePeriodRaw) {
     res.json({
       onboardingDone: user?.onboardingDone ?? false,
       s2sToday: 0,
       s2sDaily: 0,
       daysLeft: 0,
       daysTotal: 0,
+      dayNumber: 1,
       periodSpent: 0,
       s2sPeriod: 0,
       todayExpenses: [],
@@ -301,11 +304,28 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
     return;
   }
 
+  // ── Self-heal: ensure period boundaries match salary schedule ───────────────
+  // If the stored period start doesn't match the canonical payday boundary
+  // (e.g., it was anchored to onboarding date instead of last payday),
+  // rebuild it in place. All existing expenses remain linked via periodId.
+  let activePeriod = activePeriodRaw;
+  if (incomes.length > 0) {
+    const allPaydayNumsForHeal = [...new Set(incomes.flatMap(i => i.paydays as number[]))].sort((a, b) => a - b);
+    const canonical = calculateCanonicalPeriodBounds(allPaydayNumsForHeal, now, tz);
+    if (Math.abs(activePeriod.startDate.getTime() - canonical.start.getTime()) > 60_000) {
+      console.log(`[Dashboard] Self-healing period for user ${userId}: stored start=${activePeriod.startDate.toISOString()} → canonical=${canonical.start.toISOString()}`);
+      await triggerRecalculate(userId);
+      const healed = await prisma.period.findFirst({ where: { userId, status: 'ACTIVE' } });
+      if (healed) activePeriod = healed;
+    }
+  }
+
   const todayTotal = todayExpenses.reduce((sum, e) => sum + e.amount, 0);
   const totalPeriodSpent = periodExpenses._sum.amount ?? 0;
-  const now = new Date();
   // Timezone-aware daysLeft: differenceInCalendarDays(periodEnd, today) in user's local TZ
   const daysLeft = daysLeftInPeriod(activePeriod.endDate, now, tz);
+  // 1-based day number within the period (e.g. Day 9 of 19)
+  const dayNumber = dayNumberInPeriod(activePeriod.startDate, now, tz);
 
   // Compute payday dates
   const allUseRuCalendar = incomes.some((i) => (i as any).useRussianWorkCalendar);
@@ -394,6 +414,7 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
     s2sDaily: dynamicS2sDaily,
     s2sStatus,
     daysLeft,
+    dayNumber,
     daysTotal: activePeriod.daysTotal,
     periodStart: activePeriod.startDate,
     periodEnd: activePeriod.endDate,
@@ -457,6 +478,8 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
       nowUtc: now.toISOString(),
       nowLocal: toLocalDate(now, tz).toISOString(),
       daysLeft,
+      dayNumber,
+      totalDays: activePeriod.daysTotal,
       periodRemaining,
       totalPeriodSpent,
       todayTotal,
@@ -710,10 +733,11 @@ tg.post('/onboarding/complete', async (req: AuthenticatedRequest, res) => {
     data: { status: 'COMPLETED' },
   });
 
-  // Calculate period bounds using ALL paydays from all incomes combined
+  // Calculate canonical period bounds from salary schedule — never anchor to today
+  const tz = (user as any).timezone ?? DEFAULT_TZ;
   const allPaydays = [...new Set(incomes.flatMap((inc) => inc.paydays as number[]))].sort((a, b) => a - b);
   const today = new Date();
-  const bounds = calculatePeriodBounds(allPaydays, today);
+  const bounds = calculateCanonicalPeriodBounds(allPaydays, today, tz);
 
   // Calculate S2S
   const s2sResult = calculateS2S({
@@ -921,10 +945,12 @@ tg.post('/periods/recalculate', async (req: AuthenticatedRequest, res) => {
   });
 
   const today = new Date();
+  const tzUserRec = await prisma.user.findUnique({ where: { id: userId }, select: { timezone: true } });
+  const tzRec = tzUserRec?.timezone ?? DEFAULT_TZ;
 
   // Recompute period bounds using ALL paydays from all incomes
   const allPaydays = [...new Set(incomes.flatMap((inc) => inc.paydays as number[]))].sort((a, b) => a - b);
-  const newBounds = calculatePeriodBounds(allPaydays, today);
+  const newBounds = calculateCanonicalPeriodBounds(allPaydays, today, tzRec);
 
   const s2sResult = calculateS2S({
     incomes: incomes.map((inc) => ({ amount: inc.amount, paydays: inc.paydays as number[] })),

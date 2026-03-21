@@ -1,8 +1,8 @@
 import cron from 'node-cron';
 import { prisma } from '@pfm/db';
-import { calculateS2S, calculatePeriodBounds } from './engine';
+import { calculateS2S } from './engine';
 import { getLastActualPayday, getNextActualPayday, getNextIncomeAmount } from './payday-calendar';
-import { DEFAULT_TZ, daysLeftInPeriod, getTodayLocalStart, getNextLocalDayStart, toLocalDate } from './period-utils';
+import { DEFAULT_TZ, daysLeftInPeriod, getTodayLocalStart, getNextLocalDayStart, toLocalDate, calculateCanonicalPeriodBounds } from './period-utils';
 import {
   sendMorningNotification,
   sendEveningNotification,
@@ -307,11 +307,10 @@ cron.schedule('5 0 * * *', async () => {
         const { incomes, obligations, debts, emergencyFund: ef } = user;
         if (incomes.length === 0) continue;
 
-        // Calculate new period bounds using ALL paydays from all incomes (timezone-aware)
+        // Calculate canonical period bounds from salary schedule
         const userTz = (user as any).timezone ?? DEFAULT_TZ;
         const allPaydays = [...new Set(incomes.flatMap((i: any) => i.paydays as number[]))].sort((a: number, b: number) => a - b);
-        const localNow = toLocalDate(now, userTz);
-        const bounds = calculatePeriodBounds(allPaydays, localNow);
+        const bounds = calculateCanonicalPeriodBounds(allPaydays, now, userTz);
 
         // Calculate S2S for new period
         const s2sResult = calculateS2S({

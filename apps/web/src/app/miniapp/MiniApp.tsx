@@ -63,7 +63,7 @@ interface Expense { id: string; amount: number; note?: string; spentAt: string; 
 interface DashboardData {
   onboardingDone: boolean;
   s2sToday: number; s2sDaily: number; s2sStatus: string;
-  daysLeft: number; daysTotal: number;
+  daysLeft: number; dayNumber?: number; daysTotal: number;
   periodStart: string; periodEnd: string;
   periodSpent: number; s2sPeriod: number;
   periodRemaining?: number; totalDebtPaymentsRemaining?: number;
@@ -616,7 +616,7 @@ function Dashboard({ data, onAddExpense, onOpenDebts, onOpenSummary, showSummary
         ) : (
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ fontSize: 13, color: C.textSec }}>{periodLabel(data.periodStart, data.periodEnd)}</span>
-            <span style={{ fontSize: 13, fontWeight: 600, color: C.accentLight }}>День {periodElapsed + 1} из {data.daysTotal}</span>
+            <span style={{ fontSize: 13, fontWeight: 600, color: C.accentLight }}>День {data.dayNumber ?? (periodElapsed + 1)} из {data.daysTotal}</span>
           </div>
         )}
       </div>
