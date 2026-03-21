@@ -6,7 +6,10 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "jest"
+    "test": "jest",
+    "test:golden": "jest --testPathPatterns=golden-user-dima --verbose",
+    "test:finance": "jest --testPathPatterns=domain/finance --verbose",
+    "verify:finance": "jest --testPathPatterns=golden-user-dima --verbose"
   },
   "dependencies": {
     "@pfm/db": "workspace:*",

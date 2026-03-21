@@ -2,7 +2,6 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
 import { prisma } from '@pfm/db';
-import { calculateS2S, computeReservedUpcoming, computeLiveWindow, computeRemainingDebtReservations } from './engine';
 import { determineFocusDebt, buildAvalanchePlan } from './avalanche';
 import { getLastActualPayday, getNextActualPayday, getNextIncomeAmount } from './payday-calendar';
 import {
@@ -12,9 +11,15 @@ import {
   getNextLocalDayStart,
   toLocalDate,
   computeDebtPeriodSummaries,
-  calculateCanonicalPeriodBounds,
   dayNumberInPeriod,
 } from './period-utils';
+// Domain finance layer — single source of truth for all financial calculations.
+// Route handlers collect inputs, call domain, persist/return output. No math here.
+import {
+  buildDashboardView,
+  rebuildActivePeriodSnapshot,
+  calculateActualPeriodBounds,
+} from './domain/finance';
 
 // ── Types ──────────────────────────────────────────────
 
@@ -136,75 +141,12 @@ async function ensureUser(req: AuthenticatedRequest, _res: Response, next: NextF
   next();
 }
 
-/** Trigger a recalculate of the active period for a user (non-throwing) */
+/**
+ * Rebuild the active period snapshot for a user.
+ * Delegates entirely to domain/finance — no financial math here.
+ */
 async function triggerRecalculate(userId: string): Promise<void> {
-  const [incomes, obligations, debts, ef, tzUser] = await Promise.all([
-    prisma.income.findMany({ where: { userId, isActive: true } }),
-    prisma.obligation.findMany({ where: { userId, isActive: true } }),
-    prisma.debt.findMany({ where: { userId, isPaidOff: false } }),
-    prisma.emergencyFund.findUnique({ where: { userId } }),
-    prisma.user.findUnique({ where: { id: userId }, select: { timezone: true } }),
-  ]);
-
-  const tz = tzUser?.timezone ?? DEFAULT_TZ;
-
-  const activePeriod = await prisma.period.findFirst({ where: { userId, status: 'ACTIVE' } });
-  if (!activePeriod || incomes.length === 0) return;
-
-  const totalExpenses = await prisma.expense.aggregate({
-    where: { periodId: activePeriod.id },
-    _sum: { amount: true },
-  });
-
-  // Use canonical salary-schedule boundaries — never "today" as period start
-  const todayUtc = new Date();
-  const allPaydays = [...new Set(incomes.flatMap((inc) => inc.paydays as number[]))].sort((a, b) => a - b);
-  const newBounds = calculateCanonicalPeriodBounds(allPaydays, todayUtc, tz);
-
-  const s2sResult = calculateS2S({
-    incomes: incomes.map((inc) => ({ amount: inc.amount, paydays: inc.paydays as number[] })),
-    obligations: obligations.map((o) => ({ amount: o.amount })),
-    debts: debts.map((d) => ({ id: d.id, balance: d.balance, apr: d.apr, minPayment: d.minPayment, isFocusDebt: d.isFocusDebt })),
-    emergencyFund: { currentAmount: ef?.currentAmount ?? 0, targetMonths: ef?.targetMonths ?? 3 },
-    periodStartDate: newBounds.start,
-    periodEndDate: newBounds.end,
-    today: todayUtc,
-    totalExpensesInPeriod: totalExpenses._sum.amount ?? 0,
-    todayExpenses: 0,
-    isProratedStart: newBounds.isProratedStart,
-    fullPeriodDays: newBounds.fullPeriodDays,
-  });
-
-  const allUseRuCalendar = incomes.some((inc) => (inc as any).useRussianWorkCalendar);
-  const lastIncomeDateAuto = getLastActualPayday(allPaydays, todayUtc, allUseRuCalendar);
-  const nextIncomeDateAuto = getNextActualPayday(allPaydays, todayUtc, allUseRuCalendar);
-  const nextIncomeAmountAuto = nextIncomeDateAuto
-    ? getNextIncomeAmount(incomes.map(i => ({ amount: i.amount, paydays: i.paydays as number[] })), nextIncomeDateAuto)
-    : 0;
-  const endDay = newBounds.end.getDate();
-  const endDayIdx = allPaydays.indexOf(endDay);
-  const triggerPaydayAuto = endDayIdx > 0 ? allPaydays[endDayIdx - 1] : allPaydays[allPaydays.length - 1];
-
-  await prisma.period.update({
-    where: { id: activePeriod.id },
-    data: {
-      startDate: newBounds.start,
-      endDate: newBounds.end,
-      daysTotal: s2sResult.daysTotal,
-      isProratedStart: newBounds.isProratedStart,
-      totalIncome: s2sResult.totalIncome,
-      totalObligations: s2sResult.totalObligations,
-      totalDebtPayments: s2sResult.totalDebtPayments,
-      efContribution: s2sResult.efContribution,
-      reserve: s2sResult.reserve,
-      s2sPeriod: s2sResult.s2sPeriod,
-      s2sDaily: s2sResult.s2sDaily,
-      triggerPayday: triggerPaydayAuto ?? null,
-      lastIncomeDate: lastIncomeDateAuto ?? null,
-      nextIncomeDate: nextIncomeDateAuto ?? null,
-      nextIncomeAmount: nextIncomeAmountAuto,
-    },
-  });
+  await rebuildActivePeriodSnapshot(userId);
 }
 
 // ── App ────────────────────────────────────────────────
@@ -304,196 +246,127 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
     return;
   }
 
-  // ── Self-heal: ensure period boundaries match salary schedule ───────────────
-  // If the stored period start doesn't match the canonical payday boundary
-  // (e.g., it was anchored to onboarding date instead of last payday),
-  // rebuild it in place. All existing expenses remain linked via periodId.
+  // ── Self-heal: if stored period boundaries differ from actual payday bounds
+  // by more than 60s, rebuild the snapshot with correct actual payout dates.
+  // Uses calculateActualPeriodBounds (real payout dates) — not canonical calendar.
   let activePeriod = activePeriodRaw;
   if (incomes.length > 0) {
     const allPaydayNumsForHeal = [...new Set(incomes.flatMap(i => i.paydays as number[]))].sort((a, b) => a - b);
-    const canonical = calculateCanonicalPeriodBounds(allPaydayNumsForHeal, now, tz);
-    if (Math.abs(activePeriod.startDate.getTime() - canonical.start.getTime()) > 60_000) {
-      console.log(`[Dashboard] Self-healing period for user ${userId}: stored start=${activePeriod.startDate.toISOString()} → canonical=${canonical.start.toISOString()}`);
-      await triggerRecalculate(userId);
+    const useRuCalHeal = incomes.some(i => (i as any).useRussianWorkCalendar === true);
+    const actualBounds = calculateActualPeriodBounds(allPaydayNumsForHeal, now, tz, useRuCalHeal);
+    if (Math.abs(activePeriod.startDate.getTime() - actualBounds.start.getTime()) > 60_000) {
+      console.log(`[Dashboard] Self-healing period for user ${userId}: stored=${activePeriod.startDate.toISOString()} → actual=${actualBounds.start.toISOString()}`);
+      await rebuildActivePeriodSnapshot(userId, now);
       const healed = await prisma.period.findFirst({ where: { userId, status: 'ACTIVE' } });
       if (healed) activePeriod = healed;
     }
   }
 
+  // ── Gather inputs for domain view ────────────────────────────────────────
   const todayTotal = todayExpenses.reduce((sum, e) => sum + e.amount, 0);
   const totalPeriodSpent = periodExpenses._sum.amount ?? 0;
-  // Timezone-aware daysLeft: differenceInCalendarDays(periodEnd, today) in user's local TZ
-  const daysLeft = daysLeftInPeriod(activePeriod.endDate, now, tz);
-  // 1-based day number within the period (e.g. Day 9 of 19)
-  const dayNumber = dayNumberInPeriod(activePeriod.startDate, now, tz);
 
-  // Compute payday dates
-  const allUseRuCalendar = incomes.some((i) => (i as any).useRussianWorkCalendar);
-  const allPaydayNums = [...new Set(incomes.flatMap((i) => i.paydays as number[]))].sort((a, b) => a - b);
-  const lastIncomeDate = getLastActualPayday(allPaydayNums, now, allUseRuCalendar);
-  const nextIncomeDate = activePeriod.nextIncomeDate || getNextActualPayday(allPaydayNums, now, allUseRuCalendar);
-  const nextIncomeAmount = activePeriod.nextIncomeAmount || (nextIncomeDate ? getNextIncomeAmount(incomes.map(i => ({ amount: i.amount, paydays: i.paydays as number[] })), nextIncomeDate) : 0);
-
-  // Aggregate REQUIRED_MIN_PAYMENT events for current period to compute per-debt remaining
-  const periodPaymentEvents = await prisma.debtPaymentEvent.findMany({
+  const periodDebtEvents = await prisma.debtPaymentEvent.findMany({
     where: { userId, periodId: activePeriod.id, kind: 'REQUIRED_MIN_PAYMENT', deletedAt: null },
-    select: { debtId: true, amountMinor: true },
+    select: { debtId: true, amountMinor: true, kind: true },
   });
-  const paidByDebt = new Map<string, number>();
-  for (const ev of periodPaymentEvents) {
-    paidByDebt.set(ev.debtId, (paidByDebt.get(ev.debtId) ?? 0) + ev.amountMinor);
-  }
 
-  // Per-debt period summaries: required / paid / remaining / status
-  const debtPeriodSummaries = computeDebtPeriodSummaries(
-    user.debts.map((d) => ({ id: d.id, minPayment: d.minPayment, dueDay: d.dueDay })),
-    paidByDebt,
-    { startDate: activePeriod.startDate, endDate: activePeriod.endDate },
+  // ── Build dashboard view via domain layer (all financial math here) ───────
+  const view = buildDashboardView({
+    now,
     tz,
-  );
-  const totalDebtPaymentsRemaining = debtPeriodSummaries.reduce(
-    (sum, d) => sum + d.remainingRequiredThisPeriod, 0,
-  );
-  const summaryByDebtId = new Map(debtPeriodSummaries.map((s) => [s.debtId, s]));
+    incomes: incomes.map(i => ({
+      id: i.id,
+      amount: i.amount,
+      paydays: i.paydays as number[],
+      useRussianWorkCalendar: (i as any).useRussianWorkCalendar === true,
+    })),
+    obligations: user.obligations.map(o => ({ id: o.id, amount: o.amount, dueDay: o.dueDay ?? null })),
+    debts: user.debts.map(d => ({
+      id: d.id, balance: d.balance, apr: d.apr, minPayment: d.minPayment,
+      dueDay: (d as any).dueDay ?? null, isFocusDebt: d.isFocusDebt, isPaidOff: d.isPaidOff,
+    })),
+    emergencyFund: user.emergencyFund
+      ? { currentAmount: user.emergencyFund.currentAmount, targetMonths: user.emergencyFund.targetMonths }
+      : null,
+    totalPeriodSpent,
+    todayTotal,
+    debtPaymentEvents: periodDebtEvents.map(ev => ({
+      debtId: ev.debtId,
+      amountMinor: ev.amountMinor,
+      kind: ev.kind as 'REQUIRED_MIN_PAYMENT' | 'EXTRA_PRINCIPAL_PAYMENT',
+    })),
+  });
 
-  // Compute upcoming reserves — payment-aware remaining amounts
-  const reservedUpcomingObligations = nextIncomeDate
-    ? computeReservedUpcoming(
-        user.obligations.map((o) => ({ amount: o.amount, dueDay: o.dueDay })),
-        [],
-        now,
-        nextIncomeDate,
-      ).reservedUpcomingObligations
+  // ── Non-financial display fields (payday calendar, cash anchor) ───────────
+  const allUseRuCalendar = incomes.some(i => (i as any).useRussianWorkCalendar === true);
+  const allPaydayNums = [...new Set(incomes.flatMap(i => i.paydays as number[]))].sort((a, b) => a - b);
+  const lastIncomeDate  = getLastActualPayday(allPaydayNums, now, allUseRuCalendar);
+  const nextIncomeDate  = getNextActualPayday(allPaydayNums, now, allUseRuCalendar);
+  const nextIncomeAmount = nextIncomeDate
+    ? getNextIncomeAmount(incomes.map(i => ({ amount: i.amount, paydays: i.paydays as number[] })), nextIncomeDate)
     : 0;
 
-  const reservedUpcomingDebtPayments = nextIncomeDate
-    ? computeRemainingDebtReservations(
-        user.debts.map((d) => ({
-          debtId: d.id,
-          minPayment: d.minPayment,
-          dueDay: d.dueDay,
-          paidThisPeriod: paidByDebt.get(d.id) ?? 0,
-        })),
-        now,
-        nextIncomeDate,
-      )
-    : 0;
-
-  const reservesResult = {
-    reservedUpcomingObligations,
-    reservedUpcomingDebtPayments,
-    reservedUpcoming: reservedUpcomingObligations + reservedUpcomingDebtPayments,
-  };
-
-  // Dynamic S2S with carry-over: recalculate daily from remaining budget
-  const periodRemaining = Math.max(0, activePeriod.s2sPeriod - totalPeriodSpent);
-  let dynamicS2sDaily = Math.max(0, Math.round(periodRemaining / daysLeft));
-  let s2sToday = Math.max(0, dynamicS2sDaily - todayTotal);
-
-  // S2S status color
-  let s2sStatus: 'OK' | 'WARNING' | 'OVERSPENT' | 'DEFICIT' = 'OK';
-  if (activePeriod.s2sPeriod <= 0) {
-    s2sStatus = 'DEFICIT';
-  } else if (todayTotal > dynamicS2sDaily) {
-    s2sStatus = 'OVERSPENT';
-  } else if (dynamicS2sDaily > 0 && s2sToday / dynamicS2sDaily <= 0.3) {
-    s2sStatus = 'WARNING';
-  }
-
-  // cashOnHand / live window is DISPLAY ONLY — never used to compute s2sToday or s2sDaily.
-  // S2S is always derived from period budget semantics:
-  //   dynamicS2sDaily = round(periodRemaining / daysLeft)
-  //   s2sToday        = max(0, dynamicS2sDaily - todayTotal)
-  // Spec §7: "никогда не вычислять dynamicS2sDaily из cashOnHand"
-
-  const focusDebt = user.debts.find((d) => d.isFocusDebt) ?? user.debts[0] ?? null;
+  const summaryByDebtId = new Map(view.debtSummaries.map(s => [s.debtId, s]));
+  const focusDebt = user.debts.find(d => d.isFocusDebt) ?? user.debts[0] ?? null;
 
   res.json({
     onboardingDone: user.onboardingDone,
-    s2sToday,
-    s2sDaily: dynamicS2sDaily,
-    s2sStatus,
-    daysLeft,
-    dayNumber,
-    daysTotal: activePeriod.daysTotal,
-    periodStart: activePeriod.startDate,
-    periodEnd: activePeriod.endDate,
-    periodSpent: totalPeriodSpent,
-    s2sPeriod: activePeriod.s2sPeriod,
+    // ── Core S2S (backend-authoritative, from domain layer) ──
+    s2sToday:    view.s2sToday,
+    s2sDaily:    view.s2sDaily,
+    s2sStatus:   view.s2sStatus,
+    daysLeft:    view.daysLeft,
+    dayNumber:   view.dayNumber,
+    daysTotal:   view.totalDays,
+    periodStart: new Date(view.periodStartIso),
+    periodEnd:   new Date(view.periodEndIso),
+    periodSpent: view.totalPeriodSpent,
+    s2sPeriod:   view.s2sPeriod,
+    periodRemaining:             view.periodRemaining,
+    totalDebtPaymentsRemaining:  view.totalDebtPaymentsRemaining,
+    // ── Today's expense list (raw, for display) ──
     todayExpenses,
     todayTotal,
+    // ── Debts with per-period payment status ──
     focusDebt: focusDebt
-      ? {
-          id: focusDebt.id,
-          title: focusDebt.title,
-          apr: focusDebt.apr,
-          balance: focusDebt.balance,
-          minPayment: focusDebt.minPayment,
-          type: focusDebt.type,
-        }
+      ? { id: focusDebt.id, title: focusDebt.title, apr: focusDebt.apr,
+          balance: focusDebt.balance, minPayment: focusDebt.minPayment, type: focusDebt.type }
       : null,
-    periodRemaining,
-    totalDebtPaymentsRemaining,
-    debts: user.debts.map((d) => {
+    debts: user.debts.map(d => {
       const ps = summaryByDebtId.get(d.id);
       return {
-        id: d.id,
-        title: d.title,
-        apr: d.apr,
-        balance: d.balance,
-        minPayment: d.minPayment,
-        type: d.type,
-        isFocusDebt: d.isFocusDebt,
-        dueDay: d.dueDay,
+        id: d.id, title: d.title, apr: d.apr, balance: d.balance,
+        minPayment: d.minPayment, type: d.type, isFocusDebt: d.isFocusDebt, dueDay: d.dueDay,
         currentPeriodPayment: ps ? {
           required: ps.requiredMinForPeriod,
-          paid: ps.paidRequiredThisPeriod,
+          paid:     ps.paidRequiredThisPeriod,
           remaining: ps.remainingRequiredThisPeriod,
-          status: ps.status,
+          status:   ps.status,
         } : null,
       };
     }),
+    // ── Emergency fund ──
     emergencyFund: user.emergencyFund
-      ? {
-          currentAmount: user.emergencyFund.currentAmount,
-          targetAmount: user.obligations.reduce((sum, o) => sum + o.amount, 0) * user.emergencyFund.targetMonths,
-        }
+      ? { currentAmount: user.emergencyFund.currentAmount,
+          targetAmount:  user.obligations.reduce((s, o) => s + o.amount, 0) * user.emergencyFund.targetMonths }
       : null,
     currency: activePeriod.currency,
-    // New live window fields
-    cashOnHand: activePeriod.cashAnchorAmount ?? null,
-    cashAnchorAt: activePeriod.cashAnchorAt ?? null,
+    // ── Payday / cash anchor display fields ──
+    cashOnHand:    activePeriod.cashAnchorAmount ?? null,
+    cashAnchorAt:  activePeriod.cashAnchorAt ?? null,
     lastIncomeDate: lastIncomeDate ?? null,
     nextIncomeDate: nextIncomeDate ?? null,
-    nextIncomeAmount: nextIncomeAmount,
+    nextIncomeAmount,
     daysToNextIncome: nextIncomeDate ? daysLeftInPeriod(nextIncomeDate, now, tz) : null,
-    reservedUpcoming: reservesResult.reservedUpcoming,
-    reservedUpcomingObligations: reservesResult.reservedUpcomingObligations,
-    reservedUpcomingDebtPayments: reservesResult.reservedUpcomingDebtPayments,
-    windowStart: activePeriod.cashAnchorAt ?? activePeriod.startDate,
-    windowEnd: nextIncomeDate ?? activePeriod.endDate,
+    windowStart:  activePeriod.cashAnchorAt ?? activePeriod.startDate,
+    windowEnd:    nextIncomeDate ?? activePeriod.endDate,
     usesLiveWindow: false,
+    // ── Debug (never source of truth) ──
     _debug: {
-      tz,
-      nowUtc: now.toISOString(),
+      ...view._debug,
       nowLocal: toLocalDate(now, tz).toISOString(),
-      daysLeft,
-      dayNumber,
-      totalDays: activePeriod.daysTotal,
-      periodRemaining,
-      totalPeriodSpent,
-      todayTotal,
-      dynamicS2sDaily,
-      s2sToday,
-      totalDebtPaymentsRemaining,
-      debtSummaries: debtPeriodSummaries.map((s) => ({
-        debtId: s.debtId,
-        dueDay: s.dueDay,
-        required: s.requiredMinForPeriod,
-        paid: s.paidRequiredThisPeriod,
-        remaining: s.remainingRequiredThisPeriod,
-        status: s.status,
-      })),
+      totalPeriodSpent: view.totalPeriodSpent,
     },
   });
 });
@@ -714,12 +587,9 @@ tg.post('/onboarding/complete', async (req: AuthenticatedRequest, res) => {
   const userId = req.userId!;
   const { currentCash } = req.body; // optional number in minor units
 
-  const [user, incomes, obligations, debts, ef] = await Promise.all([
+  const [user, incomes] = await Promise.all([
     prisma.user.findUnique({ where: { id: userId } }),
     prisma.income.findMany({ where: { userId, isActive: true } }),
-    prisma.obligation.findMany({ where: { userId, isActive: true } }),
-    prisma.debt.findMany({ where: { userId, isPaidOff: false } }),
-    prisma.emergencyFund.findUnique({ where: { userId } }),
   ]);
 
   if (!user || incomes.length === 0) {
@@ -733,84 +603,52 @@ tg.post('/onboarding/complete', async (req: AuthenticatedRequest, res) => {
     data: { status: 'COMPLETED' },
   });
 
-  // Calculate canonical period bounds from salary schedule — never anchor to today
+  // Compute actual period bounds from salary schedule (real payout dates, not calendar)
   const tz = (user as any).timezone ?? DEFAULT_TZ;
+  const now = new Date();
   const allPaydays = [...new Set(incomes.flatMap((inc) => inc.paydays as number[]))].sort((a, b) => a - b);
-  const today = new Date();
-  const bounds = calculateCanonicalPeriodBounds(allPaydays, today, tz);
-
-  // Calculate S2S
-  const s2sResult = calculateS2S({
-    incomes: incomes.map((inc) => ({ amount: inc.amount, paydays: inc.paydays as number[] })),
-    obligations: obligations.map((o) => ({ amount: o.amount })),
-    debts: debts.map((d) => ({
-      id: d.id,
-      balance: d.balance,
-      apr: d.apr,
-      minPayment: d.minPayment,
-      isFocusDebt: d.isFocusDebt,
-    })),
-    emergencyFund: {
-      currentAmount: ef?.currentAmount ?? 0,
-      targetMonths: ef?.targetMonths ?? 3,
-    },
-    periodStartDate: bounds.start,
-    periodEndDate: bounds.end,
-    today,
-    totalExpensesInPeriod: 0,
-    todayExpenses: 0,
-    isProratedStart: bounds.isProratedStart,
-    fullPeriodDays: bounds.fullPeriodDays,
-  });
-
-  // Compute actual payday dates
-  const allUseRuCalendar = incomes.some((inc) => (inc as any).useRussianWorkCalendar);
-  const lastIncomeDate = getLastActualPayday(allPaydays, today, allUseRuCalendar);
-  const nextIncomeDate = getNextActualPayday(allPaydays, today, allUseRuCalendar);
-  const nextIncomeAmountVal = nextIncomeDate
-    ? getNextIncomeAmount(incomes.map(i => ({ amount: i.amount, paydays: i.paydays as number[] })), nextIncomeDate)
-    : 0;
-
-  // Compute triggerPayday
-  const endDay = bounds.end.getDate();
-  const endDayIdx = allPaydays.indexOf(endDay);
-  const triggerPaydayVal = endDayIdx > 0 ? allPaydays[endDayIdx - 1] : allPaydays[allPaydays.length - 1];
+  const useRuCalendar = incomes.some((inc) => (inc as any).useRussianWorkCalendar === true);
+  const bounds = calculateActualPeriodBounds(allPaydays, now, tz, useRuCalendar);
 
   const currency = (user.primaryCurrency || 'RUB') as any;
 
-  const period = await prisma.period.create({
+  // Create period shell — financial fields filled by rebuildActivePeriodSnapshot below
+  await prisma.period.create({
     data: {
       userId,
-      startDate: bounds.start,
-      endDate: bounds.end,
-      totalIncome: s2sResult.totalIncome,
-      totalObligations: s2sResult.totalObligations,
-      totalDebtPayments: s2sResult.totalDebtPayments,
-      efContribution: s2sResult.efContribution,
-      reserve: s2sResult.reserve,
-      s2sPeriod: s2sResult.s2sPeriod,
-      s2sDaily: s2sResult.s2sDaily,
-      daysTotal: s2sResult.daysTotal,
+      startDate:        bounds.start,
+      endDate:          bounds.end,
+      daysTotal:        bounds.daysTotal,
       currency,
-      isProratedStart: bounds.isProratedStart,
-      status: 'ACTIVE',
-      triggerPayday: triggerPaydayVal ?? null,
-      lastIncomeDate: lastIncomeDate ?? null,
-      nextIncomeDate: nextIncomeDate ?? null,
-      nextIncomeAmount: nextIncomeAmountVal,
+      status:           'ACTIVE',
+      isProratedStart:  false,
+      totalIncome:      0,
+      totalObligations: 0,
+      totalDebtPayments: 0,
+      efContribution:   0,
+      reserve:          0,
+      s2sPeriod:        0,
+      s2sDaily:         0,
       cashAnchorAmount: currentCash ? Math.round(currentCash) : null,
-      cashAnchorAt: currentCash ? today : null,
+      cashAnchorAt:     currentCash ? now : null,
     },
   });
+
+  // Fill all financial values via the domain layer (single source of truth)
+  await rebuildActivePeriodSnapshot(userId, now);
 
   await prisma.user.update({
     where: { id: userId },
     data: { onboardingDone: true },
   });
 
+  // Fetch rebuilt period and compute display-only payday fields for response
+  const period = await prisma.period.findFirst({ where: { userId, status: 'ACTIVE' } });
+  const lastIncomeDate = getLastActualPayday(allPaydays, now, useRuCalendar);
+  const nextIncomeDate = getNextActualPayday(allPaydays, now, useRuCalendar);
+
   res.json({
     period,
-    s2s: s2sResult,
     cashAnchorSet: !!currentCash,
     nextIncomeDate: nextIncomeDate ?? null,
     lastIncomeDate: lastIncomeDate ?? null,
@@ -922,86 +760,9 @@ tg.get('/periods/current', async (req: AuthenticatedRequest, res) => {
 
 tg.post('/periods/recalculate', async (req: AuthenticatedRequest, res) => {
   const userId = req.userId!;
-
-  const [incomes, obligations, debts, ef] = await Promise.all([
-    prisma.income.findMany({ where: { userId, isActive: true } }),
-    prisma.obligation.findMany({ where: { userId, isActive: true } }),
-    prisma.debt.findMany({ where: { userId, isPaidOff: false } }),
-    prisma.emergencyFund.findUnique({ where: { userId } }),
-  ]);
-
-  const activePeriod = await prisma.period.findFirst({
-    where: { userId, status: 'ACTIVE' },
-  });
-
-  if (!activePeriod || incomes.length === 0) {
-    res.status(400).json({ error: 'No active period or income' });
-    return;
-  }
-
-  const totalExpenses = await prisma.expense.aggregate({
-    where: { periodId: activePeriod.id },
-    _sum: { amount: true },
-  });
-
-  const today = new Date();
-  const tzUserRec = await prisma.user.findUnique({ where: { id: userId }, select: { timezone: true } });
-  const tzRec = tzUserRec?.timezone ?? DEFAULT_TZ;
-
-  // Recompute period bounds using ALL paydays from all incomes
-  const allPaydays = [...new Set(incomes.flatMap((inc) => inc.paydays as number[]))].sort((a, b) => a - b);
-  const newBounds = calculateCanonicalPeriodBounds(allPaydays, today, tzRec);
-
-  const s2sResult = calculateS2S({
-    incomes: incomes.map((inc) => ({ amount: inc.amount, paydays: inc.paydays as number[] })),
-    obligations: obligations.map((o) => ({ amount: o.amount })),
-    debts: debts.map((d) => ({
-      id: d.id, balance: d.balance, apr: d.apr,
-      minPayment: d.minPayment, isFocusDebt: d.isFocusDebt,
-    })),
-    emergencyFund: { currentAmount: ef?.currentAmount ?? 0, targetMonths: ef?.targetMonths ?? 3 },
-    periodStartDate: newBounds.start,
-    periodEndDate: newBounds.end,
-    today,
-    totalExpensesInPeriod: totalExpenses._sum.amount ?? 0,
-    todayExpenses: 0,
-    isProratedStart: newBounds.isProratedStart,
-    fullPeriodDays: newBounds.fullPeriodDays,
-  });
-
-  // Persist triggerPayday and income window dates
-  const allUseRuCalendarRec = incomes.some((inc) => (inc as any).useRussianWorkCalendar);
-  const lastIncomeDateRec = getLastActualPayday(allPaydays, today, allUseRuCalendarRec);
-  const nextIncomeDateRec = getNextActualPayday(allPaydays, today, allUseRuCalendarRec);
-  const nextIncomeAmountRec = nextIncomeDateRec
-    ? getNextIncomeAmount(incomes.map(i => ({ amount: i.amount, paydays: i.paydays as number[] })), nextIncomeDateRec)
-    : 0;
-  const recEndDay = newBounds.end.getDate();
-  const recEndDayIdx = allPaydays.indexOf(recEndDay);
-  const recTriggerPayday = recEndDayIdx > 0 ? allPaydays[recEndDayIdx - 1] : allPaydays[allPaydays.length - 1];
-
-  await prisma.period.update({
-    where: { id: activePeriod.id },
-    data: {
-      startDate: newBounds.start,
-      endDate: newBounds.end,
-      daysTotal: s2sResult.daysTotal,
-      isProratedStart: newBounds.isProratedStart,
-      totalIncome: s2sResult.totalIncome,
-      totalObligations: s2sResult.totalObligations,
-      totalDebtPayments: s2sResult.totalDebtPayments,
-      efContribution: s2sResult.efContribution,
-      reserve: s2sResult.reserve,
-      s2sPeriod: s2sResult.s2sPeriod,
-      s2sDaily: s2sResult.s2sDaily,
-      triggerPayday: recTriggerPayday ?? null,
-      lastIncomeDate: lastIncomeDateRec ?? null,
-      nextIncomeDate: nextIncomeDateRec ?? null,
-      nextIncomeAmount: nextIncomeAmountRec,
-    },
-  });
-
-  res.json({ ok: true, s2s: s2sResult });
+  // Domain layer handles all fetching, bounds computation, and DB update.
+  await triggerRecalculate(userId);
+  res.json({ ok: true });
 });
 
 // ── Incomes CRUD ─────────────────────────────────────────
