@@ -4,7 +4,7 @@ document_type: Normative
 status: Active
 source_of_truth: YES
 verified_against_code: Yes
-last_updated: "2026-03-20"
+last_updated: "2026-03-21"
 related_docs:
   - path: ./formulas-and-calculation-policy.md
     relation: "delegates calculation details to"
@@ -60,7 +60,7 @@ This document is the primary system reference for PFM Bot. It defines domain con
 **This document delegates:**
 - Exact S2S calculation formulas, step-by-step arithmetic, and worked examples → `./formulas-and-calculation-policy.md`
 - Canonical number-by-number reference (what each displayed value comes from) → `./numerical-source-of-truth.md`
-- Income allocation semantics (triggerPayday, multi-payday splitting) → `./income-allocation-semantics.md`
+- Income allocation semantics (startNominalPayday, per-payout amount, Semantics B) → `./income-allocation-semantics.md`
 - Full API request/response schemas → `../api/api-v1.md`
 - Deployment and operational procedures → `../ops/runbook-deploy.md`
 
@@ -75,13 +75,15 @@ For alphabetical definitions, see `./glossary.md`. This section provides the str
 A bounded time window from one payday to the next. Every user has at most one ACTIVE period at any time. Periods do not overlap. A period's `startDate` and `endDate` are stored in UTC calendar dates. Period end date equals the exact next payday date (midnight UTC server time). When a period expires it is marked COMPLETED and a new ACTIVE period is created by the rollover cron job (00:05 UTC).
 
 A period has:
-- A **canonical start**: the payday date that logically began it
-- A **canonical end**: the next payday date
-- An **actual start**: may differ from canonical start if the user joined mid-period (`isProratedStart = true`)
+- An **actual start**: the real payout date (work-calendar adjusted). Stored as UTC representation of midnight in user's local TZ.
+- An **actual end**: the next real payout date (exclusive). Same TZ convention.
+- A **startNominalPayday**: the nominal calendar day-of-month of the payday that started this period. Computed in memory from `calculateActualPeriodBounds()`; not stored (but written to `Period.triggerPayday` as an alias).
+
+**Breaking change 2026-03-21:** Period boundaries are now actual payout dates (work-calendar adjusted, anchored to user's local midnight). The old canonical-calendar model (nominal day-of-month, UTC midnight, `isProratedStart`) is replaced. `isProratedStart` is always `false` for new periods.
 
 ### Income
 
-A recurring income source belonging to a user. Stored with a monthly `amount` in minor units and a `paydays` array (e.g., `[15]` or `[1, 15]`). One record may cover one or two paydays per month. The engine allocates income to a period based on which payday triggered that period (`triggerPayday`). A user may have multiple Income records.
+A recurring income source belonging to a user. Stored with a per-payout `amount` in minor units (Semantics B, since 2026-03-21) and a `paydays` array (e.g., `[15]` or `[1, 15]`). The engine allocates income to a period based on whether any `paydays` entry matches `startNominalPayday`. No division — `amount` is already the per-payout figure. A user may have multiple Income records. See `income-allocation-semantics.md` for full rules.
 
 ### Obligation
 
@@ -97,7 +99,7 @@ A savings target equal to `monthlyObligations × targetMonths` (default 3 months
 
 ### Expense
 
-A single spending event entered by the user. Stored with `amount` (minor units, Int), `spentAt` timestamp (UTC), and linked to the active Period via `periodId`. The `expensesToday` query filters by `spentAt >= today 00:00:00 UTC`.
+A single spending event entered by the user. Stored with `amount` (minor units, Int), `spentAt` timestamp (UTC), and linked to the active Period via `periodId`. The `expensesToday` query uses `effectiveLocalDateInPeriod` — filtering by the user's local-TZ day boundary, not UTC midnight. Expenses are re-matched to periods on `rebuildActivePeriodSnapshot` to correct any TZ drift.
 
 ### DailySnapshot
 
@@ -136,7 +138,7 @@ The following must hold at all times. Any code change that violates these is a c
 
 4. **`s2sToday >= 0` always.** Enforced by `Math.max(0, dynamicS2sDaily - expensesToday)` in the dashboard handler and engine.
 
-5. **`s2sPeriod >= 0` always.** Enforced by `Math.max(0, residual)` in `calculateS2S`.
+5. **`s2sPeriod >= 0` always.** Enforced by `Math.max(0, residual)` in `domain/finance/computeS2S.ts`.
 
 6. **`s2sActual` in `DailySnapshot` may be negative.** The cron computes `s2sPlanned - todayTotal` without flooring. Do not assume this field is non-negative.
 
@@ -144,7 +146,7 @@ The following must hold at all times. Any code change that violates these is a c
 
 8. **No cross-user data access.** Every database query touching user-owned records includes a `userId` filter. The `ensureUser` middleware sets `req.userId` from the validated Telegram identity before any handler runs.
 
-9. **Calculation engine is pure.** `calculateS2S` and `calculatePeriodBounds` in `engine.ts` have no side effects, no DB access, and no randomness. Same inputs always produce same outputs.
+9. **Calculation engine is pure.** `computeS2S`, `calculateActualPeriodBounds`, and `buildDashboardView` in `domain/finance/` have no side effects, no DB access, and no randomness. Same inputs always produce same outputs. Legacy `engine.ts` (`calculateS2S`, `calculateCanonicalPeriodBounds`) is no longer called for financial calculations.
 
 10. **API is the single compute layer.** The frontend never re-implements S2S arithmetic. The `s2sColor()` function in `MiniApp.tsx` is a display-only color picker derived from API-returned values; it is not a financial calculation.
 
@@ -167,10 +169,10 @@ The following must hold at all times. Any code change that violates these is a c
 | `Period.daysTotal` | Period | Int | Persisted | At period creation |
 | `Period.totalIncome` | Period | Int | Persisted | At period creation |
 | `Period.totalObligations` | Period | Int | Persisted | At period creation |
-| `Period.totalDebtPayments` | Period | Int | Persisted | At period creation |
-| `Period.efContribution` | Period | Int | Persisted | At period creation |
-| `Period.reserve` | Period | Int | Persisted | At period creation |
-| `Period.isProratedStart` | Period | Boolean | Persisted | At period creation |
+| `Period.totalDebtPayments` | Period | Int | Persisted | On every `rebuildActivePeriodSnapshot` (i.e. every debt payment event) — reflects remaining, not original sum |
+| `Period.efContribution` | Period | Int | Persisted | On every rebuild |
+| `Period.reserve` | Period | Int | Persisted | On every rebuild |
+| `Period.isProratedStart` | Period | Boolean | Persisted | Always `false` for new periods since 2026-03-21 |
 | `Period.status` | Period | Enum | Persisted | On rollover (ACTIVE → COMPLETED) |
 | `Expense.amount` | Expense | Int | Persisted | Never (immutable after insert) |
 | `Expense.spentAt` | Expense | DateTime | Persisted | Never (default: now()) |

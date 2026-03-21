@@ -4,7 +4,7 @@ document_type: Normative
 status: Active
 source_of_truth: YES
 verified_against_code: Yes
-last_updated: "2026-03-20"
+last_updated: "2026-03-21"
 related_docs:
   - path: ./formulas-and-calculation-policy.md
     relation: "formula details defined there"
@@ -140,9 +140,8 @@ Never stored in DB. Computed per request.
 **API field:** `daysTotal` in `GET /tg/dashboard`
 **Definition:** The total number of days in the current period from `actualStart` to `periodEnd`. Computed by `daysBetween(actualStart, periodEnd)`. Persisted at period creation; does not change as time passes.
 
-When `isProratedStart = true`: `daysTotal < fullPeriodDays` (period was cut short by late start).
-When `isProratedStart = false`: `daysTotal == fullPeriodDays`.
-**See also:** fullPeriodDays, isProratedStart
+Since 2026-03-21: `daysTotal = daysBetween(lastActualPayday, nextActualPayday)` — always the full span between real payout dates. `isProratedStart` is always `false` for new periods.
+**See also:** startNominalPayday, ActualPeriodBounds
 **Formula ref:** `./formulas-and-calculation-policy.md` §5.5
 
 ---
@@ -324,8 +323,10 @@ Not stored as a separate DB field; derivable from `calculatePeriodBounds` output
 | `isActive` | Boolean | Soft-delete flag |
 | `currency` | Enum | Must match user primary currency |
 
-**Common confusion:** For a record with `paydays: [1, 15]`, the `amount` is the total monthly amount. Each period receives `amount / 2`. To model unequal payments, use two separate records.
-**See also:** triggerPayday, payCount
+**IMPORTANT (Semantics B, since 2026-03-21):** `amount` is the **per-payout** amount. For a record with `paydays: [1, 15]`, `amount` is what the user receives on ONE of those dates, not the monthly total. The engine does **not** divide by `paydays.length`. To model unequal payments, use two separate records (Config D). See `income-allocation-semantics.md` for all configurations.
+
+**Migration (2026-03-21):** All existing `income.amount` values were halved in production DB to reflect per-payout semantics. Old value (Semantics A monthly total): `50_000_000`. New value (Semantics B per-payout): `25_000_000`.
+**See also:** startNominalPayday, income-allocation-semantics.md
 **Formula ref:** `./income-allocation-semantics.md`
 
 ---
@@ -335,10 +336,11 @@ Not stored as a separate DB field; derivable from `calculatePeriodBounds` output
 **Type:** Monetary amount
 **Unit:** Kopecks (Int)
 **DB field:** `Period.totalIncome` (snapshot)
-**Definition:** The total income allocated to this period, as computed by the engine's trigger-based selection. Sum of `Math.round(inc.amount / payCount)` for all income records matching `triggerPayday`. Persisted at period creation.
+**Definition:** The total income allocated to this period. Sum of `inc.amount` (no division — Semantics B) for all income records where `inc.paydays.includes(startNominalPayday)`. Rebuilt on every `rebuildActivePeriodSnapshot` call.
 
-Not the same as the user's full monthly income — it is the portion that counts for this specific period.
-**See also:** triggerPayday, Income
+Not the same as the user's full monthly income — it is the per-payout amount for the payday that started this period.
+**See also:** startNominalPayday, Income
+**Formula ref:** `./formulas-and-calculation-policy.md` Step 3
 **Formula ref:** `./formulas-and-calculation-policy.md` Step 3
 
 ---
@@ -618,9 +620,9 @@ Never stored in DB. Derived on every API request.
 **Unit:** Kopecks (Int)
 **API field:** `todayTotal` in `GET /tg/dashboard`
 **Russian UI label:** "Потрачено сегодня"
-**Definition:** The sum of all expense amounts with `spentAt >= today 00:00:00 UTC`. "Today" is UTC midnight — not the user's local midnight.
+**Definition (since 2026-03-21):** The sum of all expense amounts whose `effectiveLocalDate` in the user's timezone equals today. "Today" is the user's local midnight — not UTC midnight.
 
-For Moscow users (+3): expenses logged between 00:00 and 02:59 MSK are in "yesterday UTC" and are NOT counted in `todayTotal`.
+For Moscow users (+3): expenses logged between 00:00 and 02:59 MSK are correctly counted as today. The domain engine uses `effectiveLocalDateInPeriod` (`toZonedTime` from `date-fns-tz`) for all expense filtering, replacing the old UTC-midnight approach.
 
 Never stored — aggregated live.
 **See also:** s2sToday, dynamicS2sDaily
@@ -628,27 +630,37 @@ Never stored — aggregated live.
 
 ---
 
-### Trigger Payday
+### startNominalPayday (canonical since 2026-03-21)
 
 **Type:** Day-of-month integer
 **Unit:** Integer 1–31
-**Definition:** The payday that caused the current period to begin. Derived at runtime from `periodEndDate.getDate()` and `allPaydays`. Income records with this payday in their `paydays[]` are selected for the period. Never stored in DB.
+**DB alias:** `Period.triggerPayday` (written on every rebuild)
+**Definition:** The **nominal** (calendar) day-of-month of the payday that started the current period. "Nominal" means the calendar payday, not the actual work-calendar-adjusted payout date. Income records with this day in their `paydays[]` are selected; full `amount` (per-payout, no division) is used.
 
 Derivation:
 ```
-allPaydays  = sorted unique union of all inc.paydays
-endDay      = periodEndDate.getDate()
-endDayIdx   = allPaydays.indexOf(endDay)
-
-if endDayIdx > 0:
-  triggerPayday = allPaydays[endDayIdx - 1]
-else:
-  triggerPayday = allPaydays[allPaydays.length - 1]   // wrap-around
+1. lastActualPayday = getLastActualPayday(allPaydays, now, useRuCal)
+   → the most recent real payout date, work-calendar adjusted
+2. startNominalPayday = findNominalPayday(lastActualPayday, allPaydays, tz)
+   → maps actual date back to nominal calendar day
+   → checks current month ± adjacent months to handle month-end shifts
 ```
 
-**Common confusion:** `triggerPayday` determines which income is counted, not when the period starts. The period start comes from `calculatePeriodBounds`. The trigger is the payday **before** the period-end payday in the sorted `allPaydays` list.
-**See also:** Income, allPaydays, S2S Period
-**Formula ref:** `./income-allocation-semantics.md` Section 4; `./formulas-and-calculation-policy.md` Step 2
+Source: `apps/api/src/domain/finance/buildActualPayPeriods.ts`
+
+**Why nominal, not actual?** Income records store nominal paydays (e.g., `[15]`). The engine must match against the same nominal value, even when the actual date is different (e.g., March 13 when the nominal is 15).
+
+### Trigger Payday (legacy alias)
+
+**Type:** Day-of-month integer
+**DB field:** `Period.triggerPayday`
+**Definition:** Stored alias for `startNominalPayday`. Written to `Period.triggerPayday` by `rebuildActivePeriodSnapshot`.
+
+**Legacy behavior (pre-2026-03-21, Semantics A):** Derived from `periodEndDate.getDate()` → `endDayIdx` lookup. This UTC-based approach caused wrong period starts when paydays fell on weekends and work-calendar adjustment shifted the actual date. **No longer used for new periods.** Retained as fallback for legacy `Period` rows with `triggerPayday = null`.
+
+**Do not use** the old `endDay/endDayIdx` derivation in new code. Use `startNominalPayday` from `calculateActualPeriodBounds`.
+**See also:** startNominalPayday, Income, allPaydays, S2S Period
+**Formula ref:** `./income-allocation-semantics.md` Section 4
 
 ---
 

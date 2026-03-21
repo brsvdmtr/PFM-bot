@@ -4,7 +4,7 @@ document_type: Normative
 status: Active
 source_of_truth: YES
 verified_against_code: Yes
-last_updated: "2026-03-20"
+last_updated: "2026-03-21"
 related_docs:
   - path: ./formulas-and-calculation-policy.md
     relation: "formulas defined there"
@@ -34,12 +34,12 @@ For exact formulas, see `./formulas-and-calculation-policy.md`.
 |----------|-------|
 | Russian UI label | Main number in dashboard header; "Safe to Spend сегодня" in morning notification |
 | API field | `s2sToday` in `GET /tg/dashboard` response |
-| Computed in | `index.ts`, `GET /tg/dashboard` handler |
+| Computed in | `domain/finance/computeS2S.ts` → `buildDashboardView` → `GET /tg/dashboard` |
 | Persisted | No — never written to DB |
 | Formula | `max(0, dynamicS2sDaily - todayTotal)` |
-| Depends on | `activePeriod.s2sPeriod`, `totalPeriodSpent`, `todayTotal`, `daysLeft` |
+| Depends on | `Period.s2sPeriod`, `totalPeriodSpent`, `todayTotal`, `daysLeft`, `totalDebtPaymentsRemainingForPeriod` |
 | Minimum value | 0 (never negative in API response) |
-| Invalidated by | Any new expense, any expense deletion, passage of time (UTC midnight resets `todayTotal`) |
+| Invalidated by | Any new expense, any expense deletion, any debt payment event, passage of time (local-TZ midnight resets `todayTotal`) |
 | Authoritative source when conflict | API response (`GET /tg/dashboard`) |
 
 **How to verify manually:**
@@ -52,19 +52,31 @@ WHERE status = 'ACTIVE' AND user_id = '<userId>';
 -- Get total period expenses
 SELECT SUM(amount) FROM "Expense" WHERE period_id = '<periodId>';
 
--- Get today's expenses (UTC midnight)
+-- Get today's expenses (user's local midnight, e.g. Europe/Moscow = UTC+3)
+-- "Today" in the domain engine is bounded by local-TZ midnight, not UTC midnight.
 SELECT SUM(amount) FROM "Expense"
 WHERE period_id = '<periodId>'
-  AND spent_at >= date_trunc('day', now() AT TIME ZONE 'UTC');
+  AND spent_at >= date_trunc('day', now() AT TIME ZONE 'Europe/Moscow');
+
+-- Get remaining debt payments for current period (domain-computed)
+SELECT COALESCE(SUM(amount_minor), 0) AS debt_paid_this_period
+FROM "DebtPaymentEvent"
+WHERE user_id = '<userId>' AND period_id = '<periodId>'
+  AND kind = 'REQUIRED_MIN_PAYMENT' AND deleted_at IS NULL;
+-- Then: remainingDebt = sum(debts.minPayment) for due debts - debt_paid_this_period
 ```
 
 Then apply:
 ```
-daysLeft         = max(1, ceil((endDate - now) / 86400000))
-periodRemaining  = max(0, s2sPeriod - totalPeriodSpent)
-dynamicS2sDaily  = max(0, round(periodRemaining / daysLeft))
-s2sToday         = max(0, dynamicS2sDaily - todayTotal)
+daysLeft                        = max(1, daysTotal - daysElapsed + 1)
+periodRemaining                 = max(0, s2sPeriod - totalPeriodSpent)
+dynamicS2sDaily                 = max(0, round(periodRemaining / daysLeft))
+s2sToday                        = max(0, dynamicS2sDaily - todayTotal)
 ```
+
+> **Note:** `s2sPeriod` already reflects `totalDebtPaymentsRemainingForPeriod` at the time of the
+> last rebuild. It is not recomputed per-request; instead `rebuildActivePeriodSnapshot` is called
+> on every debt payment event to keep `Period.s2sPeriod` current.
 
 **Common confusion:** Users expect `s2sToday` to equal the original daily budget set at period creation. It does not — it is always derived from the current remaining balance. See carry-over in §1.9.
 
@@ -124,12 +136,12 @@ This value provides a reference point for period summaries and historical compar
 |----------|-------|
 | Russian UI label | "Бюджет периода" |
 | API field | `s2sPeriod` in `GET /tg/dashboard` and `GET /tg/periods/current` |
-| Computed in | `engine.ts` `calculateS2S`, written to DB at period creation/recalculate |
+| Computed in | `domain/finance/computeS2S.ts` → written to DB by `rebuildActivePeriodSnapshot` |
 | Persisted | Yes — `Period.s2sPeriod` column |
-| Formula | `max(0, totalIncome - totalObligations - totalDebtPayments - reserve - efContribution - avalanchePool)` |
-| When stale | After income/obligation/debt changes if recalculate is not called |
-| What does NOT change it | Adding or deleting expenses |
-| Authoritative source when conflict | DB `Period.s2sPeriod` (most recently written at recalculate or period creation) |
+| Formula | `max(0, totalIncome - totalObligations - totalDebtPaymentsRemainingForPeriod - reserve - efContribution - avalanchePool)` |
+| When stale | After income/obligation/debt changes if `rebuildActivePeriodSnapshot` is not called; automatically rebuilt on every debt payment event |
+| What does NOT change it | Adding or deleting expenses (but `periodRemaining` and `dynamicS2sDaily` change) |
+| Authoritative source when conflict | DB `Period.s2sPeriod` (most recently written by `rebuildActivePeriodSnapshot`) |
 
 `s2sPeriod` is the budget cap for the period, not the remaining balance. To get remaining balance: `max(0, s2sPeriod - totalPeriodSpent)`.
 
@@ -197,11 +209,11 @@ WHERE p.user_id = '<userId>' AND p.status = 'ACTIVE';
 | API field | `todayTotal` (sum) and `todayExpenses` (list) in `GET /tg/dashboard` |
 | Computed in | `index.ts`: `prisma.expense.aggregate` + `prisma.expense.findMany` with `spentAt >= UTC midnight` |
 | Persisted | No — aggregated live |
-| Formula | `SUM(Expense.amount)` where `spentAt >= new Date(new Date().setHours(0,0,0,0))` |
-| Timezone | **UTC** — "today" is UTC midnight, not user's local midnight |
+| Formula | `SUM(Expense.amount)` where `effectiveLocalDate(spentAt, tz) == today in user's TZ` |
+| Timezone | **User's local TZ** — "today" is the user's local midnight, not UTC midnight |
 | Invalidated by | Any expense create/delete with today's `spentAt` |
 
-**Timezone pitfall:** For a Moscow user (+3), UTC midnight is 03:00 MSK. Expenses logged between 00:00 and 02:59 MSK appear as "yesterday UTC" and are NOT counted in `todayTotal`. The dashboard will count them when the expense list is filtered by UTC midnight.
+**Timezone note (updated 2026-03-21):** The domain engine uses `effectiveLocalDateInPeriod` from `matchEventsToPeriod.ts`, which checks the expense's local date in the user's timezone using `toZonedTime`. A Moscow user (+3) sees "today" start at 00:00 MSK (= 21:00 UTC previous day). Expenses at 00:00–02:59 MSK are correctly counted as today, not yesterday. This corrects the UTC-midnight bug that existed in `index.ts` pre-2026-03-21.
 
 ```sql
 SELECT SUM(amount) AS today_total
@@ -398,18 +410,21 @@ These measure different things at different times. `s2sActual` can be negative; 
 When a number appears wrong, investigate in this order:
 
 ```
-1. Engine code (apps/api/src/engine.ts, apps/api/src/index.ts)
+1. Domain finance code (apps/api/src/domain/finance/)
    └── The code is always the final authority.
+       Key files: computeS2S.ts, buildDashboardView.ts, buildActualPayPeriods.ts
        If code and docs disagree, update the docs.
+       Note: apps/api/src/engine.ts is LEGACY — not used for financial calculations since 2026-03-21.
 
 2. API response (GET /tg/dashboard with valid auth)
-   └── Reflects live DB state + runtime computation.
+   └── Reflects live DB state + runtime computation via domain layer.
        If API response is correct but UI shows wrong number:
        the problem is in the frontend display logic.
 
 3. DB stored values (psql queries)
-   └── Period.s2sPeriod is authoritative for the period budget.
+   └── Period.s2sPeriod is authoritative for the period budget (rebuilt on every debt payment).
        Period.s2sDaily is a stale snapshot — never use for live display.
+       Period.startDate / endDate are actual payout date boundaries (UTC representation of local midnight).
        DailySnapshot reflects state at 23:55 UTC on the recorded date.
 
 4. UI display
@@ -419,11 +434,11 @@ When a number appears wrong, investigate in this order:
 
 ### Standard Investigation Pattern
 
-1. `curl GET /tg/dashboard` with valid auth → check `s2sToday`, `s2sDaily`, `periodSpent`, `s2sPeriod`
-2. If API value is wrong: query psql to verify `Period.s2sPeriod` and expense sums
-3. If psql values are correct but API is wrong: trace `index.ts` dashboard handler logic
-4. If psql `s2sPeriod` is wrong: check when last recalculate ran; verify current income/obligation/debt records
-5. If income/obligation/debt records are correct but `s2sPeriod` is wrong: trace `calculateS2S` step-by-step with actual DB inputs (see `./formulas-and-calculation-policy.md` Section 15 for worked examples)
+1. `curl GET /tg/dashboard` with valid auth → check `s2sToday`, `s2sDaily`, `periodSpent`, `s2sPeriod`, `totalDebtPaymentsRemaining`
+2. If API value is wrong: query psql to verify `Period.s2sPeriod`, expense sums, and `DebtPaymentEvent` records
+3. If psql values are correct but API is wrong: trace `domain/finance/buildDashboardView.ts` → `computeS2S.ts`
+4. If psql `s2sPeriod` is wrong: check `rebuildActivePeriodSnapshot` was called; verify income.amount (per-payout!), obligation, debt, and `DebtPaymentEvent` records
+5. If income/obligation/debt records are correct but `s2sPeriod` is wrong: trace `computeS2S` with actual DB inputs; verify `startNominalPayday` matches expected nominal payday
 
 ### Fields That Are Never in the DB
 

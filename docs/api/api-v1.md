@@ -4,7 +4,7 @@ document_type: Normative
 status: Active
 source_of_truth: YES
 verified_against_code: Yes
-last_updated: "2026-03-20"
+last_updated: "2026-03-21"
 related_docs:
   - path: ../system/formulas-and-calculation-policy.md
     relation: "calculation semantics"
@@ -232,34 +232,61 @@ Numeric fields `amount`, `balance`, and `minPayment` are `Math.round()`ed before
 
 > For full formula details see: [formulas-and-calculation-policy.md](../system/formulas-and-calculation-policy.md)
 
+**Breaking change 2026-03-21:** All financial math moved to `apps/api/src/domain/finance/`. Route handlers collect DB inputs and call `buildDashboardView()`. Key semantic changes:
+
+| Property | Before (≤ 2026-03-20) | After (≥ 2026-03-21) |
+|----------|----------------------|----------------------|
+| `income.amount` | Monthly total; engine divides by `payCount` | Per-payout; no division |
+| Period boundaries | Nominal calendar dates (UTC midnight) | Actual payout dates (local midnight UTC) |
+| Trigger derivation | `endDate.getDate()` → `endDayIdx` lookup | `startNominalPayday` from `calculateActualPeriodBounds` |
+| `totalDebtPayments` | Sum of all active debt minPayments | Remaining payments for debts due in current period |
+| Today's expenses | UTC midnight boundary | User's local-TZ midnight boundary |
+| Source file | `engine.ts` + `index.ts` | `domain/finance/` |
+
 ### s2sToday and s2sDaily are RUNTIME computed
 
-Routes that return `s2sToday` or `s2sDaily` — specifically `GET /tg/dashboard` and `POST /tg/periods/recalculate` — compute these values **live on every request**. They are not read from the `Period.s2sDaily` column in the DB.
+Routes that return `s2sToday` or `s2sDaily` — specifically `GET /tg/dashboard` — compute these values **live on every request** via `buildDashboardView`. They are not read from `Period.s2sDaily` in the DB.
 
 Live formula:
 
 ```
-s2sDaily = round((s2sPeriod - totalPeriodSpent) / daysLeft)
-s2sToday = s2sDaily - todaySpent
+s2sDaily = max(0, round((s2sPeriod - totalPeriodSpent) / daysLeft))
+s2sToday = max(0, s2sDaily - todayTotal)
 ```
 
-This implements carry-over: unspent budget from previous days rolls forward automatically.
+Carry-over is implicit: unspent budget from previous days rolls forward via `periodRemaining / daysLeft`.
 
-`Period.s2sDaily` in the DB is a snapshot taken at period creation and at recalculation. It reflects the value at that moment, not the current live value.
+`Period.s2sDaily` in DB is a stale snapshot taken at last `rebuildActivePeriodSnapshot`. Use `GET /tg/dashboard` for the live value.
+
+### Period Boundaries (actual payout dates)
+
+```
+periodStart = toUserLocalMidnightUtc(lastActualPayday, tz)
+periodEnd   = toUserLocalMidnightUtc(nextActualPayday, tz)
+```
+
+For a Moscow user (UTC+3) with payday 15 (Saturday → adjusted to Friday 13):
+- `periodStart = 2026-03-12T21:00:00.000Z` (= March 13 00:00 MSK)
+- `periodEnd   = 2026-03-31T21:00:00.000Z` (= April 1 00:00 MSK)
 
 ### daysLeft formula
 
 ```
 daysLeft = max(1, daysTotal - daysElapsed + 1)
+daysElapsed = max(1, ceil((nowUtc - periodStart) / 86400000))
 ```
 
-where `daysElapsed = ceil((now - startDate) / 86400000)`.
-
-### periodRemaining
+### totalDebtPaymentsRemainingForPeriod
 
 ```
-periodRemaining = max(0, s2sPeriod - totalPeriodSpent)
+For each debt due in [periodStart, periodEnd):
+  required = minPayment  (if dueDay falls in period)
+  paid     = sum(DebtPaymentEvent.amountMinor) for REQUIRED_MIN_PAYMENT events in period
+  remaining = max(0, required - paid)
+totalDebtPaymentsRemainingForPeriod = sum(remaining)
 ```
+
+`s2sPeriod` is rebuilt on every debt payment event via `rebuildActivePeriodSnapshot`. This means `s2sToday` immediately reflects each payment.
 
 ### All amounts are integers
 

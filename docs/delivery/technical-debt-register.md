@@ -10,7 +10,7 @@ last_updated: "2026-03-20"
 # Technical Debt Register
 
 **Project**: PFM Bot
-**Last updated**: 2026-03-20
+**Last updated**: 2026-03-21
 
 ## Legend
 
@@ -31,6 +31,12 @@ Items that could cause wrong financial numbers to be shown to a user, or create 
 3. **GAP-008 / TD-007**: /delete user data not implemented → legal risk, GDPR right to erasure not supported
 4. ~~**GAP-001 / TD-011**: Trigger payday not persisted → if user changes paydays mid-period, current period's trigger recomputes retroactively, producing wrong s2sToday~~ **Fixed 2026-03-20** — `triggerPayday` now stored in `Period.triggerPayday`
 5. **GAP-004 / TD-003**: Period rollover UTC timing offset → period starts at wrong local time for non-UTC users
+
+> **Resolved trust-critical items (2026-03-21):**
+> - ~~GAP-015: Income Semantics A (monthly total ÷ payCount) — income allocated incorrectly when actual payout date shifted~~ **Fixed 2026-03-21**
+> - ~~GAP-016: Period boundaries based on nominal calendar UTC, not actual payout dates — periodStart, daysLeft, s2sToday all wrong~~ **Fixed 2026-03-21**
+> - ~~GAP-017: todayTotal used UTC midnight instead of user's local TZ midnight~~ **Fixed 2026-03-21**
+> - ~~GAP-018: totalDebtPayments not updated after debt payments — s2sToday did not improve after paying debt~~ **Fixed 2026-03-21**
 
 ---
 
@@ -264,10 +270,14 @@ EF `targetAmount` is computed from the current period's total obligations. If ob
 
 | ID | Title | Resolution | Closed |
 |----|-------|------------|--------|
-| TD-C001 | Cron rollover used incomes[0] for prorate | Fixed — now prorates each income individually by period length | 2026-03-20 |
+| TD-C001 | Cron rollover used incomes[0] for prorate | Fixed — now uses allPaydays from all income records | 2026-03-20 |
 | TD-C002 | CORS open (no origin restriction) | Fixed — restricted to `https://mytodaylimit.ru` origin | 2026-03-20 |
 | TD-C003 | No auth_date freshness check on initData | Fixed — added 1h TTL check on `auth_date` field | 2026-03-20 |
 | GAP-011 | Duplicate incomes on onboarding re-run | Fixed — dedup check added on onboarding re-entry | 2026-03-20 |
 | TD-008 | s2sActual could be negative in DailySnapshot | Fixed — clamped to non-negative | 2026-03-20 |
 | TD-009-OLD | daysLeft formula diverged between engine/dashboard/cron | Fixed — unified formula | 2026-03-20 |
-| GAP-001 / TD-011 | triggerPayday not persisted in Period | Fixed — stored in `Period.triggerPayday` on create/recalculate/rollover | 2026-03-20 |
+| GAP-001 / TD-011 | triggerPayday not persisted in Period | Fixed — stored in `Period.triggerPayday` on every rebuild | 2026-03-20 |
+| GAP-015 | Income Semantics A (monthly total ÷ payCount) | Fixed — Semantics B: `income.amount` = per-payout, no division. DB migrated. Golden tests: 35/35 | 2026-03-21 |
+| GAP-016 | Period boundaries nominal calendar UTC dates | Fixed — `calculateActualPeriodBounds` uses work-calendar-adjusted actual payout dates, local TZ midnight | 2026-03-21 |
+| GAP-017 | todayTotal used UTC midnight instead of local TZ | Fixed — `effectiveLocalDateInPeriod` uses `toZonedTime(date, tz)` | 2026-03-21 |
+| GAP-018 | totalDebtPayments static at creation, not updated on payments | Fixed — `rebuildActivePeriodSnapshot` called on every `DebtPaymentEvent`; `totalDebtPaymentsRemainingForPeriod` recomputed each time | 2026-03-21 |

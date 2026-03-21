@@ -4,7 +4,7 @@ document_type: Normative
 status: Active
 source_of_truth: YES
 verified_against_code: Yes
-last_updated: "2026-03-20"
+last_updated: "2026-03-21"
 related_docs:
   - path: ./income-allocation-semantics.md
     relation: "income section depends on this"
@@ -22,9 +22,11 @@ related_docs:
 
 # Formulas and Calculation Policy
 
-This document is the **single authoritative source** for how every number in PFM-bot is computed. All other documents that reference formulas must cite this file. When the code and this document disagree, the code (`engine.ts`, `index.ts`) is authoritative and this document must be updated.
+This document is the **single authoritative source** for how every number in PFM-bot is computed. All other documents that reference formulas must cite this file. When the code and this document disagree, the code (domain layer at `apps/api/src/domain/finance/`) is authoritative and this document must be updated.
 
-**Scope:** Period boundary calculation, the full S2S engine pipeline, data types, rounding policy, persisted vs derived fields, status and color rules, carry-over mechanism, proration, and worked examples.
+**Breaking change 2026-03-21:** Engine migrated from `engine.ts` (Semantics A) to `domain/finance/` (Semantics B). Key changes: (1) `income.amount` = per-payout, no `payCount` division; (2) period boundaries = actual payout dates, not nominal calendar window; (3) `startNominalPayday` replaces UTC `endDate.getDate()` trigger derivation; (4) `totalDebtPaymentsRemainingForPeriod` replaces static `totalDebtPayments` sum.
+
+**Scope:** Period boundary calculation, the full S2S engine pipeline, data types, rounding policy, persisted vs derived fields, status and color rules, carry-over mechanism, and worked examples.
 
 **Not covered here:** UI layout, notification message text, subscription/billing logic, authentication, or the debt avalanche payoff projection (`buildAvalanchePlan` in `avalanche.ts`).
 
@@ -39,9 +41,9 @@ All monetary values are in minor units (kopecks for RUB, cents for USD) unless s
 | `daysTotal` | Int | Yes (Period) | Days from `actualStart` to `periodEnd`. Snapshot at creation. |
 | `daysElapsed` | Int | No | Days from `periodStartDate` to today, inclusive. Minimum 1. |
 | `daysLeft` | Int | No | `max(1, daysTotal - daysElapsed + 1)`. Days remaining including today. |
-| `totalIncome` | Int (kopecks) | Yes (Period) | Trigger-selected income for this period, divided by `payCount`. |
-| `totalObligations` | Int (kopecks) | Yes (Period) | Sum of obligation amounts, prorated if `isProratedStart`. |
-| `totalDebtPayments` | Int (kopecks) | Yes (Period) | Sum of active debt min payments, prorated if `isProratedStart`. |
+| `totalIncome` | Int (kopecks) | Yes (Period) | `startNominalPayday`-selected income for this period. `income.amount` is per-payout — no division. |
+| `totalObligations` | Int (kopecks) | Yes (Period) | Sum of obligation amounts (all obligations, no due-day filter for period total). |
+| `totalDebtPayments` | Int (kopecks) | Yes (Period) | **Remaining** min payments for debts due in this period. Rebuilt on every debt payment event. Equal to `totalDebtPaymentsRemainingForPeriod` from domain layer. |
 | `afterFixed` | Int (kopecks) | No | `totalIncome - totalObligations - totalDebtPayments`. May be negative. |
 | `reserve` | Int (kopecks) | Yes (Period) | 10% of `afterFixed` (5% fallback, 0 if `afterFixed <= 0`). |
 | `freePool` | Int (kopecks) | No | `max(0, afterFixed - reserve)`. Base for EF and avalanche. |
@@ -56,14 +58,16 @@ All monetary values are in minor units (kopecks for RUB, cents for USD) unless s
 | `totalPeriodSpent` | Int (kopecks) | No | `SUM(expense.amount)` for all expenses in the active period. |
 | `expensesToday` | Int (kopecks) | No | `SUM(expense.amount)` where `spentAt >= UTC midnight today`. |
 | `carryOver` | Implicit | No | Emergent from `periodRemaining / daysLeft`. Not a named field. |
-| `triggerPayday` | Int (day 1–31) | Yes (Period) | The payday that caused this period to begin. Stored in `Period.triggerPayday` since v2 (2026-03-20); derived from `endDate` as fallback for legacy periods where the field is null. |
+| `startNominalPayday` | Int (day 1–31) | No (computed in memory) | The **nominal** calendar payday that triggered the current period. Derived from `calculateActualPeriodBounds()` by mapping `lastActualPayday` back to its nominal day-of-month. Used for income matching. Not stored — recomputed on every snapshot rebuild. |
+| `triggerPayday` | Int (day 1–31) | Yes (Period) | Stored alias for `startNominalPayday`. Written to `Period.triggerPayday` on every rebuild. For legacy periods (pre-2026-03-21) with null value: derived from `endDate.getDate()` as fallback (old Semantics A algorithm). |
+| `totalDebtPaymentsRemainingForPeriod` | Int (kopecks) | No | Sum of `remainingRequiredThisPeriod` across all debts due in this period. Computed from `REQUIRED_MIN_PAYMENT` events. Input to `s2sPeriod` formula. |
 | `freePool` | Int (kopecks) | No | `max(0, afterFixed - reserve)`. |
 | `investPool` | Int (kopecks) | No | `max(0, freePool - efContribution)`. Base for avalanche percentage. |
 | `monthlyObligations` | Int (kopecks) | No | Raw (non-prorated) sum of all obligation amounts. Used for EF target. |
 | `efTarget` | Int (kopecks) | No | `monthlyObligations * targetMonths`. Never prorated. |
 | `efDeficit` | Int (kopecks) | No | `max(0, efTarget - currentAmount)`. Zero when EF fully funded. |
-| `isProratedStart` | Boolean | Yes (Period) | True when user joined mid-period (today != canonical payday). |
-| `fullPeriodDays` | Int | No | Days in the canonical (non-prorated) period. Proration denominator. |
+| `isProratedStart` | Boolean | Yes (Period) | Always `false` since 2026-03-21. Actual payout boundaries are never prorated — they always start at the real payout date. |
+| `fullPeriodDays` | Int | No | Legacy field from Semantics A proration. Unused in new engine. |
 | `s2sStatus` | Enum | No | `OK` / `WARNING` / `OVERSPENT` / `DEFICIT`. Computed per request. |
 | `s2sColor` | Enum | No | `green` / `orange` / `red`. Computed per request. |
 
@@ -87,9 +91,9 @@ All monetary values are in minor units (kopecks for RUB, cents for USD) unless s
 **All rounding points:**
 
 ```
-Math.round(inc.amount / payCount)                        // income per period
-Math.round(totalObligations * (daysTotal / fullPeriodDays)) // proration
-Math.round(totalDebtPayments * (daysTotal / fullPeriodDays))// proration
+// income per period: no division. inc.amount is already per-payout (Semantics B)
+// Legacy (Semantics A, removed 2026-03-21): Math.round(inc.amount / payCount)
+Math.round(afterFixed * 0.10)                            // (placeholder — see actual rounding points below)
 Math.round(afterFixed * 0.10)                            // reserve 10%
 Math.round(afterFixed * 0.05)                            // reserve 5% fallback
 Math.round(efDeficit / 12)                               // monthly EF goal

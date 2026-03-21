@@ -4,7 +4,7 @@ document_type: Normative
 status: Active
 source_of_truth: NO
 verified_against_code: Partial
-last_updated: "2026-03-20"
+last_updated: "2026-03-21"
 related_docs:
   - path: ../system/formulas-and-calculation-policy.md
     relation: "canonical formula source"
@@ -18,7 +18,10 @@ This document defines the contract between the backend API response and the UI r
 
 **Source files:**
 - `apps/web/src/app/miniapp/MiniApp.tsx` — `Dashboard` component, `loadDashboard` function
-- `apps/api/src/index.ts` — `GET /tg/dashboard` handler
+- `apps/api/src/index.ts` — `GET /tg/dashboard` handler (collects inputs, delegates math)
+- `apps/api/src/domain/finance/buildDashboardView.ts` — all financial calculations (backend-authoritative)
+
+**Architecture note (2026-03-21):** All financial math is in `domain/finance/`. Route handlers collect DB inputs and call `buildDashboardView(inputs)`. No arithmetic in `index.ts`.
 
 ---
 
@@ -27,37 +30,53 @@ This document defines the contract between the backend API response and the UI r
 ```typescript
 interface DashboardData {
   onboardingDone: boolean;
-  s2sToday: number;       // kopecks
+
+  // ── Core S2S (backend-authoritative, from domain/finance) ──
+  s2sToday: number;       // kopecks — max(0, s2sDaily - todayTotal)
   s2sDaily: number;       // kopecks — live carry-over daily limit (NOT period.s2sDaily snapshot)
   s2sStatus: string;      // 'OK' | 'WARNING' | 'OVERSPENT' | 'DEFICIT'
   daysLeft: number;
+  dayNumber: number;      // current day number within period (1-based)
   daysTotal: number;
-  periodStart: string;    // ISO datetime string
-  periodEnd: string;      // ISO datetime string
-  periodSpent: number;    // kopecks
-  s2sPeriod: number;      // kopecks — persisted at period creation
+  periodStart: string;    // ISO datetime — actual payout date, user's local midnight in UTC
+  periodEnd: string;      // ISO datetime — next actual payout date, user's local midnight in UTC
+  periodSpent: number;    // kopecks — totalPeriodSpent (sum of all period expenses)
+  s2sPeriod: number;      // kopecks — discretionary budget for period (rebuilt on debt payment events)
+  periodRemaining: number;              // kopecks — max(0, s2sPeriod - periodSpent)
+  totalDebtPaymentsRemaining: number;   // kopecks — remaining debt min payments for this period
+
+  // ── Today's expenses ──
   todayExpenses: Expense[];
-  todayTotal: number;     // kopecks
+  todayTotal: number;     // kopecks — sum of today's expenses in user's local TZ
+
+  // ── Debts with per-period payment status ──
   focusDebt: Debt | null;
-  debts: Debt[];
+  debts: Debt[];          // each includes currentPeriodPayment: { required, paid, remaining, status }
+
+  // ── Emergency fund ──
   emergencyFund: { currentAmount: number; targetAmount: number } | null;
+
   currency: string;       // 'RUB' | 'USD'
 
-  // Cash Anchor Live Window fields (v2, 2026-03-20)
+  // ── Cash Anchor / Payday display fields ──
   cashOnHand: number | null;            // kopecks — null if anchor not set
   cashAnchorAt: string | null;          // ISO datetime
   lastIncomeDate: string | null;        // ISO datetime — work-calendar adjusted
   nextIncomeDate: string | null;        // ISO datetime — work-calendar adjusted
   nextIncomeAmount: number;             // kopecks
-  daysToNextIncome: number | null;      // null when usesLiveWindow is false
-  reservedUpcoming: number;             // kopecks
-  reservedUpcomingObligations: number;  // kopecks
-  reservedUpcomingDebtPayments: number; // kopecks
+  daysToNextIncome: number | null;
   windowStart: string;                  // ISO datetime
   windowEnd: string;                    // ISO datetime
-  usesLiveWindow: boolean;
+  usesLiveWindow: boolean;              // always false (cash anchor window not yet active)
+
+  // ── Debug ──
+  _debug: object;   // internal breakdown, not for UI display
 }
 ```
+
+**Removed fields (v3, 2026-03-21):** `reservedUpcoming`, `reservedUpcomingObligations`, `reservedUpcomingDebtPayments` — these were part of the Cash Anchor Live Window model that was superseded by the domain engine's `totalDebtPaymentsRemainingForPeriod` approach.
+
+**New fields (v3, 2026-03-21):** `periodRemaining`, `totalDebtPaymentsRemaining`, `dayNumber`.
 
 All money fields are in minor units (kopecks for RUB, cents for USD). The frontend divides by 100 for display.
 

@@ -4,7 +4,7 @@ document_type: Gap-Audit
 status: Active
 source_of_truth: NO
 verified_against_code: Partial
-last_updated: "2026-03-20"
+last_updated: "2026-03-21"
 related_docs:
   - path: ../system/formulas-and-calculation-policy.md
     relation: "canonical formula source"
@@ -31,6 +31,10 @@ related_docs:
 | GAP-008 / TD-007 | /delete user data command not implemented | code | P1 | open |
 | GAP-011 | Duplicate incomes on onboarding re-run | code | — | fixed |
 | GAP-014 | No cash anchor / mid-period onboarding | code | P2 | fixed |
+| GAP-015 | Income Semantics A (monthly total ÷ payCount) — wrong period income | code | P0 | **fixed 2026-03-21** |
+| GAP-016 | Period boundaries based on UTC calendar dates, not actual payout dates | code | P0 | **fixed 2026-03-21** |
+| GAP-017 | Today's expenses filtered by UTC midnight, not user's local TZ | code | P1 | **fixed 2026-03-21** |
+| GAP-018 | totalDebtPayments was static at period creation, not updated on payments | code | P1 | **fixed 2026-03-21** |
 | GAP-012 | s2sDaily in Period snapshot diverges from dynamic daily | docs | P2 | open |
 | GAP-013 | emergencyFund.targetAmount computed in API, not stored | code | P2 | open |
 | TD-001 | No rate limiting on API | security | P1 | open |
@@ -242,6 +246,72 @@ Settings screen shows a weeklyDigest toggle. The feature is not implemented — 
 **OPS-001: notification dedup lost on restart** — See GAP-003 above.
 
 **OPS-002: period rollover UTC-only** — See GAP-004 above.
+
+---
+
+---
+
+### GAP-015: Income Semantics A — Monthly Total Divided by payCount
+
+| Field | Value |
+|-------|-------|
+| ID | GAP-015 |
+| Title | Income Semantics A (monthly total ÷ payCount) produced wrong per-period income |
+| Category | code |
+| Severity | P0 |
+| Status | **fixed 2026-03-21** |
+| User-visible symptom | Was: user with `income.amount=50_000_000, paydays=[1,15]` received `50_000_000/2=25_000_000` per period, which was correct in absolute terms only because the amount field meant "monthly total." But the UX concept was ambiguous, and when `useRussianWorkCalendar` changed the actual payout date, the `endDay`-based trigger could silently compute the wrong period income. |
+| Root cause | `engine.ts` `calculateS2S` divided `inc.amount / payCount` where `payCount = inc.paydays.length`. `inc.amount` was expected to be a monthly total. `triggerPayday` was derived from `periodEndDate.getDate()` (UTC) — breaking if the actual end date shifted due to work-calendar adjustment. |
+| Fix | Migrated to Semantics B: `income.amount` = per-payout. Engine no longer divides. DB updated: `50_000_000 → 25_000_000` kopecks. `startNominalPayday` (from `calculateActualPeriodBounds`) replaces `endDay`/`endDayIdx` derivation. |
+| Fixed in | domain/finance migration, 2026-03-21 |
+
+---
+
+### GAP-016: Period Boundaries Based on Nominal Calendar Dates
+
+| Field | Value |
+|-------|-------|
+| ID | GAP-016 |
+| Title | Period `startDate`/`endDate` were nominal calendar UTC dates, not actual payout dates |
+| Category | code |
+| Severity | P0 |
+| Status | **fixed 2026-03-21** |
+| User-visible symptom | Was: `periodStart` showed March 15 (Sunday) even though the user was paid on March 13 (Friday, work-calendar adjusted). UI showed "day 3 of period" when it was actually day 8. `daysLeft` and `s2sToday` were wrong. |
+| Root cause | `calculateCanonicalPeriodBounds` used nominal payday day-of-month as UTC midnight, ignoring `useRussianWorkCalendar`. Period start was `2026-03-15T00:00:00.000Z`, not `2026-03-12T21:00:00.000Z` (= March 13 midnight Moscow). |
+| Fix | `calculateActualPeriodBounds` uses `getLastActualPayday`/`getNextActualPayday` (work-calendar aware), then converts to user's local midnight UTC via `toUserLocalMidnightUtc`. Golden test confirms `periodStart = 2026-03-12T21:00:00.000Z`. |
+| Fixed in | domain/finance migration, 2026-03-21 |
+
+---
+
+### GAP-017: Today's Expenses Filtered by UTC Midnight
+
+| Field | Value |
+|-------|-------|
+| ID | GAP-017 |
+| Title | `todayTotal` used UTC midnight boundary instead of user's local TZ midnight |
+| Category | code |
+| Severity | P1 |
+| Status | **fixed 2026-03-21** |
+| User-visible symptom | Was: Moscow user (+3) who spent money at 01:00 MSK saw it counted in "yesterday" on the dashboard. `s2sToday` did not reflect that expense until 03:00 MSK (UTC midnight). |
+| Root cause | `index.ts` dashboard handler filtered `todayExpenses` with `spentAt >= new Date(new Date().setHours(0,0,0,0))` — which is UTC midnight, not Moscow midnight. |
+| Fix | `effectiveLocalDateInPeriod` in `domain/finance/matchEventsToPeriod.ts` uses `toZonedTime(date, tz)` to check local date. `todayTotal` is now computed in the user's TZ. |
+| Fixed in | domain/finance migration, 2026-03-21 |
+
+---
+
+### GAP-018: totalDebtPayments Not Updated on Debt Payments
+
+| Field | Value |
+|-------|-------|
+| ID | GAP-018 |
+| Title | `Period.totalDebtPayments` was a static snapshot; debt payments didn't affect `s2sToday` |
+| Category | code |
+| Severity | P1 |
+| Status | **fixed 2026-03-21** |
+| User-visible symptom | Was: after paying a debt minimum payment, `s2sToday` did not increase — the budget already reserved for debt payments was not freed up even after the payment was recorded. Users who were disciplined about debt payments saw no reward in their daily limit. |
+| Root cause | `Period.totalDebtPayments` was set once at period creation (sum of all active debt `minPayment` values). `DebtPaymentEvent` records existed but were never used to reduce `totalDebtPayments`. `s2sPeriod` was never rebuilt on debt payment events. |
+| Fix | `computeDebtPeriodSummaries` computes `remainingRequiredThisPeriod = max(0, required - paid)` per debt. `totalDebtPaymentsRemainingForPeriod = sum(remainingRequiredThisPeriod)` is fed to `computeS2S`. `rebuildActivePeriodSnapshot` is called on every `DebtPaymentEvent` → `Period.s2sPeriod` is rebuilt immediately, freeing the paid amount into the discretionary budget. |
+| Fixed in | domain/finance migration, 2026-03-21 |
 
 ---
 
