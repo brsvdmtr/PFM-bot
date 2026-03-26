@@ -809,9 +809,9 @@ function AddExpense({ s2sToday, currency, onSave, onBack }: { s2sToday: number; 
         <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Добавить заметку..." style={{ background: 'none', border: 'none', color: C.textSec, fontSize: 14, fontFamily: 'inherit', outline: 'none', flex: 1 }} />
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, padding: '8px 16px', flex: 1 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gridTemplateRows: 'repeat(4, 1fr)', gap: 8, padding: '8px 16px', flex: 1, minHeight: 0 }}>
         {keys.map((k) => (
-          <button key={k} onClick={() => press(k)} style={{ height: 56, background: k === 'del' ? C.elevated : C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 10, color: C.text, fontSize: k === 'del' ? 16 : 22, fontWeight: 500, fontFamily: 'inherit', cursor: 'pointer' }}>
+          <button key={k} onClick={() => press(k)} style={{ background: k === 'del' ? C.elevated : C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 10, color: C.text, fontSize: k === 'del' ? 16 : 22, fontWeight: 500, fontFamily: 'inherit', cursor: 'pointer', width: '100%' }}>
             {k === 'del' ? '⌫' : k}
           </button>
         ))}
