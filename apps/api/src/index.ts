@@ -361,7 +361,7 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
     daysToNextIncome: nextIncomeDate ? daysLeftInPeriod(nextIncomeDate, now, tz) : null,
     windowStart:  activePeriod.cashAnchorAt ?? activePeriod.startDate,
     windowEnd:    nextIncomeDate ?? activePeriod.endDate,
-    usesLiveWindow: false,
+    usesLiveWindow: (activePeriod.cashAnchorAmount ?? 0) > 0,
     // ── Debug (never source of truth) ──
     _debug: {
       ...view._debug,

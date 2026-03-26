@@ -130,6 +130,22 @@ function useApi() {
   return { api, initDataRef, devMode };
 }
 
+// ── Visual Viewport Hook (keyboard-aware height for Telegram iOS WebView) ────
+
+function useVisualViewportHeight() {
+  const [height, setHeight] = useState(() =>
+    typeof window !== 'undefined' ? (window.visualViewport?.height ?? window.innerHeight) : 812
+  );
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => setHeight(vv.height);
+    vv.addEventListener('resize', update);
+    return () => vv.removeEventListener('resize', update);
+  }, []);
+  return height;
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function fmt(amount: number, currency = 'RUB') {
@@ -576,7 +592,7 @@ function Dashboard({ data, onAddExpense, onOpenDebts, onOpenSummary, showSummary
   const periodPct = data.s2sPeriod > 0 ? Math.min(100, Math.round((data.periodSpent / data.s2sPeriod) * 100)) : 0;
 
   return (
-    <div style={{ background: C.bg, minHeight: '100vh', padding: '20px 16px', paddingBottom: 90 }}>
+    <div style={{ background: C.bg, minHeight: '100vh', padding: '20px 16px', paddingBottom: 'calc(90px + env(safe-area-inset-bottom, 0px))' }}>
 
       {/* Period summary banner */}
       {showSummaryBanner && onOpenSummary && (
@@ -637,7 +653,7 @@ function Dashboard({ data, onAddExpense, onOpenDebts, onOpenSummary, showSummary
           <span style={{ fontSize: 13, color: C.textSec }}>Осталось в периоде</span>
           <span style={{ fontSize: 18, fontWeight: 700, color: C.green }}>{fmt(data.periodRemaining ?? Math.max(0, data.s2sPeriod - data.periodSpent), data.currency)}</span>
         </div>
-        {data.usesLiveWindow && data.cashOnHand != null && (
+        {data.cashOnHand != null && (
           <div style={{ borderTop: '1px solid rgba(139,92,246,0.15)', paddingTop: 14, marginTop: 0 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
               <span style={{ fontSize: 13, color: C.textSec }}>На руках сейчас</span>
@@ -750,6 +766,7 @@ function AddExpense({ s2sToday, currency, onSave, onBack }: { s2sToday: number; 
   const [input, setInput] = useState('0');
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
+  const vh = useVisualViewportHeight();
 
   const amountKop = Math.round(parseFloat(input || '0') * 100);
   const remaining = Math.max(0, s2sToday - amountKop);
@@ -772,7 +789,7 @@ function AddExpense({ s2sToday, currency, onSave, onBack }: { s2sToday: number; 
   const keys = ['1','2','3','4','5','6','7','8','9','.','0','del'];
 
   return (
-    <div style={{ background: C.bg, height: '100vh', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ background: C.bg, height: vh, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 20px 0' }}>
         <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.textSec, fontSize: 20, cursor: 'pointer' }}>←</button>
         <span style={{ fontSize: 16, fontWeight: 600, color: C.text }}>Новый расход</span>
@@ -828,7 +845,7 @@ function History({ api, currency, onRefresh }: { api: (path: string, opts?: Requ
     try {
       await api(`/tg/expenses/${id}`, { method: 'DELETE' });
       setExpenses((prev) => prev.filter((e) => e.id !== id));
-      onRefresh();
+      await onRefresh();
     } catch {
       // ignore
     } finally {
@@ -840,7 +857,7 @@ function History({ api, currency, onRefresh }: { api: (path: string, opts?: Requ
   const total = expenses.reduce((s, e) => s + e.amount, 0);
 
   return (
-    <div style={{ background: C.bg, minHeight: '100vh', padding: '20px 16px', paddingBottom: 90 }}>
+    <div style={{ background: C.bg, minHeight: '100vh', padding: '20px 16px', paddingBottom: 'calc(90px + env(safe-area-inset-bottom, 0px))' }}>
       <p style={{ fontSize: 22, fontWeight: 700, marginBottom: 16, color: C.text }}>История</p>
 
       <div style={{ background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 10, padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -985,7 +1002,7 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
   ];
 
   return (
-    <div style={{ background: C.bg, minHeight: '100vh', padding: '20px 16px', paddingBottom: 90 }}>
+    <div style={{ background: C.bg, minHeight: '100vh', padding: '20px 16px', paddingBottom: 'calc(90px + env(safe-area-inset-bottom, 0px))' }}>
       <p style={{ fontSize: 22, fontWeight: 700, marginBottom: 16, color: C.text }}>Долги</p>
 
       {loading && <div style={{ textAlign: 'center', paddingTop: 40 }}><Spinner /></div>}
@@ -1289,24 +1306,24 @@ function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPayd
     try {
       await api('/tg/cash-anchor', { method: 'POST', body: JSON.stringify({ currentCash: rubles * 100 }) });
       setCashDone(true);
-      onRefresh?.();
+      await onRefresh?.();
       setTimeout(() => { setCashModal(false); setCashDone(false); setCashInput(''); }, 1200);
     } finally { setCashSaving(false); }
   };
 
   return (
-    <div style={{ background: C.bg, minHeight: '100vh', padding: '20px 16px', paddingBottom: 90 }}>
+    <div style={{ background: C.bg, minHeight: '100vh', padding: '20px 16px', paddingBottom: 'calc(90px + env(safe-area-inset-bottom, 0px))' }}>
       <p style={{ fontSize: 22, fontWeight: 700, marginBottom: 20, color: C.text }}>Настройки</p>
 
       {/* Cash anchor modal */}
       {cashModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 100, display: 'flex', alignItems: 'flex-end' }} onClick={() => setCashModal(false)}>
-          <div style={{ background: C.bgSecondary, borderRadius: '20px 20px 0 0', padding: '24px 20px 40px', width: '100%', boxSizing: 'border-box' }} onClick={e => e.stopPropagation()}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 200, display: 'flex', alignItems: 'flex-end' }} onClick={() => setCashModal(false)}>
+          <div style={{ background: C.bgSecondary, borderRadius: '20px 20px 0 0', padding: '24px 20px', paddingBottom: 'max(32px, env(safe-area-inset-bottom, 32px))', width: '100%', boxSizing: 'border-box' }} onClick={e => e.stopPropagation()}>
             <p style={{ fontSize: 18, fontWeight: 700, color: C.text, marginBottom: 6 }}>Текущий остаток</p>
             <p style={{ fontSize: 13, color: C.textSec, marginBottom: 20 }}>Укажите, сколько у вас сейчас на руках. Это обновит дневной лимит с учётом реального баланса.</p>
             <input
-              type="number" inputMode="numeric" placeholder="0"
-              value={cashInput} onChange={e => setCashInput(e.target.value)} autoFocus
+              type="number" inputMode="decimal" placeholder="0"
+              value={cashInput} onChange={e => setCashInput(e.target.value)}
               style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: '14px 16px', fontSize: 20, fontWeight: 700, color: C.text, fontFamily: 'inherit', boxSizing: 'border-box', marginBottom: 16, outline: 'none' }}
             />
             <PrimaryBtn onClick={handleCashSave} disabled={cashSaving || cashDone}>
