@@ -463,14 +463,19 @@ tg.post('/onboarding/income', async (req: AuthenticatedRequest, res) => {
   }
 
   // Remove old incomes and recreate
+  // Semantics B: DB stores per-payout amount. UI sends monthly total.
+  // Convert: perPayout = monthly / paydays.length
+  const perPayoutAmount = Math.round(amount / paydays.length);
+
   await prisma.income.deleteMany({ where: { userId } });
   const income = await prisma.income.create({
     data: {
       userId,
       title,
-      amount: Math.round(amount),
+      amount: perPayoutAmount,
       currency: currency as any,
       paydays,
+      useRussianWorkCalendar: true,
     },
   });
 
