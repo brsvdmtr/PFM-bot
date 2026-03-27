@@ -291,6 +291,135 @@ export function buildDebtStrategy(
   };
 }
 
+// ── Debt Acceleration Hint ───────────────────────────────────────────────────
+
+export interface DebtAccelerationScenario {
+  key: 'gentle' | 'optimal' | 'aggressive';
+  dailyCutMinor: number;
+  monthlyExtraMinor: number;
+  payoffMonths: number | null;
+  monthsSaved: number | null;
+  interestSavedMinor: number | null;
+  tooAggressive: boolean;
+}
+
+export interface DebtAccelerationHint {
+  eligible: boolean;
+  state: 'INELIGIBLE' | 'DEFICIT' | 'BASELINE_UNSTABLE' | 'READY';
+  isPro: boolean;
+  currency: string;
+  focusDebtId: string | null;
+  baseScenario: {
+    dailyCutMinor: number;
+    monthlyExtraMinor: number;
+    copy: string;
+  } | null;
+  proScenarios: DebtAccelerationScenario[] | null;
+  copy: {
+    title: string;
+    body: string;
+    cta?: string;
+    warning?: string;
+  };
+}
+
+const DAILY_CUT_SCENARIOS = [
+  { key: 'gentle' as const, dailyCutMinor: 50_000, monthlyExtraMinor: 1_500_000 },
+  { key: 'optimal' as const, dailyCutMinor: 100_000, monthlyExtraMinor: 3_000_000 },
+  { key: 'aggressive' as const, dailyCutMinor: 200_000, monthlyExtraMinor: 6_000_000 },
+];
+
+export function buildDebtAccelerationHint(input: {
+  focusDebt: { id: string; balance: number; apr: number; minPayment: number } | null;
+  baselineMonthlyPayment: number;
+  s2sDaily: number;
+  isPro: boolean;
+  currency: string;
+}): DebtAccelerationHint {
+  const { focusDebt, baselineMonthlyPayment, s2sDaily, isPro, currency } = input;
+
+  // No focus debt → ineligible
+  if (!focusDebt || focusDebt.balance <= 0) {
+    return {
+      eligible: false, state: 'INELIGIBLE', isPro, currency, focusDebtId: null,
+      baseScenario: null, proScenarios: null,
+      copy: { title: 'Как ускорить выплату долга', body: '' },
+    };
+  }
+
+  // Deficit — no free budget
+  if (s2sDaily <= 0) {
+    return {
+      eligible: true, state: 'DEFICIT', isPro, currency, focusDebtId: focusDebt.id,
+      baseScenario: null, proScenarios: null,
+      copy: {
+        title: 'Как ускорить выплату долга',
+        body: 'Сейчас свободного бюджета нет. Сначала нужно выйти из дефицита, потом можно подключить ускоренное погашение.',
+      },
+    };
+  }
+
+  // Baseline payoff
+  const baseline = simulatePayoff(focusDebt.balance, focusDebt.apr, baselineMonthlyPayment);
+
+  if (baseline.status !== 'OK' || baseline.months === null) {
+    return {
+      eligible: true, state: 'BASELINE_UNSTABLE', isPro, currency, focusDebtId: focusDebt.id,
+      baseScenario: null, proScenarios: null,
+      copy: {
+        title: 'Как ускорить выплату долга',
+        body: 'Текущий прогноз погашения не определён. Укажите корректный минимальный платёж.',
+      },
+    };
+  }
+
+  // Build scenarios
+  const scenarios: DebtAccelerationScenario[] = DAILY_CUT_SCENARIOS.map((sc) => {
+    const scenarioPayment = baselineMonthlyPayment + sc.monthlyExtraMinor;
+    const result = simulatePayoff(focusDebt.balance, focusDebt.apr, scenarioPayment);
+
+    return {
+      key: sc.key,
+      dailyCutMinor: sc.dailyCutMinor,
+      monthlyExtraMinor: sc.monthlyExtraMinor,
+      payoffMonths: result.months,
+      monthsSaved: result.status === 'OK' && result.months !== null
+        ? Math.max(0, baseline.months! - result.months)
+        : null,
+      interestSavedMinor: result.status === 'OK' && result.totalInterest !== null && baseline.totalInterest !== null
+        ? Math.max(0, baseline.totalInterest - result.totalInterest)
+        : null,
+      tooAggressive: sc.dailyCutMinor > s2sDaily,
+    };
+  });
+
+  // Base scenario = optimal (1000₽/day)
+  const optimalSc = scenarios.find((s) => s.key === 'optimal')!;
+  const dailyRub = Math.round(optimalSc.dailyCutMinor / 100);
+  const monthlyRub = Math.round(optimalSc.monthlyExtraMinor / 100);
+
+  const baseScenario = {
+    dailyCutMinor: optimalSc.dailyCutMinor,
+    monthlyExtraMinor: optimalSc.monthlyExtraMinor,
+    copy: `Если сократить ежедневные траты на ${dailyRub.toLocaleString('ru-RU')} ₽, можно направлять до ${monthlyRub.toLocaleString('ru-RU')} ₽ в месяц на досрочное погашение.`,
+  };
+
+  return {
+    eligible: true,
+    state: 'READY',
+    isPro,
+    currency,
+    focusDebtId: focusDebt.id,
+    baseScenario,
+    proScenarios: isPro ? scenarios : null,
+    copy: {
+      title: 'Как ускорить выплату долга',
+      body: baseScenario.copy,
+      cta: isPro ? undefined : 'Посмотреть сценарии',
+    },
+  };
+}
+
 // ── Avalanche Plan (legacy approximate) ──────────────────────────────────────
 
 /**

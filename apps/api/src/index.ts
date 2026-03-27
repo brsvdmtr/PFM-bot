@@ -2,7 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
 import { prisma } from '@pfm/db';
-import { determineFocusDebt, buildAvalanchePlan, buildDebtStrategy } from './avalanche';
+import { determineFocusDebt, buildAvalanchePlan, buildDebtStrategy, buildDebtAccelerationHint } from './avalanche';
 import { getLastActualPayday, getNextActualPayday, getNextIncomeAmount } from './payday-calendar';
 import {
   DEFAULT_TZ,
@@ -1655,7 +1655,23 @@ tg.get('/debts/strategy', async (req: AuthenticatedRequest, res) => {
     currency,
   );
 
-  res.json(strategy);
+  // Build acceleration hint
+  const focusItem = strategy.items.find((i) => i.isFocus);
+  const subscription = await prisma.subscription.findUnique({ where: { userId } });
+  const isPro = user?.godMode || (subscription?.status === 'ACTIVE' && (subscription.currentPeriodEnd ?? new Date(0)) > new Date());
+
+  // Live s2sDaily from period snapshot
+  const s2sDaily = activePeriod?.s2sDaily ?? 0;
+
+  const accelerationHint = buildDebtAccelerationHint({
+    focusDebt: focusItem ? { id: focusItem.debtId, balance: focusItem.balance, apr: focusItem.apr, minPayment: focusItem.minPayment } : null,
+    baselineMonthlyPayment: focusItem?.baseline.monthlyPaymentUsed ?? 0,
+    s2sDaily,
+    isPro: isPro === true,
+    currency,
+  });
+
+  res.json({ ...strategy, accelerationHint });
 });
 
 // ── Expenses (history) ─────────────────────────────────

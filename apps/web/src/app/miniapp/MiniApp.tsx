@@ -118,6 +118,18 @@ interface DebtStrategyItem {
 interface DebtStrategy {
   currency: string; focusDebtId: string | null; generatedAt: string; items: DebtStrategyItem[];
   summary: { totalDebt: number; totalMinPayments: number; estimatedDebtFreeMonths: number | null; estimatedTotalInterest: number | null };
+  accelerationHint?: DebtAccelerationHint | null;
+}
+interface DebtAccelerationScenario {
+  key: string; dailyCutMinor: number; monthlyExtraMinor: number;
+  payoffMonths: number | null; monthsSaved: number | null;
+  interestSavedMinor: number | null; tooAggressive: boolean;
+}
+interface DebtAccelerationHint {
+  eligible: boolean; state: string; isPro: boolean; currency: string; focusDebtId: string | null;
+  baseScenario: { dailyCutMinor: number; monthlyExtraMinor: number; copy: string } | null;
+  proScenarios: DebtAccelerationScenario[] | null;
+  copy: { title: string; body: string; cta?: string; warning?: string };
 }
 
 // ── API ──────────────────────────────────────────────────────────────────────
@@ -1385,7 +1397,7 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
 
 // ── Debts Screen ─────────────────────────────────────────────────────────────
 
-function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: RequestInit) => Promise<any>; currency: string; onRefresh: () => void }) {
+function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: string, opts?: RequestInit) => Promise<any>; currency: string; onRefresh: () => void; onOpenPro?: () => void }) {
   const [debts, setDebts] = useState<Debt[]>([]);
   const [plan, setPlan] = useState<AvalanchePlan | null>(null);
   const [strategy, setStrategy] = useState<DebtStrategy | null>(null);
@@ -1755,6 +1767,71 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
           </div>
         </Card>
       )}
+
+      {/* Acceleration hint */}
+      {!loading && strategy?.accelerationHint?.eligible && (() => {
+        const hint = strategy.accelerationHint!;
+        if (hint.state === 'DEFICIT') {
+          return (
+            <Card style={{ background: 'linear-gradient(145deg, #1A1028, #15102a)', border: '1px solid rgba(139,92,246,0.15)', marginTop: 12 }}>
+              <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 6 }}>{hint.copy.title}</p>
+              <p style={{ fontSize: 12, color: C.orange, lineHeight: 1.5 }}>{hint.copy.body}</p>
+            </Card>
+          );
+        }
+        if (hint.state === 'BASELINE_UNSTABLE') {
+          return (
+            <Card style={{ marginTop: 12 }}>
+              <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 6 }}>{hint.copy.title}</p>
+              <p style={{ fontSize: 12, color: C.textTertiary, lineHeight: 1.5 }}>{hint.copy.body}</p>
+            </Card>
+          );
+        }
+        // READY
+        return (
+          <Card style={{ background: 'linear-gradient(145deg, #1E1535, #1A1028)', border: '1px solid rgba(139,92,246,0.25)', marginTop: 12 }}>
+            <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 8 }}>{hint.copy.title}</p>
+            {/* Free: base scenario + CTA */}
+            {!hint.proScenarios && hint.baseScenario && (
+              <>
+                <p style={{ fontSize: 12, color: C.textSec, lineHeight: 1.5, marginBottom: 10 }}>{hint.baseScenario.copy}</p>
+                <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 10 }}>Это поможет быстрее закрыть фокусный долг.</p>
+                {hint.copy.cta && onOpenPro && (
+                  <button onClick={onOpenPro} style={{ width: '100%', padding: '11px 0', background: `linear-gradient(135deg, ${C.accent}, ${C.accentDim})`, border: 'none', borderRadius: 10, color: '#fff', fontSize: 13, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}>
+                    {hint.copy.cta}
+                  </button>
+                )}
+              </>
+            )}
+            {/* Pro: 3 scenarios */}
+            {hint.proScenarios && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
+                {hint.proScenarios.map((sc) => (
+                  <div key={sc.key} style={{ background: C.surface, border: `1px solid ${sc.tooAggressive ? C.orange + '40' : C.borderSubtle}`, borderRadius: 10, padding: '10px 12px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>
+                        −{Math.round(sc.dailyCutMinor / 100).toLocaleString('ru-RU')} ₽/день
+                      </span>
+                      {sc.monthsSaved != null && sc.monthsSaved > 0 && (
+                        <span style={{ fontSize: 11, fontWeight: 600, color: C.green }}>−{sc.monthsSaved} мес.</span>
+                      )}
+                    </div>
+                    <p style={{ fontSize: 11, color: C.textTertiary }}>
+                      до {fmt(sc.monthlyExtraMinor, currency)}/мес в долг
+                      {sc.interestSavedMinor != null && sc.interestSavedMinor > 0 && (
+                        <> · экономия {fmt(sc.interestSavedMinor, currency)}</>
+                      )}
+                    </p>
+                    {sc.tooAggressive && (
+                      <p style={{ fontSize: 10, color: C.orange, marginTop: 3 }}>Может быть слишком жёстким для текущего бюджета</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        );
+      })()}
 
       {!showAdd && !loading && (
         <button onClick={() => setShowAdd(true)} style={{ width: '100%', padding: '16px 0', background: 'transparent', border: `1px dashed ${C.border}`, borderRadius: 10, color: C.accent, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer', marginTop: 8 }}>
@@ -2726,7 +2803,7 @@ export default function MiniApp() {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh' }}><Spinner /></div>
       )}
       {screen === 'history' && <History api={api} currency={dashboard?.currency ?? 'RUB'} onRefresh={loadDashboard} />}
-      {screen === 'debts' && <DebtsScreen api={api} currency={dashboard?.currency ?? 'RUB'} onRefresh={loadDashboard} />}
+      {screen === 'debts' && <DebtsScreen api={api} currency={dashboard?.currency ?? 'RUB'} onRefresh={loadDashboard} onOpenPro={() => setScreen('pro')} />}
       {screen === 'emergency-fund-detail' && <EmergencyFundScreen api={api} onBack={() => setScreen('dashboard')} onRefresh={loadDashboard} />}
       {screen === 'settings' && <Settings api={api} onOpenPro={() => setScreen('pro')} onOpenIncomes={() => setScreen('incomes')} onOpenObligations={() => setScreen('obligations')} onOpenPaydays={() => setScreen('paydays')} onRefresh={loadDashboard} />}
 
