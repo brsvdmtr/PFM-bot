@@ -1060,16 +1060,51 @@ tg.get('/ef/plan', async (req: AuthenticatedRequest, res) => {
 
   const targetAmount = computeTargetAmount(targetMode, baseMonthlyAmount, targetMonths, plan?.manualTargetAmount ?? null, totalObligations);
 
+  const freq = (plan?.contributionFrequency ?? 'MONTHLY') as 'MONTHLY' | 'BIWEEKLY' | 'WEEKLY';
   const result = computeEFPlan({
     targetAmount, currentAmount, monthlyIncomeBase: baseMonthlyAmount,
     monthlyRequiredExpenses: totalObligations,
-    contributionFrequency: (plan?.contributionFrequency ?? 'MONTHLY') as any,
+    contributionFrequency: freq,
     targetDeadlineAt: plan?.targetDeadlineAt ?? null,
     preferredPace: (plan?.preferredPace ?? null) as any,
     now: new Date(),
   });
 
-  res.json(result);
+  // Build selectedPlan from stored plan preferences
+  const selMode = ((plan as any)?.planSelectionMode ?? null) as 'SYSTEM' | 'CUSTOM' | null;
+  const customAmt = (plan as any)?.customContributionAmount as number | null ?? null;
+  const customFreq = ((plan as any)?.customContributionFrequency ?? null) as 'MONTHLY' | 'BIWEEKLY' | 'WEEKLY' | null;
+
+  let selectedPlan: any = { mode: selMode, pace: plan?.preferredPace ?? null, contributionAmount: null, frequency: null, monthlyEquivalent: null, projectedMonthsToTarget: null, projectedTargetDate: null, loadPctOfFreeCashflow: null };
+
+  if (selMode === 'SYSTEM' && plan?.preferredPace) {
+    const sc = result.scenarios?.find((s: any) => s.pace === plan!.preferredPace);
+    if (sc) {
+      selectedPlan = { ...selectedPlan, contributionAmount: sc.contributionAmount, frequency: sc.frequency, monthlyEquivalent: sc.contributionAmount, projectedMonthsToTarget: sc.projectedMonthsToTarget, projectedTargetDate: sc.projectedTargetDate, loadPctOfFreeCashflow: sc.loadPctOfFreeCashflow };
+    }
+  } else if (selMode === 'CUSTOM' && customAmt && customAmt > 0) {
+    const cFreq = customFreq ?? 'MONTHLY';
+    const monthlyEq = cFreq === 'MONTHLY' ? customAmt : cFreq === 'WEEKLY' ? Math.round(customAmt * 52 / 12) : Math.round(customAmt * 26 / 12);
+    const remainingGap = Math.max(0, targetAmount - currentAmount);
+    const monthsToTarget = monthlyEq > 0 ? Math.ceil(remainingGap / monthlyEq) : null;
+    const monthlyFCF = Math.max(0, baseMonthlyAmount - totalObligations);
+    const loadPct = monthlyFCF > 0 ? Math.round(monthlyEq * 100 / monthlyFCF) : null;
+    const projDate = monthsToTarget != null ? new Date(new Date().getTime() + monthsToTarget * 30.44 * 24 * 60 * 60 * 1000).toISOString() : null;
+
+    // Comparison hint
+    const gentle = result.scenarios?.find((s: any) => s.pace === 'GENTLE')?.contributionAmount ?? 0;
+    const optimal = result.scenarios?.find((s: any) => s.pace === 'OPTIMAL')?.contributionAmount ?? 0;
+    const aggressive = result.scenarios?.find((s: any) => s.pace === 'AGGRESSIVE')?.contributionAmount ?? 0;
+    let comparisonHint: string | null = null;
+    if (monthlyEq < gentle) comparisonHint = 'Мягче щадящего сценария';
+    else if (monthlyEq < optimal) comparisonHint = 'Между щадящим и оптимальным';
+    else if (monthlyEq < aggressive) comparisonHint = 'Между оптимальным и агрессивным';
+    else comparisonHint = 'Агрессивнее системного максимума';
+
+    selectedPlan = { mode: 'CUSTOM', pace: null, contributionAmount: customAmt, frequency: cFreq, monthlyEquivalent: monthlyEq, projectedMonthsToTarget: monthsToTarget, projectedTargetDate: projDate, loadPctOfFreeCashflow: loadPct, comparisonHint };
+  }
+
+  res.json({ ...result, selectedPlan });
 });
 
 tg.patch('/ef/plan', async (req: AuthenticatedRequest, res) => {
@@ -1089,6 +1124,9 @@ tg.patch('/ef/plan', async (req: AuthenticatedRequest, res) => {
   if (req.body.targetDeadlineAt !== undefined) data.targetDeadlineAt = req.body.targetDeadlineAt ? new Date(req.body.targetDeadlineAt) : null;
   if (req.body.contributionFrequency !== undefined) data.contributionFrequency = req.body.contributionFrequency;
   if (req.body.preferredPace !== undefined) data.preferredPace = req.body.preferredPace;
+  if (req.body.planSelectionMode !== undefined) data.planSelectionMode = req.body.planSelectionMode;
+  if (req.body.customContributionAmount !== undefined) data.customContributionAmount = req.body.customContributionAmount;
+  if (req.body.customContributionFrequency !== undefined) data.customContributionFrequency = req.body.customContributionFrequency;
 
   const plan = await prisma.emergencyFundPlan.upsert({
     where: { userId },

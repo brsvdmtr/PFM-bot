@@ -950,10 +950,16 @@ interface EFScenario {
   projectedMonthsToTarget: number | null; projectedTargetDate: string | null;
   loadPctOfFreeCashflow: number | null; status: string;
 }
+interface EFSelectedPlan {
+  mode: 'SYSTEM' | 'CUSTOM' | null; pace: string | null; contributionAmount: number | null;
+  frequency: string | null; monthlyEquivalent: number | null; projectedMonthsToTarget: number | null;
+  projectedTargetDate: string | null; loadPctOfFreeCashflow: number | null; comparisonHint?: string | null;
+}
 interface EFPlanData {
   targetAmount: number; currentAmount: number; remainingGap: number; monthlyFreeCashflow: number;
   feasibility: string | null; scenarios: EFScenario[]; message: string | null;
   requiredContribution: { frequency: string; amount: number } | null;
+  selectedPlan?: EFSelectedPlan | null;
 }
 interface EFEntry {
   id: string; bucketId: string | null; bucketName: string | null;
@@ -1075,8 +1081,34 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
     </div>
   );
 
+  const handleSelectPace = async (pace: string) => {
+    try {
+      await api('/tg/ef/plan', { method: 'PATCH', body: JSON.stringify({ planSelectionMode: 'SYSTEM', preferredPace: pace }) });
+      await load();
+    } catch {}
+  };
+
+  const [customMode, setCustomMode] = useState(false);
+  const [customAmount, setCustomAmount] = useState('');
+  const [customFreq, setCustomFreq] = useState<'MONTHLY' | 'BIWEEKLY' | 'WEEKLY'>('MONTHLY');
+
+  const handleSaveCustomPlan = async () => {
+    const n = parseFloat(customAmount);
+    if (isNaN(n) || n <= 0) { setError('Введите корректную сумму'); return; }
+    setSaving(true); setError('');
+    try {
+      await api('/tg/ef/plan', {
+        method: 'PATCH',
+        body: JSON.stringify({ planSelectionMode: 'CUSTOM', customContributionAmount: Math.round(n * 100), customContributionFrequency: customFreq }),
+      });
+      setCustomMode(false); setCustomAmount('');
+      await load();
+    } catch (err: any) { setError(err?.message || 'Ошибка'); }
+    setSaving(false);
+  };
+
   return (
-    <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px', paddingBottom: 40 }}>
+    <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px', paddingBottom: 'calc(100px + env(safe-area-inset-bottom, 0px))', overflowY: 'auto', WebkitOverflowScrolling: 'touch' as any }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
         <button onClick={onBack} style={{ background: C.surface, border: 'none', borderRadius: 10, color: C.textSec, fontSize: 20, width: 40, height: 40, cursor: 'pointer', fontFamily: 'inherit' }}>←</button>
@@ -1243,23 +1275,79 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
           )}
           {planData.message && <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 10 }}>{planData.message}</p>}
           <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 10 }}>Свободный поток: {fmt(planData.monthlyFreeCashflow, currency)}/мес</p>
-          {planData.scenarios.map((sc) => (
-            <Card key={sc.pace} style={{ padding: '12px 14px', borderLeft: sc.status === 'RECOMMENDED' ? `3px solid ${C.accent}` : undefined }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
-                  {sc.pace === 'GENTLE' ? 'Щадящий' : sc.pace === 'OPTIMAL' ? 'Оптимальный' : 'Агрессивный'}
-                </span>
-                {sc.status === 'RECOMMENDED' && <span style={{ fontSize: 10, background: C.accentBg, color: C.accentLight, padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>Рекомендуем</span>}
+          {planData.scenarios.map((sc: any) => {
+            const isSelected = planData.selectedPlan?.mode === 'SYSTEM' && planData.selectedPlan?.pace === sc.pace;
+            return (
+              <Card key={sc.pace} onClick={() => handleSelectPace(sc.pace)} style={{ padding: '12px 14px', borderLeft: isSelected ? `3px solid ${C.accent}` : sc.status === 'RECOMMENDED' ? `3px solid ${C.accent}40` : undefined, cursor: 'pointer', background: isSelected ? C.accentBg : undefined }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
+                    {sc.pace === 'GENTLE' ? 'Щадящий' : sc.pace === 'OPTIMAL' ? 'Оптимальный' : 'Агрессивный'}
+                  </span>
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    {isSelected && <span style={{ fontSize: 10, background: C.green + '30', color: C.green, padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>Выбрано</span>}
+                    {sc.status === 'RECOMMENDED' && <span style={{ fontSize: 10, background: C.accentBg, color: C.accentLight, padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>Рекомендуем</span>}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textSec }}>
+                  <span>{fmt(sc.contributionAmount, currency)}/{sc.frequency === 'WEEKLY' ? 'нед' : sc.frequency === 'BIWEEKLY' ? '2 нед' : 'мес'}</span>
+                  <span>{sc.projectedMonthsToTarget != null ? `~${sc.projectedMonthsToTarget} мес.` : 'Не определён'}</span>
+                </div>
+                {sc.loadPctOfFreeCashflow != null && (
+                  <p style={{ fontSize: 11, color: C.textTertiary, marginTop: 4 }}>{sc.loadPctOfFreeCashflow}% от свободного потока</p>
+                )}
+              </Card>
+            );
+          })}
+
+          {/* Custom plan button / editor */}
+          {!customMode ? (
+            <button onClick={() => { setCustomMode(true); setError(''); setCustomAmount(''); }} style={{ width: '100%', padding: '12px 0', background: 'transparent', border: `1px dashed ${C.border}`, borderRadius: 10, color: C.accent, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer', marginBottom: 8 }}>
+              {planData.selectedPlan?.mode === 'CUSTOM' ? 'Изменить свой план' : 'Настроить свой план'}
+            </button>
+          ) : (
+            <Card>
+              <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 10 }}>Свой план</p>
+              <input type="number" inputMode="decimal" value={customAmount} onChange={(e) => setCustomAmount(e.target.value)} placeholder="Сколько готов откладывать ₽" autoFocus style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 10, padding: '12px 14px', fontSize: 16, fontWeight: 600, color: C.text, fontFamily: 'inherit', outline: 'none', marginBottom: 10, boxSizing: 'border-box' }} />
+              <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
+                {([['MONTHLY', 'мес'], ['BIWEEKLY', '2 нед'], ['WEEKLY', 'нед']] as const).map(([f, l]) => (
+                  <button key={f} onClick={() => setCustomFreq(f as any)} style={{ flex: 1, padding: '8px 0', borderRadius: 20, background: customFreq === f ? C.accentBgStrong : C.elevated, border: `1px solid ${customFreq === f ? C.accent : C.border}`, color: customFreq === f ? C.accentLight : C.textSec, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer' }}>
+                    раз / {l}
+                  </button>
+                ))}
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textSec }}>
-                <span>{fmt(sc.contributionAmount, currency)}/{sc.frequency === 'WEEKLY' ? 'нед' : sc.frequency === 'BIWEEKLY' ? '2 нед' : 'мес'}</span>
-                <span>{sc.projectedMonthsToTarget != null ? `~${sc.projectedMonthsToTarget} мес.` : 'Не определён'}</span>
+              {error && <p style={{ fontSize: 12, color: C.red, marginBottom: 8 }}>⚠ {error}</p>}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <PrimaryBtn onClick={handleSaveCustomPlan} disabled={saving || !customAmount} style={{ flex: 1 }}>{saving ? '...' : 'Сохранить'}</PrimaryBtn>
+                <button onClick={() => { setCustomMode(false); setError(''); }} style={{ flex: 0.5, padding: '12px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>Отмена</button>
               </div>
-              {sc.loadPctOfFreeCashflow != null && (
-                <p style={{ fontSize: 11, color: C.textTertiary, marginTop: 4 }}>{sc.loadPctOfFreeCashflow}% от свободного потока</p>
+            </Card>
+          )}
+
+          {/* My Plan summary */}
+          {planData.selectedPlan?.mode && (
+            <Card style={{ background: 'linear-gradient(145deg, #1E1535, #1A1028)', border: '1px solid rgba(139,92,246,0.25)', marginTop: 4 }}>
+              <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 4 }}>Мой план</p>
+              <p style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>
+                {planData.selectedPlan.mode === 'SYSTEM'
+                  ? (planData.selectedPlan.pace === 'GENTLE' ? 'Щадящий' : planData.selectedPlan.pace === 'OPTIMAL' ? 'Оптимальный' : 'Агрессивный')
+                  : 'Свой план'}
+              </p>
+              {planData.selectedPlan.contributionAmount != null && (
+                <p style={{ fontSize: 14, color: C.textSec }}>
+                  {fmt(planData.selectedPlan.contributionAmount, currency)} / {planData.selectedPlan.frequency === 'WEEKLY' ? 'нед' : planData.selectedPlan.frequency === 'BIWEEKLY' ? '2 нед' : 'мес'}
+                </p>
+              )}
+              {planData.selectedPlan.projectedMonthsToTarget != null && (
+                <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 4 }}>
+                  Цель через ~{planData.selectedPlan.projectedMonthsToTarget} мес.
+                  {planData.selectedPlan.loadPctOfFreeCashflow != null && ` · ${planData.selectedPlan.loadPctOfFreeCashflow}% потока`}
+                </p>
+              )}
+              {planData.selectedPlan.comparisonHint && (
+                <p style={{ fontSize: 11, color: C.accent, marginTop: 4 }}>{planData.selectedPlan.comparisonHint}</p>
               )}
             </Card>
-          ))}
+          )}
         </>
       )}
 

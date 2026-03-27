@@ -332,6 +332,10 @@ model EmergencyFundPlan {
   contributionFrequency   ContributionFrequency  @default(MONTHLY)
   preferredPace           SavingsPace?
 
+  planSelectionMode             String?            // 'SYSTEM' | 'CUSTOM'
+  customContributionAmount      Int?               // minor units
+  customContributionFrequency   String?            // 'MONTHLY' | 'BIWEEKLY' | 'WEEKLY'
+
   createdAt               DateTime               @default(now())
   updatedAt               DateTime               @updatedAt
 
