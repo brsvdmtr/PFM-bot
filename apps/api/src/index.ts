@@ -451,7 +451,7 @@ tg.get('/me/settings', async (req: AuthenticatedRequest, res) => {
 // Step 1 — Income
 tg.post('/onboarding/income', async (req: AuthenticatedRequest, res) => {
   const userId = req.userId!;
-  const { amount, paydays, currency = 'RUB', title = 'Основной доход' } = req.body;
+  const { amount, paydays, currency = 'RUB', title = 'Основной доход', useRussianWorkCalendar } = req.body;
 
   if (!amount || typeof amount !== 'number' || amount <= 0) {
     res.status(400).json({ error: 'Invalid amount' });
@@ -475,7 +475,7 @@ tg.post('/onboarding/income', async (req: AuthenticatedRequest, res) => {
       amount: perPayoutAmount,
       currency: currency as any,
       paydays,
-      useRussianWorkCalendar: true,
+      useRussianWorkCalendar: useRussianWorkCalendar !== false,
     },
   });
 
@@ -777,20 +777,30 @@ tg.get('/incomes', async (req: AuthenticatedRequest, res) => {
     where: { userId: req.userId! },
     orderBy: { createdAt: 'desc' },
   });
-  res.json(incomes);
+  // Return monthlyEquivalent for UI display (amount is per-payout in DB)
+  const withMonthly = incomes.map((i) => ({
+    ...i,
+    monthlyEquivalent: i.amount * (Array.isArray(i.paydays) ? (i.paydays as number[]).length : 1),
+  }));
+  res.json(withMonthly);
 });
 
 tg.post('/incomes', async (req: AuthenticatedRequest, res) => {
-  const { title, amount, paydays, currency = 'RUB', frequency = 'MONTHLY' } = req.body;
+  const { title, amount, paydays, currency = 'RUB', frequency = 'MONTHLY', useRussianWorkCalendar } = req.body;
   if (!title || !amount || !paydays) {
     res.status(400).json({ error: 'title, amount, paydays required' });
     return;
   }
+  // Semantics B: UI sends monthly total, DB stores per-payout
+  const payCount = Array.isArray(paydays) ? paydays.length : 1;
+  const perPayoutAmount = Math.round(amount / payCount);
+
   const income = await prisma.income.create({
     data: {
       userId: req.userId!, title,
-      amount: Math.round(amount), paydays,
+      amount: perPayoutAmount, paydays,
       currency: currency as any, frequency: frequency as any,
+      useRussianWorkCalendar: useRussianWorkCalendar === true,
     },
   });
   res.status(201).json(income);
@@ -800,7 +810,31 @@ tg.patch('/incomes/:id', async (req: AuthenticatedRequest, res) => {
   const id = req.params.id as string;
   const income = await prisma.income.findFirst({ where: { id, userId: req.userId! } });
   if (!income) { res.status(404).json({ error: 'Not found' }); return; }
-  const updated = await prisma.income.update({ where: { id }, data: req.body });
+
+  const data: Record<string, any> = {};
+  if (req.body.title !== undefined) data.title = req.body.title;
+  if (req.body.currency !== undefined) data.currency = req.body.currency;
+  if (req.body.useRussianWorkCalendar !== undefined) data.useRussianWorkCalendar = req.body.useRussianWorkCalendar === true;
+
+  // If amount or paydays change, convert monthly→per-payout
+  const newPaydays = req.body.paydays ?? (income.paydays as number[]);
+  if (req.body.amount !== undefined) {
+    const payCount = Array.isArray(newPaydays) ? newPaydays.length : 1;
+    data.amount = Math.round(req.body.amount / payCount);
+  }
+  if (req.body.paydays !== undefined) {
+    data.paydays = req.body.paydays;
+    // If paydays changed but amount wasn't sent, recalculate stored per-payout from current monthly equivalent
+    if (req.body.amount === undefined) {
+      const currentPayCount = Array.isArray(income.paydays) ? (income.paydays as number[]).length : 1;
+      const monthlyEquiv = income.amount * currentPayCount;
+      const newPayCount = Array.isArray(req.body.paydays) ? req.body.paydays.length : 1;
+      data.amount = Math.round(monthlyEquiv / newPayCount);
+    }
+  }
+
+  const updated = await prisma.income.update({ where: { id }, data });
+  try { await triggerRecalculate(req.userId!); } catch {}
   res.json(updated);
 });
 

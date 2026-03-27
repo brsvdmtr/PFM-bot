@@ -331,18 +331,19 @@ function OnbWelcome({ onStart }: { onStart: () => void }) {
   );
 }
 
-function OnbIncome({ onNext }: { onNext: (data: { amount: number; paydays: number[]; currency: string }) => void }) {
+function OnbIncome({ onNext }: { onNext: (data: { amount: number; paydays: number[]; currency: string; useRussianWorkCalendar?: boolean }) => void }) {
   const [amount, setAmount] = useState('');
   const [payday, setPayday] = useState<number[]>([15]);
   const [twoPaydays, setTwoPaydays] = useState(false);
   const [payday2, setPayday2] = useState<number[]>([1]);
   const [currency, setCurrency] = useState<'RUB' | 'USD'>('RUB');
+  const [useRuCal, setUseRuCal] = useState(true);
 
   const handleNext = () => {
     const n = parseInt(amount.replace(/\D/g, ''), 10);
     if (!n || n <= 0) return;
     const days = twoPaydays ? [...new Set([...payday, ...payday2])].sort((a, b) => a - b) : payday;
-    onNext({ amount: n * 100, paydays: days, currency });
+    onNext({ amount: n * 100, paydays: days, currency, useRussianWorkCalendar: useRuCal });
   };
 
   const payOptions = [1, 5, 10, 15, 20, 25];
@@ -399,6 +400,19 @@ function OnbIncome({ onNext }: { onNext: (data: { amount: number; paydays: numbe
           </div>
         )}
         <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 8 }}>Мы считаем периоды от зарплаты до зарплаты, не по месяцам</p>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 0', marginBottom: 16 }}>
+        <div>
+          <p style={{ fontSize: 13, color: C.text, marginBottom: 2 }}>Производственный календарь РФ</p>
+          <p style={{ fontSize: 11, color: C.textTertiary }}>Перенос на пятницу при выходном</p>
+        </div>
+        <div
+          onClick={() => setUseRuCal(!useRuCal)}
+          style={{ width: 40, height: 24, background: useRuCal ? C.accent : C.elevated, border: `1px solid ${C.border}`, borderRadius: 12, position: 'relative', cursor: 'pointer', transition: 'background 0.2s', flexShrink: 0 }}
+        >
+          <div style={{ width: 20, height: 20, background: '#fff', borderRadius: '50%', position: 'absolute', top: 1, left: useRuCal ? 18 : 1, transition: 'left 0.2s' }} />
+        </div>
       </div>
 
       <PrimaryBtn onClick={handleNext} disabled={!amount || parseInt(amount, 10) <= 0}>Продолжить</PrimaryBtn>
@@ -1761,7 +1775,7 @@ function PaydaysScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
 
 interface Income {
   id: string; title: string; amount: number; currency: string;
-  frequency: string; paydays: number[];
+  frequency: string; paydays: number[]; monthlyEquivalent?: number;
 }
 
 const FREQ_LABELS: Record<string, string> = {
@@ -1873,7 +1887,7 @@ function IncomesScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
           <Card key={inc.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
               <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 3 }}>{inc.title}</p>
-              <p style={{ fontSize: 13, color: C.textSec }}>{fmt(inc.amount, inc.currency)} / мес · {FREQ_LABELS[inc.frequency] || inc.frequency}</p>
+              <p style={{ fontSize: 13, color: C.textSec }}>{fmt(inc.monthlyEquivalent ?? inc.amount, inc.currency)} / мес · {FREQ_LABELS[inc.frequency] || inc.frequency}</p>
               <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 2 }}>Зарплата: {(inc.paydays as number[]).join(', ')} числа</p>
             </div>
             <button onClick={() => handleDelete(inc.id)} style={{ background: C.redBg, border: 'none', borderRadius: 8, color: C.red, fontSize: 18, width: 36, height: 36, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}>✕</button>
