@@ -91,6 +91,11 @@ export interface FinanceDomainInputs {
   debtPaymentEvents: DebtPaymentEventInput[];
   /** Cash anchor: actual money on hand (kopecks). null = not set. */
   cashOnHand: number | null;
+  /** Signed savings adjustments for the period (deposits = +, withdrawals = -).
+   *  Only includes entries with affectsCurrentBudget=true. */
+  periodSavingsAdjustment: number;
+  /** Signed savings adjustments for today only. */
+  todaySavingsAdjustment: number;
 }
 
 // ── Computed S2S values ───────────────────────────────────────────────────────
@@ -135,6 +140,10 @@ export interface DashboardView {
   avalanchePool: number;
   s2sPeriod: number;
   totalPeriodSpent: number;
+  /** Savings budget adjustments in period (deposits=+, withdrawals=-). */
+  periodSavingsAdjustment: number;
+  /** effectivePeriodSpent = totalPeriodSpent + periodSavingsAdjustment */
+  effectivePeriodSpent: number;
   periodRemaining: number;
   s2sDaily: number;
   s2sToday: number;

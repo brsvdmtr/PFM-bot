@@ -149,6 +149,8 @@ export async function rebuildActivePeriodSnapshot(
       kind: ev.kind as 'REQUIRED_MIN_PAYMENT' | 'EXTRA_PRINCIPAL_PAYMENT',
     })),
     cashOnHand: activePeriod.cashAnchorAmount ?? null,
+    periodSavingsAdjustment: 0,  // snapshot rebuild uses 0; live dashboard computes from entries
+    todaySavingsAdjustment: 0,
   };
 
   // ── 5. Compute view (pure) ────────────────────────────────────────────────

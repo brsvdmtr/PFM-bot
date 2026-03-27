@@ -271,6 +271,25 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
     select: { debtId: true, amountMinor: true, kind: true },
   });
 
+  // ── Savings adjustments from EmergencyFundEntry ─────────────────────────
+  const efEntries = await prisma.emergencyFundEntry.findMany({
+    where: { userId, periodId: activePeriod.id, affectsCurrentBudget: true, reversedAt: null },
+    select: { type: true, amount: true, createdAt: true },
+  });
+  const todayStart = new Date(now);
+  todayStart.setUTCHours(0, 0, 0, 0);
+  // For today filter, use same timezone logic as expenses
+  let periodSavingsAdjustment = 0;
+  let todaySavingsAdjustment = 0;
+  for (const e of efEntries) {
+    const sign = e.type === 'DEPOSIT' ? 1 : e.type === 'WITHDRAWAL' ? -1 : 0;
+    periodSavingsAdjustment += sign * e.amount;
+    // Rough today check — same as todayExpenses logic
+    if (e.createdAt >= todayStart) {
+      todaySavingsAdjustment += sign * e.amount;
+    }
+  }
+
   // ── Build dashboard view via domain layer (all financial math here) ───────
   const view = buildDashboardView({
     now,
@@ -297,6 +316,8 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
       kind: ev.kind as 'REQUIRED_MIN_PAYMENT' | 'EXTRA_PRINCIPAL_PAYMENT',
     })),
     cashOnHand: activePeriod.cashAnchorAmount ?? null,
+    periodSavingsAdjustment,
+    todaySavingsAdjustment,
   });
 
   // ── Non-financial display fields (payday calendar, cash anchor) ───────────
@@ -769,6 +790,146 @@ tg.post('/periods/recalculate', async (req: AuthenticatedRequest, res) => {
   // Domain layer handles all fetching, bounds computation, and DB update.
   await triggerRecalculate(userId);
   res.json({ ok: true });
+});
+
+// ── Emergency Fund Management ─────────────────────────────
+
+tg.get('/ef', async (req: AuthenticatedRequest, res) => {
+  const userId = req.userId!;
+  const [ef, obligations, activePeriod] = await Promise.all([
+    prisma.emergencyFund.findUnique({ where: { userId } }),
+    prisma.obligation.findMany({ where: { userId, isActive: true } }),
+    prisma.period.findFirst({ where: { userId, status: 'ACTIVE' } }),
+  ]);
+  if (!ef) { res.json(null); return; }
+
+  const totalObligations = obligations.reduce((s, o) => s + o.amount, 0);
+  const targetAmount = totalObligations * ef.targetMonths;
+  const progressPct = targetAmount > 0 ? Math.min(100, Math.round((ef.currentAmount / targetAmount) * 100)) : ef.currentAmount > 0 ? 100 : 0;
+
+  // Net savings in current period (budget-affecting only)
+  let periodNetSavings = 0;
+  if (activePeriod) {
+    const entries = await prisma.emergencyFundEntry.findMany({
+      where: { userId, periodId: activePeriod.id, affectsCurrentBudget: true, reversedAt: null },
+      select: { type: true, amount: true },
+    });
+    for (const e of entries) {
+      if (e.type === 'DEPOSIT') periodNetSavings += e.amount;
+      else if (e.type === 'WITHDRAWAL') periodNetSavings -= e.amount;
+    }
+  }
+
+  res.json({
+    currentAmount: ef.currentAmount,
+    targetAmount,
+    targetMonths: ef.targetMonths,
+    progressPct,
+    remainingToTarget: Math.max(0, targetAmount - ef.currentAmount),
+    periodNetSavings,
+    canAffectCurrentBudget: !!activePeriod,
+    currency: ef.currency,
+  });
+});
+
+tg.get('/ef/entries', async (req: AuthenticatedRequest, res) => {
+  const userId = req.userId!;
+  const limit = Math.min(parseInt(req.query.limit as string || '50', 10), 200);
+  const entries = await prisma.emergencyFundEntry.findMany({
+    where: { userId, reversedAt: null },
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+    select: { id: true, type: true, amount: true, affectsCurrentBudget: true, note: true, createdAt: true },
+  });
+  res.json({ items: entries });
+});
+
+tg.post('/ef/entries', async (req: AuthenticatedRequest, res) => {
+  const userId = req.userId!;
+  const { type, amount, affectsCurrentBudget = false, note } = req.body;
+
+  if (!['DEPOSIT', 'WITHDRAWAL', 'BALANCE_SYNC'].includes(type)) {
+    res.status(400).json({ error: 'type must be DEPOSIT, WITHDRAWAL, or BALANCE_SYNC' });
+    return;
+  }
+  if (!amount || typeof amount !== 'number' || amount <= 0) {
+    res.status(400).json({ error: 'amount must be a positive number' });
+    return;
+  }
+
+  const ef = await prisma.emergencyFund.findUnique({ where: { userId } });
+  if (!ef) { res.status(404).json({ error: 'Emergency fund not found' }); return; }
+
+  // Validate withdrawal doesn't go below 0
+  if (type === 'WITHDRAWAL' && amount > ef.currentAmount) {
+    res.status(400).json({ error: 'Cannot withdraw more than current balance' });
+    return;
+  }
+
+  // Budget-affecting operations require active period
+  const activePeriod = affectsCurrentBudget
+    ? await prisma.period.findFirst({ where: { userId, status: 'ACTIVE' } })
+    : null;
+  if (affectsCurrentBudget && !activePeriod) {
+    res.status(400).json({ error: 'No active period — cannot affect budget. Use balance sync instead.' });
+    return;
+  }
+
+  // Compute new balance
+  let newBalance: number;
+  if (type === 'BALANCE_SYNC') {
+    newBalance = amount; // BALANCE_SYNC sets absolute value
+  } else if (type === 'DEPOSIT') {
+    newBalance = ef.currentAmount + amount;
+  } else {
+    newBalance = ef.currentAmount - amount;
+  }
+
+  // Atomic: create entry + update balance
+  const [entry] = await prisma.$transaction([
+    prisma.emergencyFundEntry.create({
+      data: {
+        userId,
+        emergencyFundId: ef.id,
+        periodId: activePeriod?.id ?? null,
+        type: type as any,
+        amount: Math.round(amount),
+        affectsCurrentBudget: affectsCurrentBudget === true,
+        note: note ?? null,
+      },
+    }),
+    prisma.emergencyFund.update({
+      where: { id: ef.id },
+      data: { currentAmount: Math.max(0, newBalance) },
+    }),
+  ]);
+
+  // Recalculate period if budget-affecting
+  if (affectsCurrentBudget && activePeriod) {
+    try { await triggerRecalculate(userId); } catch {}
+  }
+
+  res.status(201).json({
+    entry,
+    newBalance: Math.max(0, newBalance),
+  });
+});
+
+tg.patch('/ef', async (req: AuthenticatedRequest, res) => {
+  const userId = req.userId!;
+  const { targetMonths } = req.body;
+  if (!targetMonths || typeof targetMonths !== 'number' || targetMonths < 1 || targetMonths > 12) {
+    res.status(400).json({ error: 'targetMonths must be 1-12' });
+    return;
+  }
+  const ef = await prisma.emergencyFund.findUnique({ where: { userId } });
+  if (!ef) { res.status(404).json({ error: 'Emergency fund not found' }); return; }
+
+  const updated = await prisma.emergencyFund.update({
+    where: { id: ef.id },
+    data: { targetMonths },
+  });
+  res.json(updated);
 });
 
 // ── Incomes CRUD ─────────────────────────────────────────

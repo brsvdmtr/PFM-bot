@@ -79,27 +79,34 @@ export function buildDashboardView(inputs: FinanceDomainInputs): DashboardView {
     todayTotal,
   });
 
-  // ── 6. Cash anchor reality cap ────────────────────────────────────────────
-  // If user told us how much cash they actually have, that's a hard constraint.
-  // Budget can't exceed actual money on hand.
-  const cashOnHand = inputs.cashOnHand;
+  // ── 6. Savings budget adjustments ─────────────────────────────────────────
+  // Deposits from available budget → consume budget (positive adjustment).
+  // Withdrawals to available budget → release budget (negative adjustment).
+  const periodSavingsAdj = inputs.periodSavingsAdjustment ?? 0;
+  const todaySavingsAdj = inputs.todaySavingsAdjustment ?? 0;
+
+  const effectivePeriodSpent = totalPeriodSpent + periodSavingsAdj;
+  const effectiveTodaySpent = todayTotal + todaySavingsAdj;
+
   const daysLeft = daysLeftInPeriod(end, now, tz);
 
-  let periodRemaining = s2s.periodRemaining;
-  let s2sDaily = s2s.s2sDaily;
-  let s2sToday = s2s.s2sToday;
+  let periodRemaining = Math.max(0, s2s.s2sPeriod - effectivePeriodSpent);
+  let s2sDaily = daysLeft > 0 ? Math.max(0, Math.round(periodRemaining / daysLeft)) : 0;
+  let s2sToday = Math.max(0, s2sDaily - effectiveTodaySpent);
 
+  // ── 7. Cash anchor reality cap ──────────────────────────────────────────
+  const cashOnHand = inputs.cashOnHand;
   if (cashOnHand != null && cashOnHand >= 0 && cashOnHand < periodRemaining) {
     periodRemaining = cashOnHand;
     s2sDaily = daysLeft > 0 ? Math.max(0, Math.round(periodRemaining / daysLeft)) : 0;
-    s2sToday = Math.max(0, s2sDaily - todayTotal);
+    s2sToday = Math.max(0, s2sDaily - effectiveTodaySpent);
   }
 
   // ── 7. Status / color ─────────────────────────────────────────────────────
   let s2sStatus: DashboardView['s2sStatus'] = 'OK';
   if (s2s.s2sPeriod <= 0) {
     s2sStatus = 'DEFICIT';
-  } else if (todayTotal > s2sDaily) {
+  } else if (effectiveTodaySpent > s2sDaily) {
     s2sStatus = 'OVERSPENT';
   } else if (s2sDaily > 0 && s2sToday / s2sDaily <= 0.30) {
     s2sStatus = 'WARNING';
@@ -130,6 +137,8 @@ export function buildDashboardView(inputs: FinanceDomainInputs): DashboardView {
     avalanchePool:             s2s.avalanchePool,
     s2sPeriod:                 s2s.s2sPeriod,
     totalPeriodSpent,
+    periodSavingsAdjustment: periodSavingsAdj,
+    effectivePeriodSpent,
     periodRemaining,
     s2sDaily,
     s2sToday,

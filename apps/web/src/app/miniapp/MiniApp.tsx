@@ -47,6 +47,7 @@ type Screen =
   | 'history'
   | 'debts'
   | 'settings'
+  | 'emergency-fund-detail'
   | 'pro'
   | 'period-summary'
   | 'incomes'
@@ -260,9 +261,9 @@ function OnbProgress({ step, total = 5 }: { step: number; total?: number }) {
   );
 }
 
-function Card({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
+function Card({ children, style, onClick }: { children: React.ReactNode; style?: React.CSSProperties; onClick?: () => void }) {
   return (
-    <div style={{ background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 16, padding: '18px 16px', marginBottom: 12, ...style }}>
+    <div onClick={onClick} style={{ background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 16, padding: '18px 16px', marginBottom: 12, ...style }}>
       {children}
     </div>
   );
@@ -608,7 +609,7 @@ function OnbResult({ s2sDaily, currency, onDone }: { s2sDaily: number; currency:
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 
-function Dashboard({ data, onAddExpense, onOpenDebts, onOpenSummary, showSummaryBanner }: { data: DashboardData; onAddExpense: () => void; onOpenDebts: () => void; onOpenSummary?: () => void; showSummaryBanner?: boolean }) {
+function Dashboard({ data, onAddExpense, onOpenDebts, onOpenEF, onOpenSummary, showSummaryBanner }: { data: DashboardData; onAddExpense: () => void; onOpenDebts: () => void; onOpenEF?: () => void; onOpenSummary?: () => void; showSummaryBanner?: boolean }) {
   const color = s2sColor(data.s2sToday, data.s2sDaily);
   const mainColor = colorOf(color);
   const efPct = data.emergencyFund && data.emergencyFund.targetAmount > 0
@@ -707,9 +708,9 @@ function Dashboard({ data, onAddExpense, onOpenDebts, onOpenSummary, showSummary
         </button>
       </div>
 
-      {/* Emergency Fund */}
+      {/* Emergency Fund — tappable */}
       {data.emergencyFund && data.emergencyFund.targetAmount > 0 && (
-        <Card>
+        <Card style={{ cursor: 'pointer' }} onClick={onOpenEF}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
             <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>Подушка безопасности</span>
             <span style={{ fontSize: 13, color: C.textSec }}>{fmt(data.emergencyFund.currentAmount, data.currency)} / {fmt(data.emergencyFund.targetAmount, data.currency)}</span>
@@ -717,7 +718,7 @@ function Dashboard({ data, onAddExpense, onOpenDebts, onOpenSummary, showSummary
           <ProgressBar value={data.emergencyFund.currentAmount} max={data.emergencyFund.targetAmount} color={C.accent} />
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textTertiary, marginTop: 8 }}>
             <span>{efPct}%</span>
-            <span>цель: 3 мес. обязательных</span>
+            <span>цель: {data.emergencyFund.targetAmount > 0 ? `${Math.round(data.emergencyFund.targetAmount / Math.max(1, data.emergencyFund.targetAmount / (data.emergencyFund as any).targetMonths || 3))} мес.` : '—'}</span>
           </div>
         </Card>
       )}
@@ -927,6 +928,220 @@ function History({ api, currency, onRefresh }: { api: (path: string, opts?: Requ
           ))}
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── Emergency Fund Detail Screen ──────────────────────────────────────────────
+
+interface EFDetail {
+  currentAmount: number; targetAmount: number; targetMonths: number;
+  progressPct: number; remainingToTarget: number; periodNetSavings: number;
+  canAffectCurrentBudget: boolean; currency: string;
+}
+interface EFEntry {
+  id: string; type: string; amount: number; affectsCurrentBudget: boolean; note: string | null; createdAt: string;
+}
+
+function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, opts?: RequestInit) => Promise<any>; onBack: () => void; onRefresh: () => void }) {
+  const [ef, setEf] = useState<EFDetail | null>(null);
+  const [entries, setEntries] = useState<EFEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [mode, setMode] = useState<'view' | 'deposit' | 'withdraw' | 'edit-goal'>('view');
+  const [amount, setAmount] = useState('');
+  const [affectsBudget, setAffectsBudget] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [targetMonths, setTargetMonths] = useState(3);
+
+  const load = useCallback(async () => {
+    try {
+      const [d, e] = await Promise.all([api('/tg/ef'), api('/tg/ef/entries')]);
+      setEf(d);
+      setEntries(e.items || []);
+      if (d?.targetMonths) setTargetMonths(d.targetMonths);
+    } catch {}
+    setLoading(false);
+  }, [api]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleSubmit = async () => {
+    const n = parseFloat(amount);
+    if (isNaN(n) || n <= 0) { setError('Введите корректную сумму'); return; }
+    setSaving(true); setError('');
+    try {
+      await api('/tg/ef/entries', {
+        method: 'POST',
+        body: JSON.stringify({
+          type: mode === 'deposit' ? 'DEPOSIT' : 'WITHDRAWAL',
+          amount: Math.round(n * 100),
+          affectsCurrentBudget: affectsBudget,
+        }),
+      });
+      setAmount(''); setMode('view'); setAffectsBudget(true);
+      await Promise.all([load(), onRefresh()]);
+    } catch (err: any) {
+      setError(err?.message || 'Ошибка');
+    }
+    setSaving(false);
+  };
+
+  const handleSyncBalance = async () => {
+    const n = parseFloat(amount);
+    if (isNaN(n) || n < 0) { setError('Введите корректную сумму'); return; }
+    setSaving(true); setError('');
+    try {
+      await api('/tg/ef/entries', {
+        method: 'POST',
+        body: JSON.stringify({ type: 'BALANCE_SYNC', amount: Math.round(n * 100), affectsCurrentBudget: false }),
+      });
+      setAmount(''); setMode('view');
+      await Promise.all([load(), onRefresh()]);
+    } catch (err: any) { setError(err?.message || 'Ошибка'); }
+    setSaving(false);
+  };
+
+  const handleGoalSave = async () => {
+    setSaving(true); setError('');
+    try {
+      await api('/tg/ef', { method: 'PATCH', body: JSON.stringify({ targetMonths }) });
+      setMode('view');
+      await load();
+    } catch (err: any) { setError(err?.message || 'Ошибка'); }
+    setSaving(false);
+  };
+
+  const currency = ef?.currency ?? 'RUB';
+
+  if (loading) return <div style={{ background: C.bg, minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spinner /></div>;
+  if (!ef) return (
+    <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px' }}>
+      <button onClick={onBack} style={{ background: C.surface, border: 'none', borderRadius: 10, color: C.textSec, fontSize: 20, width: 40, height: 40, cursor: 'pointer', fontFamily: 'inherit', marginBottom: 20 }}>←</button>
+      <p style={{ color: C.textSec, textAlign: 'center', marginTop: 40 }}>Подушка безопасности не настроена</p>
+    </div>
+  );
+
+  return (
+    <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px', paddingBottom: 40 }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
+        <button onClick={onBack} style={{ background: C.surface, border: 'none', borderRadius: 10, color: C.textSec, fontSize: 20, width: 40, height: 40, cursor: 'pointer', fontFamily: 'inherit' }}>←</button>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, margin: 0 }}>Подушка безопасности</h2>
+      </div>
+
+      {/* Balance card */}
+      <Card style={{ background: 'linear-gradient(145deg, #1E1535, #1A1028)', border: '1px solid rgba(139,92,246,0.25)' }}>
+        <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 4 }}>Накоплено</p>
+        <p style={{ fontSize: 28, fontWeight: 800, color: C.text, marginBottom: 8 }}>{fmt(ef.currentAmount, currency)}</p>
+        <ProgressBar value={ef.currentAmount} max={Math.max(1, ef.targetAmount)} color={C.accent} />
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textTertiary, marginTop: 8 }}>
+          <span>{ef.progressPct}% от цели</span>
+          <span>Цель: {fmt(ef.targetAmount, currency)}</span>
+        </div>
+        {ef.remainingToTarget > 0 && (
+          <p style={{ fontSize: 12, color: C.textSec, marginTop: 6 }}>Осталось: {fmt(ef.remainingToTarget, currency)}</p>
+        )}
+        {ef.currentAmount >= ef.targetAmount && ef.targetAmount > 0 && (
+          <p style={{ fontSize: 13, color: C.green, fontWeight: 600, marginTop: 6 }}>Цель достигнута!</p>
+        )}
+      </Card>
+
+      {/* Action buttons */}
+      {mode === 'view' && (
+        <>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+            <PrimaryBtn onClick={() => { setMode('deposit'); setAmount(''); setError(''); }} style={{ flex: 1 }}>Пополнить</PrimaryBtn>
+            <button onClick={() => { setMode('withdraw'); setAmount(''); setError(''); }} style={{ flex: 1, padding: '13px 0', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>Вывести</button>
+          </div>
+          <button onClick={() => { setMode('edit-goal'); setError(''); }} style={{ width: '100%', padding: '12px 0', background: 'transparent', border: `1px dashed ${C.border}`, borderRadius: 10, color: C.accent, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer', marginBottom: 20 }}>
+            Изменить цель ({ef.targetMonths} мес.)
+          </button>
+        </>
+      )}
+
+      {/* Deposit / Withdraw form */}
+      {(mode === 'deposit' || mode === 'withdraw') && (
+        <Card>
+          <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 12 }}>
+            {mode === 'deposit' ? 'Пополнить подушку' : 'Вывести из подушки'}
+          </p>
+          <input
+            type="number" inputMode="decimal" value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            placeholder="Сумма ₽" autoFocus
+            style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 10, padding: '14px 16px', fontSize: 18, fontWeight: 700, color: C.text, fontFamily: 'inherit', outline: 'none', marginBottom: 12, boxSizing: 'border-box' }}
+          />
+
+          {/* Budget impact choice */}
+          <p style={{ fontSize: 12, color: C.textSec, marginBottom: 8 }}>Откуда деньги?</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
+            <button onClick={() => setAffectsBudget(true)} style={{ textAlign: 'left', padding: '12px 14px', background: affectsBudget ? C.accentBg : C.elevated, border: `1px solid ${affectsBudget ? C.accent : C.border}`, borderRadius: 10, color: affectsBudget ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>
+              {mode === 'deposit' ? '💰 Из доступных денег' : '💰 Вернуть в доступные'}
+              <span style={{ display: 'block', fontSize: 11, color: C.textTertiary, marginTop: 2 }}>
+                {mode === 'deposit' ? 'Уменьшит дневной лимит' : 'Увеличит дневной лимит'}
+              </span>
+            </button>
+            <button onClick={() => setAffectsBudget(false)} style={{ textAlign: 'left', padding: '12px 14px', background: !affectsBudget ? C.accentBg : C.elevated, border: `1px solid ${!affectsBudget ? C.accent : C.border}`, borderRadius: 10, color: !affectsBudget ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>
+              {mode === 'deposit' ? '📊 Уже лежит на счёте' : '📊 Просто исправляю баланс'}
+              <span style={{ display: 'block', fontSize: 11, color: C.textTertiary, marginTop: 2 }}>Не влияет на дневной лимит</span>
+            </button>
+          </div>
+
+          {error && <p style={{ fontSize: 13, color: C.red, marginBottom: 10 }}>⚠ {error}</p>}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <PrimaryBtn onClick={!affectsBudget && mode === 'deposit' ? handleSyncBalance : handleSubmit} disabled={saving || !amount} style={{ flex: 1 }}>
+              {saving ? '...' : 'Подтвердить'}
+            </PrimaryBtn>
+            <button onClick={() => { setMode('view'); setError(''); }} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>Отмена</button>
+          </div>
+        </Card>
+      )}
+
+      {/* Edit goal */}
+      {mode === 'edit-goal' && (
+        <Card>
+          <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 12 }}>Цель: сколько месяцев</p>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+            {[1, 2, 3, 4, 6].map((m) => (
+              <button key={m} onClick={() => setTargetMonths(m)} style={{ padding: '10px 18px', borderRadius: 24, background: targetMonths === m ? C.accentBgStrong : C.elevated, border: `1px solid ${targetMonths === m ? C.accent : C.border}`, color: targetMonths === m ? C.accentLight : C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>
+                {m} мес.
+              </button>
+            ))}
+          </div>
+          {error && <p style={{ fontSize: 13, color: C.red, marginBottom: 10 }}>⚠ {error}</p>}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <PrimaryBtn onClick={handleGoalSave} disabled={saving} style={{ flex: 1 }}>{saving ? '...' : 'Сохранить'}</PrimaryBtn>
+            <button onClick={() => { setMode('view'); setError(''); }} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>Отмена</button>
+          </div>
+        </Card>
+      )}
+
+      {/* History */}
+      {mode === 'view' && entries.length > 0 && (
+        <>
+          <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 10 }}>История операций</p>
+          {entries.map((e) => (
+            <Card key={e.id} style={{ padding: '12px 14px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <p style={{ fontSize: 13, color: C.text, fontWeight: 500 }}>
+                    {e.type === 'DEPOSIT' ? '↗ Пополнение' : e.type === 'WITHDRAWAL' ? '↙ Вывод' : '🔄 Синхронизация'}
+                  </p>
+                  <p style={{ fontSize: 11, color: C.textTertiary, marginTop: 2 }}>
+                    {new Date(e.createdAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}
+                    {e.affectsCurrentBudget && ' · из бюджета'}
+                    {e.note && ` · ${e.note}`}
+                  </p>
+                </div>
+                <span style={{ fontSize: 15, fontWeight: 600, color: e.type === 'DEPOSIT' ? C.green : e.type === 'WITHDRAWAL' ? C.red : C.textSec }}>
+                  {e.type === 'WITHDRAWAL' ? '−' : '+'}{fmt(e.amount, currency)}
+                </span>
+              </div>
+            </Card>
+          ))}
+        </>
+      )}
     </div>
   );
 }
@@ -2265,6 +2480,7 @@ export default function MiniApp() {
           data={dashboard}
           onAddExpense={() => setScreen('add-expense')}
           onOpenDebts={() => { setScreen('debts'); setNavTab('debts'); }}
+          onOpenEF={() => setScreen('emergency-fund-detail')}
           onOpenSummary={periodSummary ? () => setScreen('period-summary') : undefined}
           showSummaryBanner={showSummaryBanner}
         />
@@ -2274,6 +2490,7 @@ export default function MiniApp() {
       )}
       {screen === 'history' && <History api={api} currency={dashboard?.currency ?? 'RUB'} onRefresh={loadDashboard} />}
       {screen === 'debts' && <DebtsScreen api={api} currency={dashboard?.currency ?? 'RUB'} onRefresh={loadDashboard} />}
+      {screen === 'emergency-fund-detail' && <EmergencyFundScreen api={api} onBack={() => setScreen('dashboard')} onRefresh={loadDashboard} />}
       {screen === 'settings' && <Settings api={api} onOpenPro={() => setScreen('pro')} onOpenIncomes={() => setScreen('incomes')} onOpenObligations={() => setScreen('obligations')} onOpenPaydays={() => setScreen('paydays')} onRefresh={loadDashboard} />}
 
       <BottomNav

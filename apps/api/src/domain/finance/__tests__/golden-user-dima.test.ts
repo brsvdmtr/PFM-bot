@@ -142,6 +142,8 @@ function makeInputs(scenario: {
     todayTotal:        scenario.todayTotal,
     debtPaymentEvents: [...scenario.debtPaymentEvents],
     cashOnHand:        null,  // golden tests: no cash anchor cap
+    periodSavingsAdjustment: 0,
+    todaySavingsAdjustment: 0,
   };
 }
 
