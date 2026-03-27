@@ -1030,6 +1030,9 @@ tg.post('/debts/:id/payment', async (req: AuthenticatedRequest, res) => {
     }
   }
 
+  // Auto-recalculate active period
+  try { await triggerRecalculate(req.userId!); } catch { /* non-blocking */ }
+
   res.json({ ok: true, payment, newBalance });
 });
 

@@ -173,10 +173,11 @@ Each endpoint group is assigned a stability level:
 | `/tg/periods/current`, `/tg/periods/recalculate` | Stable |
 | `/tg/incomes` (CRUD) | Stable |
 | `/tg/obligations` (CRUD) | Stable |
-| `/tg/debts` (CRUD + payment) | Stable |
+| `/tg/debts` (CRUD + payment + payments) | Stable |
+| `/tg/debts/strategy` | Provisional |
 | `/tg/cash-anchor` | Provisional |
 | `/tg/billing/pro/checkout` | Provisional |
-| `/tg/debts/avalanche-plan` | Provisional |
+| `/tg/debts/avalanche-plan` | Provisional (legacy) |
 | `/tg/periods/last-completed` | Needs Verification — some edge cases (overspentDays calculation) not fully confirmed |
 | `/internal/*` | Stable |
 
@@ -1115,11 +1116,21 @@ Creates a new debt. If no focus debt currently exists, the new debt becomes the 
 
 See [PATCH Semantics](#6-patch-semantics) for allowed/forbidden fields. `isFocusDebt` cannot be set via PATCH.
 
-Does NOT trigger period recalculation. Call `POST /tg/periods/recalculate` manually afterward if needed.
+**Server-side validation:**
+- `balance` must be > 0
+- `apr` must be 0..1
+- `minPayment` must be >= 0
+- `dueDay` must be 1..31 or null
+- `title` is trimmed
+
+**Side effects:**
+- If `apr` or `balance` changed: focus debt is reassigned by avalanche priority (max APR, tie-break smaller balance)
+- Triggers `rebuildActivePeriodSnapshot` (period recalculation)
 
 **Response 200:** Updated `Debt`
 
 **Errors:**
+- `400` — validation failed
 - `404`
 
 ---
@@ -1129,7 +1140,7 @@ Does NOT trigger period recalculation. Call `POST /tg/periods/recalculate` manua
 **Stability:** Stable
 **Auth:** x-tg-init-data
 
-Deletes the debt. If the deleted debt was the focus debt, focus is reassigned to the next highest-APR non-paid-off debt.
+Deletes the debt. If the deleted debt was the focus debt, focus is reassigned to the next highest-APR non-paid-off debt. Triggers period recalculation.
 
 **Response 200:** `{"ok": true}`
 
@@ -1138,12 +1149,14 @@ Deletes the debt. If the deleted debt was the focus debt, focus is reassigned to
 
 ---
 
-### POST /tg/debts/:id/payment
+### POST /tg/debts/:id/payment (legacy)
 
-**Stability:** Stable
+**Stability:** Stable (legacy-compatible)
 **Auth:** x-tg-init-data
 
-Records a payment on a debt. Reduces `balance` by `amount`. If the new balance reaches 0, sets `isPaidOff: true`, `isFocusDebt: false`, and reassigns focus to the next debt.
+Simple payment on a debt. Reduces `balance` by `amount`. If balance reaches 0: `isPaidOff: true`, `isFocusDebt: false`, focus reassigned. Triggers period recalculation.
+
+Does NOT create a `DebtPaymentEvent` record. For new integrations prefer `POST /tg/debts/:debtId/payments` (canonical).
 
 **Request body:**
 
@@ -1169,6 +1182,45 @@ Records a payment on a debt. Reduces `balance` by `amount`. If the new balance r
 
 **Errors:**
 - `404` — debt not found or not owned by user
+
+---
+
+### POST /tg/debts/:debtId/payments (canonical)
+
+**Stability:** Stable
+**Auth:** x-tg-init-data
+
+Canonical payment endpoint. Creates a `DebtPaymentEvent` record for audit trail. For `EXTRA_PRINCIPAL_PAYMENT`: also reduces debt balance (full payoff triggers `isPaidOff`, focus reassignment). Triggers period recalculation.
+
+Mini App uses this endpoint for both required minimum payments and extra principal payments.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `amountMinor` | Int (kopecks) | Yes | Must be > 0 |
+| `kind` | string | No | `REQUIRED_MIN_PAYMENT` (default) or `EXTRA_PRINCIPAL_PAYMENT` |
+| `note` | string | No | Optional comment |
+| `paymentDate` | string (ISO 8601) | No | Defaults to now |
+
+**Response 201:** `DebtPaymentEvent` object
+
+**Errors:**
+- `400` — invalid amountMinor, invalid kind, no active period
+- `404` — debt not found
+
+---
+
+### GET /tg/debts/strategy
+
+**Stability:** Provisional
+**Auth:** x-tg-init-data
+
+Returns actionable debt strategy with correct payoff forecasts for all active debts. Uses exact `avalanchePool` derived from current period snapshot (not approximate proxy). Shows acceleration scenarios for focus debt.
+
+For debts where payoff forecast is invalid (payment too small, undefined horizon), returns honest status instead of fake months.
+
+**Response 200:** `DebtStrategy` object (see types below)
 
 ---
 
@@ -1359,7 +1411,7 @@ Behavior:
 | ID | Route | Caveat |
 |----|-------|--------|
 | KC-001 | `GET /tg/expenses` | Scoped to active period if one exists. Returns all expenses if no active period. All-time history across multiple periods is not exposed. |
-| KC-002 | `PATCH /tg/debts/:id`, `POST /tg/debts/:id/payment`, `DELETE /tg/debts/:id` | Auto-triggers period recalculation as of v2 (2026-03-20). Manual call to `POST /tg/periods/recalculate` is no longer required after debt mutations. |
+| KC-002 | `PATCH /tg/debts/:id`, `POST /tg/debts/:id/payment`, `POST /tg/debts/:debtId/payments`, `DELETE /tg/debts/:id` | All debt mutations auto-trigger `rebuildActivePeriodSnapshot`. PATCH also reassigns focus debt if APR or balance changed. Manual call to `POST /tg/periods/recalculate` is no longer required after debt mutations. |
 | KC-003 | `PATCH /tg/incomes/:id` | Does NOT trigger period recalculation. Call `POST /tg/periods/recalculate` manually after changes that affect S2S. |
 | KC-004 | `POST /tg/onboarding/income` | Replace semantics — deletes ALL existing incomes first. Not an append operation. |
 | KC-005 | `POST /tg/onboarding/complete` | Closes any existing ACTIVE period before creating the new one. The old period is marked COMPLETED. |
