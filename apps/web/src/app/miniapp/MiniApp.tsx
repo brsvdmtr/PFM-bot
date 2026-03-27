@@ -936,29 +936,54 @@ function History({ api, currency, onRefresh }: { api: (path: string, opts?: Requ
 
 interface EFDetail {
   currentAmount: number; targetAmount: number; targetMonths: number;
-  progressPct: number; remainingToTarget: number; periodNetSavings: number;
+  targetMode: string; baseMonthlyAmount: number | null;
+  progressPct: number; remainingToTarget: number;
+  feasibility: string | null;
   canAffectCurrentBudget: boolean; currency: string;
 }
+interface EFBucket {
+  id: string; name: string; type: string; currency: string; currentAmount: number;
+  countsTowardEmergencyFund: boolean; isArchived: boolean;
+}
+interface EFScenario {
+  pace: string; contributionAmount: number; frequency: string;
+  projectedMonthsToTarget: number | null; projectedTargetDate: string | null;
+  loadPctOfFreeCashflow: number | null; status: string;
+}
+interface EFPlanData {
+  targetAmount: number; currentAmount: number; remainingGap: number; monthlyFreeCashflow: number;
+  feasibility: string | null; scenarios: EFScenario[]; message: string | null;
+  requiredContribution: { frequency: string; amount: number } | null;
+}
 interface EFEntry {
-  id: string; type: string; amount: number; affectsCurrentBudget: boolean; note: string | null; createdAt: string;
+  id: string; bucketId: string | null; bucketName: string | null;
+  type: string; amount: number; affectsCurrentBudget: boolean; note: string | null; createdAt: string;
 }
 
 function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, opts?: RequestInit) => Promise<any>; onBack: () => void; onRefresh: () => void }) {
   const [ef, setEf] = useState<EFDetail | null>(null);
+  const [buckets, setBuckets] = useState<EFBucket[]>([]);
+  const [planData, setPlanData] = useState<EFPlanData | null>(null);
   const [entries, setEntries] = useState<EFEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [mode, setMode] = useState<'view' | 'deposit' | 'withdraw' | 'edit-goal'>('view');
+  const [mode, setMode] = useState<'view' | 'deposit' | 'withdraw' | 'edit-goal' | 'add-bucket'>('view');
+  const [selectedBucket, setSelectedBucket] = useState<EFBucket | null>(null);
   const [amount, setAmount] = useState('');
   const [affectsBudget, setAffectsBudget] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [targetMonths, setTargetMonths] = useState(3);
+  const [newBucket, setNewBucket] = useState({ name: '', type: 'SAVINGS_ACCOUNT', amount: '', countsForEF: true });
 
   const load = useCallback(async () => {
     try {
-      const [d, e] = await Promise.all([api('/tg/ef'), api('/tg/ef/entries')]);
+      const [d, b, p, e] = await Promise.all([
+        api('/tg/ef'), api('/tg/ef/buckets'), api('/tg/ef/plan').catch(() => null), api('/tg/ef/entries'),
+      ]);
       setEf(d);
-      setEntries(e.items || []);
+      setBuckets(b?.items || []);
+      setPlanData(p);
+      setEntries(e?.items || []);
       if (d?.targetMonths) setTargetMonths(d.targetMonths);
     } catch {}
     setLoading(false);
@@ -974,12 +999,13 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
       await api('/tg/ef/entries', {
         method: 'POST',
         body: JSON.stringify({
+          bucketId: selectedBucket?.id ?? undefined,
           type: mode === 'deposit' ? 'DEPOSIT' : 'WITHDRAWAL',
           amount: Math.round(n * 100),
           affectsCurrentBudget: affectsBudget,
         }),
       });
-      setAmount(''); setMode('view'); setAffectsBudget(true);
+      setAmount(''); setMode('view'); setAffectsBudget(true); setSelectedBucket(null);
       await Promise.all([load(), onRefresh()]);
     } catch (err: any) {
       setError(err?.message || 'Ошибка');
@@ -1011,6 +1037,33 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
     } catch (err: any) { setError(err?.message || 'Ошибка'); }
     setSaving(false);
   };
+
+  const handleAddBucket = async () => {
+    if (!newBucket.name.trim()) { setError('Укажите название'); return; }
+    setSaving(true); setError('');
+    try {
+      await api('/tg/ef/buckets', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: newBucket.name.trim(),
+          type: newBucket.type,
+          currentAmount: Math.round((parseFloat(newBucket.amount) || 0) * 100),
+          countsTowardEmergencyFund: newBucket.countsForEF,
+        }),
+      });
+      setNewBucket({ name: '', type: 'SAVINGS_ACCOUNT', amount: '', countsForEF: true });
+      setMode('view');
+      await Promise.all([load(), onRefresh()]);
+    } catch (err: any) { setError(err?.message || 'Ошибка'); }
+    setSaving(false);
+  };
+
+  const bucketTypes = [
+    { v: 'SAVINGS_ACCOUNT', l: 'Накопительный счёт' }, { v: 'DEPOSIT', l: 'Вклад' },
+    { v: 'CASH', l: 'Наличные' }, { v: 'CRYPTO', l: 'Крипта' },
+    { v: 'BROKERAGE', l: 'Брокерский счёт' }, { v: 'OTHER', l: 'Другое' },
+  ];
+  const bucketTypeLabel = (t: string) => bucketTypes.find((bt) => bt.v === t)?.l ?? t;
 
   const currency = ef?.currency ?? 'RUB';
 
@@ -1117,16 +1170,110 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
         </Card>
       )}
 
+      {/* Add bucket form */}
+      {mode === 'add-bucket' && (
+        <Card>
+          <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 12 }}>Новое накопление</p>
+          <input value={newBucket.name} onChange={(e) => setNewBucket({ ...newBucket, name: e.target.value })} placeholder="Название (напр. Вклад Тинькофф)" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
+          <select value={newBucket.type} onChange={(e) => setNewBucket({ ...newBucket, type: e.target.value })} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.textSec, fontSize: 13, fontFamily: 'inherit', marginBottom: 10, outline: 'none' }}>
+            {bucketTypes.map((t) => <option key={t.v} value={t.v}>{t.l}</option>)}
+          </select>
+          <input type="number" value={newBucket.amount} onChange={(e) => setNewBucket({ ...newBucket, amount: e.target.value })} placeholder="Текущий баланс ₽" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
+          {newBucket.type === 'CRYPTO' && (
+            <p style={{ fontSize: 11, color: C.orange, marginBottom: 10, padding: '8px 12px', background: `${C.orange}15`, borderRadius: 8 }}>
+              Крипта волатильна и по умолчанию не считается надёжной частью подушки
+            </p>
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+            <span style={{ fontSize: 13, color: C.text }}>Учитывать в подушке</span>
+            <div onClick={() => setNewBucket({ ...newBucket, countsForEF: !newBucket.countsForEF })} style={{ width: 40, height: 24, background: newBucket.countsForEF ? C.accent : C.elevated, border: `1px solid ${C.border}`, borderRadius: 12, position: 'relative', cursor: 'pointer', transition: 'background 0.2s', flexShrink: 0 }}>
+              <div style={{ width: 20, height: 20, background: '#fff', borderRadius: '50%', position: 'absolute', top: 1, left: newBucket.countsForEF ? 18 : 1, transition: 'left 0.2s' }} />
+            </div>
+          </div>
+          {error && <p style={{ fontSize: 13, color: C.red, marginBottom: 10 }}>⚠ {error}</p>}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <PrimaryBtn onClick={handleAddBucket} disabled={saving || !newBucket.name.trim()} style={{ flex: 1 }}>{saving ? '...' : 'Добавить'}</PrimaryBtn>
+            <button onClick={() => { setMode('view'); setError(''); }} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>Отмена</button>
+          </div>
+        </Card>
+      )}
+
+      {/* Buckets list */}
+      {mode === 'view' && buckets.filter((b) => !b.isArchived).length > 0 && (
+        <>
+          <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 10 }}>Где лежат деньги</p>
+          {buckets.filter((b) => !b.isArchived).map((b) => (
+            <Card key={b.id} style={{ padding: '12px 14px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <p style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{b.name}</p>
+                  <p style={{ fontSize: 11, color: C.textTertiary, marginTop: 2 }}>
+                    {bucketTypeLabel(b.type)}
+                    {b.countsTowardEmergencyFund ? ' · в подушке' : ' · не в подушке'}
+                  </p>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 15, fontWeight: 600, color: C.text }}>{fmt(b.currentAmount, currency)}</span>
+                  <button onClick={() => { setSelectedBucket(b); setMode('deposit'); setAmount(''); setError(''); }} style={{ background: C.accentBg, border: 'none', borderRadius: 6, padding: '4px 8px', color: C.accentLight, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>+</button>
+                </div>
+              </div>
+            </Card>
+          ))}
+          <button onClick={() => { setMode('add-bucket'); setError(''); setNewBucket({ name: '', type: 'SAVINGS_ACCOUNT', amount: '', countsForEF: true }); }} style={{ width: '100%', padding: '12px 0', background: 'transparent', border: `1px dashed ${C.border}`, borderRadius: 10, color: C.accent, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer', marginBottom: 16 }}>
+            + Добавить накопление
+          </button>
+        </>
+      )}
+
+      {/* No buckets yet — CTA */}
+      {mode === 'view' && buckets.filter((b) => !b.isArchived).length === 0 && (
+        <button onClick={() => { setMode('add-bucket'); setError(''); setNewBucket({ name: '', type: 'SAVINGS_ACCOUNT', amount: '', countsForEF: true }); }} style={{ width: '100%', padding: '16px 0', background: 'transparent', border: `1px dashed ${C.border}`, borderRadius: 10, color: C.accent, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer', marginBottom: 16 }}>
+          + Добавить накопление
+        </button>
+      )}
+
+      {/* Plan scenarios */}
+      {mode === 'view' && planData && planData.scenarios.length > 0 && (
+        <>
+          <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 6 }}>План достижения цели</p>
+          {planData.feasibility && (
+            <p style={{ fontSize: 12, marginBottom: 10, color: planData.feasibility === 'REALISTIC' ? C.green : planData.feasibility === 'TIGHT' ? C.orange : C.red }}>
+              {planData.feasibility === 'REALISTIC' ? 'Цель достижима' : planData.feasibility === 'TIGHT' ? 'Напряжённо, но возможно' : 'Цель недостижима в выбранный срок'}
+            </p>
+          )}
+          {planData.message && <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 10 }}>{planData.message}</p>}
+          <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 10 }}>Свободный поток: {fmt(planData.monthlyFreeCashflow, currency)}/мес</p>
+          {planData.scenarios.map((sc) => (
+            <Card key={sc.pace} style={{ padding: '12px 14px', borderLeft: sc.status === 'RECOMMENDED' ? `3px solid ${C.accent}` : undefined }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
+                  {sc.pace === 'GENTLE' ? 'Щадящий' : sc.pace === 'OPTIMAL' ? 'Оптимальный' : 'Агрессивный'}
+                </span>
+                {sc.status === 'RECOMMENDED' && <span style={{ fontSize: 10, background: C.accentBg, color: C.accentLight, padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>Рекомендуем</span>}
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textSec }}>
+                <span>{fmt(sc.contributionAmount, currency)}/{sc.frequency === 'WEEKLY' ? 'нед' : sc.frequency === 'BIWEEKLY' ? '2 нед' : 'мес'}</span>
+                <span>{sc.projectedMonthsToTarget != null ? `~${sc.projectedMonthsToTarget} мес.` : 'Не определён'}</span>
+              </div>
+              {sc.loadPctOfFreeCashflow != null && (
+                <p style={{ fontSize: 11, color: C.textTertiary, marginTop: 4 }}>{sc.loadPctOfFreeCashflow}% от свободного потока</p>
+              )}
+            </Card>
+          ))}
+        </>
+      )}
+
       {/* History */}
       {mode === 'view' && entries.length > 0 && (
         <>
-          <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 10 }}>История операций</p>
+          <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 10, marginTop: 8 }}>История операций</p>
           {entries.map((e) => (
             <Card key={e.id} style={{ padding: '12px 14px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
                   <p style={{ fontSize: 13, color: C.text, fontWeight: 500 }}>
                     {e.type === 'DEPOSIT' ? '↗ Пополнение' : e.type === 'WITHDRAWAL' ? '↙ Вывод' : '🔄 Синхронизация'}
+                    {e.bucketName && ` · ${e.bucketName}`}
                   </p>
                   <p style={{ fontSize: 11, color: C.textTertiary, marginTop: 2 }}>
                     {new Date(e.createdAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}
