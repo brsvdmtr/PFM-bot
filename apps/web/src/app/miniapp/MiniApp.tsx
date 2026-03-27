@@ -980,6 +980,9 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
   const [error, setError] = useState('');
   const [targetMonths, setTargetMonths] = useState(3);
   const [newBucket, setNewBucket] = useState({ name: '', type: 'SAVINGS_ACCOUNT', amount: '', countsForEF: true });
+  const [customMode, setCustomMode] = useState(false);
+  const [customAmount, setCustomAmount] = useState('');
+  const [customFreq, setCustomFreq] = useState<'MONTHLY' | 'BIWEEKLY' | 'WEEKLY'>('MONTHLY');
 
   const load = useCallback(async () => {
     try {
@@ -1090,10 +1093,6 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
       await load();
     } catch {}
   };
-
-  const [customMode, setCustomMode] = useState(false);
-  const [customAmount, setCustomAmount] = useState('');
-  const [customFreq, setCustomFreq] = useState<'MONTHLY' | 'BIWEEKLY' | 'WEEKLY'>('MONTHLY');
 
   const handleSaveCustomPlan = async () => {
     const n = parseFloat(customAmount);
