@@ -921,12 +921,40 @@ tg.patch('/debts/:id', async (req: AuthenticatedRequest, res) => {
   const userId = req.userId!;
   const debt = await prisma.debt.findFirst({ where: { id, userId } });
   if (!debt) { res.status(404).json({ error: 'Not found' }); return; }
+
+  // Validation
+  if ('balance' in req.body && (typeof req.body.balance !== 'number' || req.body.balance <= 0)) {
+    res.status(400).json({ error: 'balance must be a positive number' }); return;
+  }
+  if ('apr' in req.body && (typeof req.body.apr !== 'number' || req.body.apr < 0 || req.body.apr > 1)) {
+    res.status(400).json({ error: 'apr must be between 0 and 1' }); return;
+  }
+  if ('minPayment' in req.body && (typeof req.body.minPayment !== 'number' || req.body.minPayment < 0)) {
+    res.status(400).json({ error: 'minPayment must be >= 0' }); return;
+  }
+  if ('dueDay' in req.body && req.body.dueDay !== null && (typeof req.body.dueDay !== 'number' || req.body.dueDay < 1 || req.body.dueDay > 31)) {
+    res.status(400).json({ error: 'dueDay must be 1-31 or null' }); return;
+  }
+  if ('title' in req.body) req.body.title = String(req.body.title).trim();
+
   const allowed = ['title', 'type', 'balance', 'apr', 'minPayment', 'dueDay'];
   const data: Record<string, any> = {};
   for (const key of allowed) {
     if (key in req.body) data[key] = req.body[key];
   }
   const updated = await prisma.debt.update({ where: { id }, data });
+
+  // Reassign focus debt if APR or balance changed (avalanche priority may shift)
+  if ('apr' in req.body || 'balance' in req.body) {
+    const allActive = await prisma.debt.findMany({ where: { userId, isPaidOff: false }, orderBy: { apr: 'desc' } });
+    if (allActive.length > 0) {
+      const focusId = determineFocusDebt(allActive.map((d) => ({ id: d.id, title: d.title, balance: d.balance, apr: d.apr, minPayment: d.minPayment, type: d.type })));
+      if (focusId) {
+        await prisma.debt.updateMany({ where: { userId }, data: { isFocusDebt: false } });
+        await prisma.debt.update({ where: { id: focusId }, data: { isFocusDebt: true } });
+      }
+    }
+  }
 
   // Auto-recalculate active period
   try {

@@ -934,6 +934,19 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
   const [paymentSaving, setPaymentSaving] = useState(false);
   const [paymentError, setPaymentError] = useState('');
 
+  // Edit debt state
+  const [editDebt, setEditDebt] = useState<Debt | null>(null);
+  const [editForm, setEditForm] = useState({ title: '', type: 'CREDIT_CARD', balance: '', apr: '', minPayment: '', dueDay: '' });
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState('');
+  // Extra payment state
+  const [extraDebt, setExtraDebt] = useState<Debt | null>(null);
+  const [extraAmount, setExtraAmount] = useState('');
+  const [extraSaving, setExtraSaving] = useState(false);
+  const [extraError, setExtraError] = useState('');
+  // Toast
+  const [toast, setToast] = useState('');
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -1003,6 +1016,85 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
     setPaymentSaving(false);
   };
 
+  const openEdit = (d: Debt) => {
+    setEditDebt(d);
+    setEditForm({
+      title: d.title,
+      type: d.type,
+      balance: String(d.balance / 100),
+      apr: String(+(d.apr * 100).toFixed(2)),
+      minPayment: String(d.minPayment / 100),
+      dueDay: d.dueDay ? String(d.dueDay) : '',
+    });
+    setEditError('');
+  };
+
+  const handleEdit = async () => {
+    if (!editDebt) return;
+    setEditError('');
+    const balanceRub = parseFloat(editForm.balance);
+    if (isNaN(balanceRub) || balanceRub <= 0) { setEditError('Укажите корректный остаток'); return; }
+    if (balanceRub > 21_474_836) { setEditError('Максимальный остаток 21 474 836 ₽'); return; }
+    const aprPct = parseFloat(editForm.apr || '0');
+    if (isNaN(aprPct) || aprPct < 0 || aprPct > 100) { setEditError('Ставка от 0 до 100%'); return; }
+    const minPay = parseFloat(editForm.minPayment);
+    if (isNaN(minPay) || minPay < 0) { setEditError('Мин. платёж не может быть отрицательным'); return; }
+    const dueDay = editForm.dueDay ? parseInt(editForm.dueDay) : null;
+    if (dueDay !== null && (isNaN(dueDay) || dueDay < 1 || dueDay > 31)) { setEditError('День платежа от 1 до 31'); return; }
+
+    setEditSaving(true);
+    try {
+      await api(`/tg/debts/${editDebt.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          title: editForm.title.trim(),
+          type: editForm.type,
+          balance: Math.round(balanceRub * 100),
+          apr: aprPct / 100,
+          minPayment: Math.round(minPay * 100),
+          dueDay,
+        }),
+      });
+      setEditDebt(null);
+      setToast('Кредит обновлён');
+      setTimeout(() => setToast(''), 2500);
+      await Promise.all([load(), onRefresh()]);
+    } catch (err: any) {
+      setEditError(err?.message || 'Ошибка сохранения');
+    }
+    setEditSaving(false);
+  };
+
+  const openExtraPayment = (d: Debt) => {
+    setExtraDebt(d);
+    setExtraAmount('');
+    setExtraError('');
+  };
+
+  const handleExtraPayment = async () => {
+    if (!extraDebt) return;
+    setExtraError('');
+    const amountRub = parseFloat(extraAmount);
+    if (isNaN(amountRub) || amountRub <= 0) { setExtraError('Укажите корректную сумму'); return; }
+    const amountMinor = Math.round(amountRub * 100);
+    if (amountMinor > extraDebt.balance) { setExtraError('Сумма не может быть больше остатка'); return; }
+
+    setExtraSaving(true);
+    try {
+      await api(`/tg/debts/${extraDebt.id}/payments`, {
+        method: 'POST',
+        body: JSON.stringify({ amountMinor, kind: 'EXTRA_PRINCIPAL_PAYMENT' }),
+      });
+      setExtraDebt(null);
+      setToast(amountMinor === extraDebt.balance ? 'Долг полностью погашен!' : 'Досрочное погашение учтено');
+      setTimeout(() => setToast(''), 2500);
+      await Promise.all([load(), onRefresh()]);
+    } catch (err: any) {
+      setExtraError(err?.message || 'Ошибка сохранения');
+    }
+    setExtraSaving(false);
+  };
+
   const paymentBadge = (status: 'PAID' | 'PARTIAL' | 'UNPAID') => {
     if (status === 'PAID')    return { label: 'Оплачен ✓',   color: C.green,  bg: C.greenBg };
     if (status === 'PARTIAL') return { label: 'Частично',    color: C.orange, bg: C.orangeBg };
@@ -1065,10 +1157,11 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
                     {d.isFocusDebt && <span style={{ width: 8, height: 8, borderRadius: '50%', background: C.accent, display: 'inline-block', boxShadow: `0 0 8px ${C.accentGlow}` }} />}
                     {d.title}
                   </p>
-                  <p style={{ fontSize: 12, color: C.textTertiary }}>{debtTypeLabel(d.type)} · APR {(d.apr * 100).toFixed(1)}%</p>
+                  <p style={{ fontSize: 12, color: C.textTertiary }}>{debtTypeLabel(d.type)} · Ставка {(d.apr * 100).toFixed(1)}%</p>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   {d.isFocusDebt && <span style={{ fontSize: 10, background: C.accentBg, color: C.accentLight, padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>ФОКУС</span>}
+                  <button onClick={() => openEdit(d)} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: '4px 8px', color: C.textSec, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>✎</button>
                   <button onClick={() => handleDelete(d.id)} style={{ background: C.redBg, border: 'none', borderRadius: 6, padding: '4px 8px', color: C.red, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>✕</button>
                 </div>
               </div>
@@ -1145,13 +1238,16 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
                       onClick={() => { setPaymentModal({ debt: d, kind: 'REQUIRED_MIN_PAYMENT' }); setPaymentAmount(''); setPaymentNote(''); setPaymentError(''); }}
                       style={{ flex: 1, padding: '8px 0', background: C.accentBg, border: `1px solid ${C.accent}40`, borderRadius: 8, color: C.accentLight, fontSize: 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}
                     >Внести платёж</button>
-                    <button
-                      onClick={() => { setPaymentModal({ debt: d, kind: 'EXTRA_PRINCIPAL_PAYMENT' }); setPaymentAmount(''); setPaymentNote(''); setPaymentError(''); }}
-                      style={{ flex: 1, padding: '8px 0', background: C.greenBg, border: `1px solid ${C.green}40`, borderRadius: 8, color: C.green, fontSize: 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}
-                    >Досрочное погашение</button>
                   </div>
                 </div>
               )}
+
+              {/* Action: Extra payment */}
+              <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderSubtle}`, display: 'flex', gap: 8 }}>
+                <button onClick={() => openExtraPayment(d)} style={{ flex: 1, padding: '8px 0', background: C.greenBg, border: `1px solid ${C.green}40`, borderRadius: 8, color: C.green, fontSize: 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}>
+                  Досрочное погашение
+                </button>
+              </div>
             </Card>
           ))}
         </>
@@ -1200,16 +1296,14 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
         </button>
       )}
 
-      {/* Payment modal */}
+      {/* Payment modal (required min) */}
       {paymentModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'flex-end', zIndex: 200 }}>
           <div style={{ background: C.bgSecondary, borderRadius: '20px 20px 0 0', width: '100%', padding: '24px 20px 40px', boxSizing: 'border-box' }}>
-            <p style={{ fontSize: 17, fontWeight: 700, color: C.text, marginBottom: 4 }}>
-              {paymentModal.kind === 'REQUIRED_MIN_PAYMENT' ? 'Внести платёж' : 'Досрочное погашение'}
-            </p>
+            <p style={{ fontSize: 17, fontWeight: 700, color: C.text, marginBottom: 4 }}>Внести платёж</p>
             <p style={{ fontSize: 13, color: C.textTertiary, marginBottom: 16 }}>{paymentModal.debt.title}</p>
 
-            {paymentModal.kind === 'REQUIRED_MIN_PAYMENT' && paymentModal.debt.currentPeriodPayment && paymentModal.debt.currentPeriodPayment.remaining > 0 && (
+            {paymentModal.debt.currentPeriodPayment && paymentModal.debt.currentPeriodPayment.remaining > 0 && (
               <div style={{ background: C.accentBg, border: `1px solid ${C.accent}30`, borderRadius: 10, padding: '10px 14px', marginBottom: 14 }}>
                 <p style={{ fontSize: 13, color: C.accentLight }}>
                   Осталось оплатить: <strong>{fmt(paymentModal.debt.currentPeriodPayment.remaining, currency)}</strong>
@@ -1217,28 +1311,97 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
               </div>
             )}
 
-            <input
-              type="number" inputMode="decimal"
-              value={paymentAmount}
-              onChange={(e) => setPaymentAmount(e.target.value)}
-              placeholder="Сумма ₽"
-              autoFocus
-              style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: '14px 16px', fontSize: 20, fontWeight: 700, color: C.text, fontFamily: 'inherit', outline: 'none', marginBottom: 10, boxSizing: 'border-box' }}
-            />
-            <input
-              value={paymentNote}
-              onChange={(e) => setPaymentNote(e.target.value)}
-              placeholder="Комментарий (необязательно)"
-              style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: '12px 16px', fontSize: 14, color: C.text, fontFamily: 'inherit', outline: 'none', marginBottom: 14, boxSizing: 'border-box' }}
-            />
+            <input type="number" inputMode="decimal" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} placeholder="Сумма ₽" autoFocus
+              style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: '14px 16px', fontSize: 20, fontWeight: 700, color: C.text, fontFamily: 'inherit', outline: 'none', marginBottom: 10, boxSizing: 'border-box' }} />
+            <input value={paymentNote} onChange={(e) => setPaymentNote(e.target.value)} placeholder="Комментарий (необязательно)"
+              style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: '12px 16px', fontSize: 14, color: C.text, fontFamily: 'inherit', outline: 'none', marginBottom: 14, boxSizing: 'border-box' }} />
             {paymentError && <p style={{ fontSize: 13, color: C.red, marginBottom: 10 }}>⚠ {paymentError}</p>}
             <div style={{ display: 'flex', gap: 8 }}>
-              <PrimaryBtn onClick={handlePayment} disabled={paymentSaving} style={{ flex: 1 }}>
-                {paymentSaving ? '...' : 'Подтвердить'}
-              </PrimaryBtn>
+              <PrimaryBtn onClick={handlePayment} disabled={paymentSaving} style={{ flex: 1 }}>{paymentSaving ? '...' : 'Подтвердить'}</PrimaryBtn>
               <button onClick={() => { setPaymentModal(null); setPaymentError(''); }} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>Отмена</button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Extra payment modal */}
+      {extraDebt && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'flex-end', zIndex: 200 }}>
+          <div style={{ background: C.bgSecondary, borderRadius: '20px 20px 0 0', width: '100%', padding: '24px 20px 40px', boxSizing: 'border-box' }}>
+            <p style={{ fontSize: 17, fontWeight: 700, color: C.text, marginBottom: 4 }}>Досрочное погашение</p>
+            <p style={{ fontSize: 13, color: C.textTertiary, marginBottom: 6 }}>{extraDebt.title}</p>
+            <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 16 }}>Остаток: {fmt(extraDebt.balance, currency)}</p>
+
+            <input type="number" inputMode="decimal" value={extraAmount} onChange={(e) => setExtraAmount(e.target.value)} placeholder="Сумма досрочного погашения ₽" autoFocus
+              style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: '14px 16px', fontSize: 20, fontWeight: 700, color: C.text, fontFamily: 'inherit', outline: 'none', marginBottom: 10, boxSizing: 'border-box' }} />
+
+            <button onClick={() => setExtraAmount(String(extraDebt.balance / 100))}
+              style={{ width: '100%', padding: '10px 0', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, color: C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer', marginBottom: 14 }}>
+              Погасить полностью — {fmt(extraDebt.balance, currency)}
+            </button>
+
+            {extraError && <p style={{ fontSize: 13, color: C.red, marginBottom: 10 }}>⚠ {extraError}</p>}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <PrimaryBtn onClick={handleExtraPayment} disabled={extraSaving} style={{ flex: 1 }}>{extraSaving ? '...' : 'Подтвердить'}</PrimaryBtn>
+              <button onClick={() => setExtraDebt(null)} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>Отмена</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit debt modal */}
+      {editDebt && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'flex-end', zIndex: 200 }}>
+          <div style={{ background: C.bgSecondary, borderRadius: '20px 20px 0 0', width: '100%', padding: '24px 20px 40px', boxSizing: 'border-box', maxHeight: '85vh', overflowY: 'auto' }}>
+            <p style={{ fontSize: 17, fontWeight: 700, color: C.text, marginBottom: 16 }}>Редактировать долг</p>
+
+            <input value={editForm.title} onChange={(e) => setEditForm({ ...editForm, title: e.target.value })} placeholder="Название"
+              style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', marginBottom: 8, boxSizing: 'border-box' }} />
+
+            <select value={editForm.type} onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}
+              style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px', color: C.textSec, fontSize: 13, fontFamily: 'inherit', outline: 'none', marginBottom: 8 }}>
+              {types.map((t) => <option key={t.v} value={t.v}>{t.l}</option>)}
+            </select>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+              <div>
+                <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 4 }}>Остаток, ₽</p>
+                <input type="number" inputMode="decimal" value={editForm.balance} onChange={(e) => setEditForm({ ...editForm, balance: e.target.value })}
+                  style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
+              </div>
+              <div>
+                <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 4 }}>Ставка, %</p>
+                <input type="number" inputMode="decimal" value={editForm.apr} onChange={(e) => setEditForm({ ...editForm, apr: e.target.value })}
+                  style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
+              <div>
+                <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 4 }}>Мин. платёж / мес, ₽</p>
+                <input type="number" inputMode="decimal" value={editForm.minPayment} onChange={(e) => setEditForm({ ...editForm, minPayment: e.target.value })}
+                  style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
+              </div>
+              <div>
+                <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 4 }}>День платежа</p>
+                <input type="number" inputMode="numeric" value={editForm.dueDay} onChange={(e) => setEditForm({ ...editForm, dueDay: e.target.value })} placeholder="—"
+                  style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
+              </div>
+            </div>
+
+            {editError && <p style={{ fontSize: 13, color: C.red, background: C.redBg, borderRadius: 8, padding: '10px 12px', marginBottom: 10 }}>⚠ {editError}</p>}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <PrimaryBtn onClick={handleEdit} disabled={editSaving} style={{ flex: 1 }}>{editSaving ? '...' : 'Сохранить'}</PrimaryBtn>
+              <button onClick={() => setEditDebt(null)} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>Отмена</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast */}
+      {toast && (
+        <div style={{ position: 'fixed', top: 60, left: '50%', transform: 'translateX(-50%)', background: C.green, color: '#000', padding: '10px 20px', borderRadius: 10, fontSize: 14, fontWeight: 600, zIndex: 300, boxShadow: '0 4px 12px rgba(0,0,0,0.3)' }}>
+          {toast}
         </div>
       )}
     </div>
