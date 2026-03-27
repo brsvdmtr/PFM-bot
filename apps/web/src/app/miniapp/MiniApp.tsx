@@ -984,11 +984,14 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
   const load = useCallback(async () => {
     try {
       const [d, b, p, e] = await Promise.all([
-        api('/tg/ef'), api('/tg/ef/buckets'), api('/tg/ef/plan').catch(() => null), api('/tg/ef/entries'),
+        api('/tg/ef').catch(() => null),
+        api('/tg/ef/buckets').catch(() => ({ items: [] })),
+        api('/tg/ef/plan').catch(() => null),
+        api('/tg/ef/entries').catch(() => ({ items: [] })),
       ]);
       setEf(d);
       setBuckets(b?.items || []);
-      setPlanData(p);
+      setPlanData(p && p.scenarios ? p : null);
       setEntries(e?.items || []);
       if (d?.targetMonths) setTargetMonths(d.targetMonths);
     } catch {}
@@ -1265,7 +1268,7 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
       )}
 
       {/* Plan scenarios */}
-      {mode === 'view' && planData && planData.scenarios.length > 0 && (
+      {mode === 'view' && planData && Array.isArray(planData.scenarios) && planData.scenarios.length > 0 && (
         <>
           <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 6 }}>План достижения цели</p>
           {planData.feasibility && (
@@ -1274,7 +1277,7 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
             </p>
           )}
           {planData.message && <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 10 }}>{planData.message}</p>}
-          <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 10 }}>Свободный поток: {fmt(planData.monthlyFreeCashflow, currency)}/мес</p>
+          {planData.monthlyFreeCashflow != null && <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 10 }}>Свободный поток: {fmt(planData.monthlyFreeCashflow, currency)}/мес</p>}
           {planData.scenarios.map((sc: any) => {
             const isSelected = planData.selectedPlan?.mode === 'SYSTEM' && planData.selectedPlan?.pace === sc.pace;
             return (
