@@ -89,6 +89,8 @@ export interface FinanceDomainInputs {
   todayTotal: number;
   /** REQUIRED_MIN_PAYMENT events that belong to this period. */
   debtPaymentEvents: DebtPaymentEventInput[];
+  /** Cash anchor: actual money on hand (kopecks). null = not set. */
+  cashOnHand: number | null;
 }
 
 // ── Computed S2S values ───────────────────────────────────────────────────────

@@ -296,6 +296,7 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
       amountMinor: ev.amountMinor,
       kind: ev.kind as 'REQUIRED_MIN_PAYMENT' | 'EXTRA_PRINCIPAL_PAYMENT',
     })),
+    cashOnHand: activePeriod.cashAnchorAmount ?? null,
   });
 
   // ── Non-financial display fields (payday calendar, cash anchor) ───────────

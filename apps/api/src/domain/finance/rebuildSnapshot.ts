@@ -148,6 +148,7 @@ export async function rebuildActivePeriodSnapshot(
       amountMinor: ev.amountMinor,
       kind: ev.kind as 'REQUIRED_MIN_PAYMENT' | 'EXTRA_PRINCIPAL_PAYMENT',
     })),
+    cashOnHand: activePeriod.cashAnchorAmount ?? null,
   };
 
   // ── 5. Compute view (pure) ────────────────────────────────────────────────

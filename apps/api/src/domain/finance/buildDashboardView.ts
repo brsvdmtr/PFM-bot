@@ -79,13 +79,29 @@ export function buildDashboardView(inputs: FinanceDomainInputs): DashboardView {
     todayTotal,
   });
 
-  // ── 6. Status / color ─────────────────────────────────────────────────────
+  // ── 6. Cash anchor reality cap ────────────────────────────────────────────
+  // If user told us how much cash they actually have, that's a hard constraint.
+  // Budget can't exceed actual money on hand.
+  const cashOnHand = inputs.cashOnHand;
+  const daysLeft = daysLeftInPeriod(end, now, tz);
+
+  let periodRemaining = s2s.periodRemaining;
+  let s2sDaily = s2s.s2sDaily;
+  let s2sToday = s2s.s2sToday;
+
+  if (cashOnHand != null && cashOnHand >= 0 && cashOnHand < periodRemaining) {
+    periodRemaining = cashOnHand;
+    s2sDaily = daysLeft > 0 ? Math.max(0, Math.round(periodRemaining / daysLeft)) : 0;
+    s2sToday = Math.max(0, s2sDaily - todayTotal);
+  }
+
+  // ── 7. Status / color ─────────────────────────────────────────────────────
   let s2sStatus: DashboardView['s2sStatus'] = 'OK';
   if (s2s.s2sPeriod <= 0) {
     s2sStatus = 'DEFICIT';
-  } else if (todayTotal > s2s.s2sDaily) {
+  } else if (todayTotal > s2sDaily) {
     s2sStatus = 'OVERSPENT';
-  } else if (s2s.s2sDaily > 0 && s2s.s2sToday / s2s.s2sDaily <= 0.30) {
+  } else if (s2sDaily > 0 && s2sToday / s2sDaily <= 0.30) {
     s2sStatus = 'WARNING';
   }
 
@@ -103,7 +119,7 @@ export function buildDashboardView(inputs: FinanceDomainInputs): DashboardView {
     periodEndIso,
     totalDays: daysTotal,
     dayNumber,
-    daysLeft: daysLeftInPeriod(end, now, tz),
+    daysLeft,
 
     totalIncome:               s2s.totalIncome,
     totalObligations:          s2s.totalObligations,
@@ -114,9 +130,9 @@ export function buildDashboardView(inputs: FinanceDomainInputs): DashboardView {
     avalanchePool:             s2s.avalanchePool,
     s2sPeriod:                 s2s.s2sPeriod,
     totalPeriodSpent,
-    periodRemaining:           s2s.periodRemaining,
-    s2sDaily:                  s2s.s2sDaily,
-    s2sToday:                  s2s.s2sToday,
+    periodRemaining,
+    s2sDaily,
+    s2sToday,
 
     s2sStatus,
     s2sColor,
