@@ -2,7 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
 import { prisma } from '@pfm/db';
-import { determineFocusDebt, buildAvalanchePlan } from './avalanche';
+import { determineFocusDebt, buildAvalanchePlan, buildDebtStrategy } from './avalanche';
 import { getLastActualPayday, getNextActualPayday, getNextIncomeAmount } from './payday-calendar';
 import {
   DEFAULT_TZ,
@@ -1153,6 +1153,52 @@ tg.get('/debts/avalanche-plan', async (req: AuthenticatedRequest, res) => {
   );
 
   res.json(plan);
+});
+
+// Debt strategy — actionable "what to do next" with correct payoff forecast
+tg.get('/debts/strategy', async (req: AuthenticatedRequest, res) => {
+  const userId = req.userId!;
+
+  const [debts, activePeriod, user] = await Promise.all([
+    prisma.debt.findMany({ where: { userId }, orderBy: { apr: 'desc' } }),
+    prisma.period.findFirst({ where: { userId, status: 'ACTIVE' } }),
+    prisma.user.findUnique({ where: { id: userId } }),
+  ]);
+
+  const currency = user?.primaryCurrency ?? 'RUB';
+
+  // Derive avalanchePool from stored period snapshot fields:
+  // s2sPeriod = totalIncome - totalObligations - totalDebtPayments - reserve - efContribution - avalanchePool
+  // => avalanchePool = totalIncome - totalObligations - totalDebtPayments - reserve - efContribution - s2sPeriod
+  const avalanchePool = activePeriod
+    ? Math.max(
+        0,
+        activePeriod.totalIncome
+          - activePeriod.totalObligations
+          - activePeriod.totalDebtPayments
+          - (activePeriod.reserve ?? 0)
+          - (activePeriod.efContribution ?? 0)
+          - activePeriod.s2sPeriod,
+      )
+    : 0;
+  const daysTotal = activePeriod?.daysTotal ?? 30;
+
+  const strategy = buildDebtStrategy(
+    debts.map((d) => ({
+      id: d.id,
+      title: d.title,
+      balance: d.balance,
+      apr: d.apr,
+      minPayment: d.minPayment,
+      isFocusDebt: d.isFocusDebt,
+      isPaidOff: d.isPaidOff,
+    })),
+    avalanchePool,
+    daysTotal,
+    currency,
+  );
+
+  res.json(strategy);
 });
 
 // ── Expenses (history) ─────────────────────────────────

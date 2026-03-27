@@ -106,6 +106,18 @@ interface AvalanchePlan {
   totalMinPayments: number; estimatedDebtFreeMonths: number;
   estimatedTotalInterest: number;
 }
+type PayoffStatus = 'OK' | 'NO_MIN_PAYMENT' | 'PAYMENT_TOO_SMALL' | 'UNDEFINED_HORIZON' | 'PAID_OFF';
+interface DebtStrategyItem {
+  debtId: string; title: string; balance: number; apr: number; minPayment: number; isFocus: boolean;
+  payoffStatus: PayoffStatus;
+  display: { primaryAction: string; secondaryAction: string | null; forecastLabel: string | null; warningLabel: string | null };
+  baseline: { estimatedMonths: number | null; totalInterest: number | null; monthlyPaymentUsed: number | null; extraPaymentUsed: number | null };
+  accelerateScenarios: Array<{ extraPerMonth: number; estimatedMonths: number | null; monthsSavedVsBaseline: number | null; totalInterest: number | null; interestSavedVsBaseline: number | null; status: string }>;
+}
+interface DebtStrategy {
+  currency: string; focusDebtId: string | null; generatedAt: string; items: DebtStrategyItem[];
+  summary: { totalDebt: number; totalMinPayments: number; estimatedDebtFreeMonths: number | null; estimatedTotalInterest: number | null };
+}
 
 // ── API ──────────────────────────────────────────────────────────────────────
 
@@ -910,6 +922,7 @@ function History({ api, currency, onRefresh }: { api: (path: string, opts?: Requ
 function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: RequestInit) => Promise<any>; currency: string; onRefresh: () => void }) {
   const [debts, setDebts] = useState<Debt[]>([]);
   const [plan, setPlan] = useState<AvalanchePlan | null>(null);
+  const [strategy, setStrategy] = useState<DebtStrategy | null>(null);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [newDebt, setNewDebt] = useState({ title: '', type: 'CREDIT_CARD', balance: '', apr: '', minPayment: '', dueDay: '' });
@@ -924,12 +937,14 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [d, p] = await Promise.all([
+      const [d, p, s] = await Promise.all([
         api('/tg/debts'),
         api('/tg/debts/avalanche-plan'),
+        api('/tg/debts/strategy'),
       ]);
       setDebts(d);
       setPlan(p);
+      setStrategy(s);
     } catch {}
     setLoading(false);
   }, [api]);
@@ -1031,10 +1046,11 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
                 <p style={{ fontSize: 18, fontWeight: 700, color: C.orange }}>{fmt(totalMin, currency)}</p>
               </div>
             </div>
-            {plan && plan.estimatedDebtFreeMonths > 0 && plan.estimatedDebtFreeMonths < 600 && (
+            {strategy?.summary.estimatedDebtFreeMonths != null && (
               <div style={{ borderTop: '1px solid rgba(139,92,246,0.15)', paddingTop: 10, marginTop: 8 }}>
                 <p style={{ fontSize: 13, color: C.textSec }}>
-                  Свобода от долгов: ~{plan.estimatedDebtFreeMonths} мес. · Переплата: {fmt(plan.estimatedTotalInterest, currency)}
+                  Свобода от долгов: ~{strategy.summary.estimatedDebtFreeMonths} мес.
+                  {strategy.summary.estimatedTotalInterest != null && ` · Переплата: ${fmt(strategy.summary.estimatedTotalInterest, currency)}`}
                 </p>
               </div>
             )}
@@ -1066,12 +1082,46 @@ function DebtsScreen({ api, currency, onRefresh }: { api: (path: string, opts?: 
                   <p style={{ fontSize: 12, color: C.textTertiary }}>мин/мес</p>
                 </div>
               </div>
-              {plan && plan.items[i] && (
-                <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderSubtle}`, display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textTertiary }}>
-                  <span>~{plan.items[i].estimatedMonths} мес. до погашения</span>
-                  <span>переплата {fmt(plan.items[i].totalInterest, currency)}</span>
-                </div>
-              )}
+              {(() => {
+                const si = strategy?.items.find((s) => s.debtId === d.id);
+                if (!si) return null;
+                return (
+                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderSubtle}` }}>
+                    {/* Forecast line */}
+                    {si.display.forecastLabel ? (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textTertiary, marginBottom: si.isFocus ? 8 : 0 }}>
+                        <span>{si.display.forecastLabel}</span>
+                        {si.baseline.totalInterest != null && si.baseline.totalInterest > 0 && (
+                          <span>переплата {fmt(si.baseline.totalInterest, currency)}</span>
+                        )}
+                      </div>
+                    ) : si.display.warningLabel ? (
+                      <p style={{ fontSize: 12, color: C.orange, marginBottom: si.isFocus ? 8 : 0 }}>⚠ {si.display.warningLabel}</p>
+                    ) : null}
+
+                    {/* Focus-only: action + acceleration scenarios */}
+                    {si.isFocus && (
+                      <>
+                        <p style={{ fontSize: 12, color: C.accentLight, marginBottom: 4 }}>🎯 {si.display.primaryAction}</p>
+                        {si.display.secondaryAction && (
+                          <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 6 }}>{si.display.secondaryAction}</p>
+                        )}
+                        {si.accelerateScenarios.filter((sc) => sc.status === 'OK' && sc.monthsSavedVsBaseline != null && sc.monthsSavedVsBaseline > 0).map((sc) => (
+                          <div key={sc.extraPerMonth} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.textTertiary, marginTop: 3 }}>
+                            <span>+{Math.round(sc.extraPerMonth / 100).toLocaleString('ru-RU')} ₽/мес</span>
+                            <span style={{ color: C.green }}>−{sc.monthsSavedVsBaseline} мес.{sc.interestSavedVsBaseline != null && sc.interestSavedVsBaseline > 0 ? ` · экономия ${fmt(sc.interestSavedVsBaseline, currency)}` : ''}</span>
+                          </div>
+                        ))}
+                      </>
+                    )}
+
+                    {/* Non-focus: short label */}
+                    {!si.isFocus && (
+                      <p style={{ fontSize: 11, color: C.textTertiary }}>{si.display.primaryAction}</p>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Period payment status */}
               {d.currentPeriodPayment && (
