@@ -7,6 +7,7 @@ COPY . .
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @pfm/db generate
 RUN pnpm --filter @pfm/db build
+RUN pnpm --filter @pfm/shared build
 RUN pnpm --filter @pfm/api build
 
 ENV NODE_ENV=production

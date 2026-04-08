@@ -9,6 +9,7 @@ RUN pnpm install --frozen-lockfile
 ARG NEXT_PUBLIC_API_URL=https://mytodaylimit.ru/api
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 
+RUN pnpm --filter @pfm/shared build
 RUN pnpm --filter @pfm/web build
 
 # Production runner — only standalone output
