@@ -18,6 +18,9 @@ COPY tsconfig.base.json ./
 # Generate Prisma client
 RUN cd packages/db && pnpm generate
 
+# Build shared first (api imports compiled @pfm/shared at runtime)
+RUN cd packages/shared && pnpm build
+
 # Build
 RUN cd apps/api && pnpm build
 

@@ -13,6 +13,9 @@ COPY packages/shared/ packages/shared/
 COPY apps/bot/ apps/bot/
 COPY tsconfig.base.json ./
 
+# Build shared first (bot imports compiled @pfm/shared at runtime)
+RUN cd packages/shared && pnpm build
+
 # Build
 RUN cd apps/bot && pnpm build
 
