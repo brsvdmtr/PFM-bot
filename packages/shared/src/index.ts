@@ -1,14 +1,18 @@
-export { t, ru, en } from './i18n';
+export {
+  t,
+  tArray,
+  ru,
+  en,
+  detectLocale,
+  formatMoney,
+  formatNumber,
+  monthShortCap,
+  monthShortGen,
+  formatDayMonth,
+  formatDayLabel,
+  formatPeriodLabel,
+} from './i18n';
 export type { Locale, Translations } from './i18n';
-
-/** Format amount from kopecks/cents to display string */
-export function formatMoney(amountMinor: number, currency: 'RUB' | 'USD'): string {
-  const major = amountMinor / 100;
-  if (currency === 'RUB') {
-    return `${major.toLocaleString('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} ₽`;
-  }
-  return `$${major.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
 
 /** Parse display amount to minor units (kopecks/cents) */
 export function toMinorUnits(amount: number): number {

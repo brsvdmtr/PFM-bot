@@ -1,5 +1,6 @@
 import cron from 'node-cron';
 import { prisma } from '@pfm/db';
+import { type Locale } from '@pfm/shared';
 import { calculateS2S } from './engine';
 import { getLastActualPayday, getNextActualPayday, getNextIncomeAmount } from './payday-calendar';
 import { DEFAULT_TZ, daysLeftInPeriod, getTodayLocalStart, getNextLocalDayStart, toLocalDate, calculateCanonicalPeriodBounds } from './period-utils';
@@ -9,6 +10,10 @@ import {
   sendPaymentAlert,
   sendNewPeriodNotification,
 } from './notify';
+
+function asLocale(s: string | null | undefined): Locale {
+  return s === 'ru' ? 'ru' : 'en';
+}
 
 // ── Helpers ─────────────────────────────────────────────
 
@@ -108,6 +113,8 @@ cron.schedule('* * * * *', async () => {
 
       const localTime = currentTimeInTZ(user.timezone);
 
+      const userLocale = asLocale(user.locale);
+
       // ── Morning notification ──
       if (
         user.settings.morningNotifyEnabled &&
@@ -124,6 +131,7 @@ cron.schedule('* * * * *', async () => {
             s2s.daysLeft,
             s2s.activePeriod.currency,
             s2s.s2sStatus,
+            userLocale,
           );
         }
       }
@@ -142,6 +150,7 @@ cron.schedule('* * * * *', async () => {
             s2s.todayTotal,
             s2s.s2sDaily,
             s2s.activePeriod.currency,
+            userLocale,
           );
         }
       }
@@ -241,6 +250,7 @@ cron.schedule('0 9 * * *', async () => {
 
     for (const user of users) {
       if (!user.telegramChatId) continue;
+      const userLocale = asLocale(user.locale);
       for (const debt of user.debts) {
         if (!debt.dueDay) continue;
         const daysUntil = debt.dueDay === todayDay ? 0 : 1;
@@ -252,6 +262,7 @@ cron.schedule('0 9 * * *', async () => {
             debt.minPayment,
             debt.currency,
             daysUntil,
+            userLocale,
           );
         }
       }
@@ -380,6 +391,7 @@ cron.schedule('5 0 * * *', async () => {
             s2sResult.daysTotal,
             period.currency,
             prevSaved,
+            asLocale((user as any).locale),
           );
         }
 

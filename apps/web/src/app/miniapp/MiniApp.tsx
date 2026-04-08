@@ -1,6 +1,33 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, createContext, useContext } from 'react';
+import {
+  detectLocale,
+  formatMoney as formatMoneyShared,
+  formatNumber,
+  formatDayLabel,
+  formatPeriodLabel,
+  monthShortCap,
+  monthShortGen,
+  t as tr,
+  type Locale,
+} from '@pfm/shared';
+
+// ── Locale context ──────────────────────────────────────────────────────────
+
+const LocaleCtx = createContext<Locale>('en');
+function useLocale(): Locale { return useContext(LocaleCtx); }
+function useT() {
+  const locale = useLocale();
+  return useCallback((path: string, vars?: Record<string, string | number>) => tr(locale, path, vars), [locale]);
+}
+
+/** Read locale from Telegram WebApp init data; falls back to 'en'. */
+function detectClientLocale(): Locale {
+  if (typeof window === 'undefined') return 'en';
+  const tg = (window as any).Telegram?.WebApp;
+  return detectLocale(tg?.initDataUnsafe?.user?.language_code);
+}
 
 // ── Design Tokens ────────────────────────────────────────────────────────────
 
@@ -173,11 +200,9 @@ function useVisualViewportHeight() {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function fmt(amount: number, currency = 'RUB') {
-  const sym = currency === 'USD' ? '$' : '₽';
-  const n = Math.abs(amount / 100);
-  const s = n.toLocaleString('ru-RU', { maximumFractionDigits: 0 });
-  return currency === 'USD' ? `${sym}${s}` : `${s} ${sym}`;
+function fmt(amount: number, currency = 'RUB', locale: Locale = 'en') {
+  const n = Math.abs(amount);
+  return formatMoneyShared(n, currency, locale);
 }
 
 function s2sColor(s2sToday: number, s2sDaily: number): S2SColor {
@@ -192,11 +217,8 @@ function colorOf(c: S2SColor) {
   return c === 'green' ? C.green : c === 'orange' ? C.orange : C.red;
 }
 
-function periodLabel(start: string, end: string) {
-  const s = new Date(start);
-  const e = new Date(end);
-  const mo = ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];
-  return `${mo[s.getMonth()]} ${s.getDate()} → ${mo[e.getMonth()]} ${e.getDate()}`;
+function periodLabel(start: string, end: string, locale: Locale = 'en') {
+  return formatPeriodLabel(start, end, locale);
 }
 
 function groupByDay(expenses: Expense[]) {
@@ -215,21 +237,12 @@ function groupByDay(expenses: Expense[]) {
   }));
 }
 
-function dayLabel(d: Date) {
-  const today = new Date();
-  if (d.toDateString() === today.toDateString()) return 'Сегодня';
-  const yest = new Date(today); yest.setDate(yest.getDate() - 1);
-  if (d.toDateString() === yest.toDateString()) return 'Вчера';
-  const mo = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
-  return `${d.getDate()} ${mo[d.getMonth()]}`;
+function dayLabel(d: Date, locale: Locale = 'en') {
+  return formatDayLabel(d, locale);
 }
 
-function debtTypeLabel(type: string) {
-  const map: Record<string, string> = {
-    CREDIT_CARD: 'Кредитка', CREDIT: 'Кредит', MORTGAGE: 'Ипотека',
-    CAR_LOAN: 'Автокредит', PERSONAL_LOAN: 'Займ', OTHER: 'Другое',
-  };
-  return map[type] || type;
+function debtTypeLabel(type: string, locale: Locale = 'en') {
+  return tr(locale, `debtTypes.${type}`) || type;
 }
 
 // ── Sub-components ───────────────────────────────────────────────────────────
@@ -293,12 +306,13 @@ function ProgressBar({ value, max, color = C.accent }: { value: number; max: num
 // ── Bottom Nav ───────────────────────────────────────────────────────────────
 
 function BottomNav({ active, onTab, onAdd }: { active: NavTab; onTab: (t: NavTab) => void; onAdd: () => void }) {
+  const t = useT();
   const items: { id: NavTab | 'add'; icon: string; label: string }[] = [
-    { id: 'dashboard', icon: '⊙', label: 'Главная' },
-    { id: 'history', icon: '☰', label: 'История' },
+    { id: 'dashboard', icon: '⊙', label: t('nav.home') },
+    { id: 'history', icon: '☰', label: t('nav.history') },
     { id: 'add', icon: '+', label: '' },
-    { id: 'debts', icon: '💳', label: 'Долги' },
-    { id: 'settings', icon: '⚙', label: 'Ещё' },
+    { id: 'debts', icon: '💳', label: t('nav.debts') },
+    { id: 'settings', icon: '⚙', label: t('nav.more') },
   ];
 
   return (
@@ -329,22 +343,24 @@ function BottomNav({ active, onTab, onAdd }: { active: NavTab; onTab: (t: NavTab
 // ── Onboarding Screens ───────────────────────────────────────────────────────
 
 function OnbWelcome({ onStart }: { onStart: () => void }) {
+  const t = useT();
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', background: C.bg, padding: '0 24px', textAlign: 'center' }}>
       <div style={{ fontSize: 64, marginBottom: 24 }}>💜</div>
-      <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 12, color: C.text, background: `linear-gradient(135deg, ${C.accentLight}, ${C.accent})`, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>PFM Bot</h1>
+      <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 12, color: C.text, background: `linear-gradient(135deg, ${C.accentLight}, ${C.accent})`, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>{t('onboarding.welcomeTitle')}</h1>
       <p style={{ color: C.textSec, fontSize: 16, lineHeight: 1.6, marginBottom: 40, maxWidth: 300 }}>
-        Узнайте, сколько можно безопасно тратить каждый день — пока вы гасите долги
+        {t('onboarding.welcomeDesc')}
       </p>
       <div style={{ width: '100%', maxWidth: 320 }}>
-        <PrimaryBtn onClick={onStart}>Начать настройку</PrimaryBtn>
+        <PrimaryBtn onClick={onStart}>{t('onboarding.welcomeBtn')}</PrimaryBtn>
       </div>
-      <p style={{ color: C.textMuted, fontSize: 12, marginTop: 16 }}>Займёт ~2 минуты</p>
+      <p style={{ color: C.textMuted, fontSize: 12, marginTop: 16 }}>{t('onboarding.welcomeTime')}</p>
     </div>
   );
 }
 
 function OnbIncome({ onNext }: { onNext: (data: { amount: number; paydays: number[]; currency: string; useRussianWorkCalendar?: boolean }) => void }) {
+  const t = useT();
   const [amount, setAmount] = useState('');
   const [payday, setPayday] = useState<number[]>([15]);
   const [twoPaydays, setTwoPaydays] = useState(false);
@@ -364,23 +380,23 @@ function OnbIncome({ onNext }: { onNext: (data: { amount: number; paydays: numbe
   return (
     <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px' }}>
       <OnbProgress step={0} total={6} />
-      <p style={{ fontSize: 12, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>Шаг 1 из 6</p>
-      <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8, color: C.text }}>Сколько вы зарабатываете?</h2>
-      <p style={{ color: C.textSec, fontSize: 14, lineHeight: 1.5, marginBottom: 28 }}>Введите чистый доход после налогов. Это основа для расчёта вашего дневного лимита.</p>
+      <p style={{ fontSize: 12, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>{t('onboarding.stepOf', { n: 1 })}</p>
+      <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8, color: C.text }}>{t('onboarding.incomeTitle')}</h2>
+      <p style={{ color: C.textSec, fontSize: 14, lineHeight: 1.5, marginBottom: 28 }}>{t('onboarding.incomeDesc')}</p>
 
       <div style={{ marginBottom: 20 }}>
-        <label style={{ display: 'block', fontSize: 13, color: C.textSec, marginBottom: 8 }}>Доход в месяц</label>
+        <label style={{ display: 'block', fontSize: 13, color: C.textSec, marginBottom: 8 }}>{t('onboarding.incomeAmountLabel')}</label>
         <input
           type="number"
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
-          placeholder="120 000"
+          placeholder={t('onboarding.incomeAmountPh')}
           style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: '14px 16px', color: C.text, fontSize: 18, fontWeight: 600, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }}
         />
       </div>
 
       <div style={{ marginBottom: 20 }}>
-        <label style={{ display: 'block', fontSize: 13, color: C.textSec, marginBottom: 8 }}>Валюта</label>
+        <label style={{ display: 'block', fontSize: 13, color: C.textSec, marginBottom: 8 }}>{t('onboarding.currencyLabel')}</label>
         <div style={{ display: 'flex', gap: 8 }}>
           {(['RUB', 'USD'] as const).map((c) => (
             <button key={c} onClick={() => setCurrency(c)} style={{ padding: '10px 20px', borderRadius: 24, background: currency === c ? C.accentBgStrong : C.surface, border: `1px solid ${currency === c ? C.accent : C.border}`, color: currency === c ? C.accentLight : C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>
@@ -391,18 +407,18 @@ function OnbIncome({ onNext }: { onNext: (data: { amount: number; paydays: numbe
       </div>
 
       <div style={{ marginBottom: 20 }}>
-        <label style={{ display: 'block', fontSize: 13, color: C.textSec, marginBottom: 8 }}>День зарплаты</label>
+        <label style={{ display: 'block', fontSize: 13, color: C.textSec, marginBottom: 8 }}>{t('onboarding.paydayLabel')}</label>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {payOptions.map((d) => (
             <button key={d} onClick={() => setPayday([d])} style={{ padding: '10px 16px', borderRadius: 24, background: payday.includes(d) ? C.accentBgStrong : C.surface, border: `1px solid ${payday.includes(d) ? C.accent : C.border}`, color: payday.includes(d) ? C.accentLight : C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>
               {d}
             </button>
           ))}
-          <button onClick={() => { setTwoPaydays(!twoPaydays); if (!twoPaydays) { const other = payOptions.find(d => !payday.includes(d)) ?? 1; setPayday2([other]); } }} style={{ padding: '10px 16px', borderRadius: 24, background: twoPaydays ? C.accentBgStrong : C.surface, border: `1px solid ${twoPaydays ? C.accent : C.border}`, color: twoPaydays ? C.accentLight : C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>2 раза</button>
+          <button onClick={() => { setTwoPaydays(!twoPaydays); if (!twoPaydays) { const other = payOptions.find(d => !payday.includes(d)) ?? 1; setPayday2([other]); } }} style={{ padding: '10px 16px', borderRadius: 24, background: twoPaydays ? C.accentBgStrong : C.surface, border: `1px solid ${twoPaydays ? C.accent : C.border}`, color: twoPaydays ? C.accentLight : C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>{t('onboarding.twoTimes')}</button>
         </div>
         {twoPaydays && (
           <div style={{ marginTop: 12 }}>
-            <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 8 }}>Второй день зарплаты:</p>
+            <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 8 }}>{t('onboarding.secondPayday')}</p>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {payOptions.map((d) => (
                 <button key={d} onClick={() => setPayday2([d])} style={{ padding: '10px 16px', borderRadius: 24, background: payday2.includes(d) ? C.accentBgStrong : C.surface, border: `1px solid ${payday2.includes(d) ? C.accent : C.border}`, color: payday2.includes(d) ? C.accentLight : C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>
@@ -412,13 +428,13 @@ function OnbIncome({ onNext }: { onNext: (data: { amount: number; paydays: numbe
             </div>
           </div>
         )}
-        <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 8 }}>Мы считаем периоды от зарплаты до зарплаты, не по месяцам</p>
+        <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 8 }}>{t('onboarding.paydayHint')}</p>
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 0', marginBottom: 16 }}>
         <div>
-          <p style={{ fontSize: 13, color: C.text, marginBottom: 2 }}>Производственный календарь РФ</p>
-          <p style={{ fontSize: 11, color: C.textTertiary }}>Перенос на пятницу при выходном</p>
+          <p style={{ fontSize: 13, color: C.text, marginBottom: 2 }}>{t('onboarding.ruCalLabel')}</p>
+          <p style={{ fontSize: 11, color: C.textTertiary }}>{t('onboarding.ruCalDesc')}</p>
         </div>
         <div
           onClick={() => setUseRuCal(!useRuCal)}
@@ -428,12 +444,14 @@ function OnbIncome({ onNext }: { onNext: (data: { amount: number; paydays: numbe
         </div>
       </div>
 
-      <PrimaryBtn onClick={handleNext} disabled={!amount || parseInt(amount, 10) <= 0}>Продолжить</PrimaryBtn>
+      <PrimaryBtn onClick={handleNext} disabled={!amount || parseInt(amount, 10) <= 0}>{t('common.continue')}</PrimaryBtn>
     </div>
   );
 }
 
 function OnbObligations({ onNext, onSkip }: { onNext: (data: any[]) => void; onSkip: () => void }) {
+  const t = useT();
+  const locale = useLocale();
   const [items, setItems] = useState([{ title: '', type: 'RENT', amount: '' }]);
 
   const add = () => setItems([...items, { title: '', type: 'OTHER', amount: '' }]);
@@ -445,9 +463,12 @@ function OnbObligations({ onNext, onSkip }: { onNext: (data: any[]) => void; onS
   };
 
   const types = [
-    { v: 'RENT', l: 'Аренда' }, { v: 'UTILITIES', l: 'ЖКХ' },
-    { v: 'TELECOM', l: 'Связь' }, { v: 'INSURANCE', l: 'Страховка' },
-    { v: 'SUBSCRIPTION', l: 'Подписки' }, { v: 'OTHER', l: 'Другое' },
+    { v: 'RENT', l: tr(locale, 'obligationTypes.RENT') },
+    { v: 'UTILITIES', l: tr(locale, 'obligationTypes.UTILITIES') },
+    { v: 'TELECOM', l: tr(locale, 'obligationTypes.TELECOM') },
+    { v: 'INSURANCE', l: tr(locale, 'obligationTypes.INSURANCE') },
+    { v: 'SUBSCRIPTION', l: tr(locale, 'obligationTypes.SUBSCRIPTION') },
+    { v: 'OTHER', l: tr(locale, 'obligationTypes.OTHER') },
   ];
 
   const valid = items.filter((i) => i.title && parseInt(i.amount, 10) > 0);
@@ -455,36 +476,38 @@ function OnbObligations({ onNext, onSkip }: { onNext: (data: any[]) => void; onS
   return (
     <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px' }}>
       <OnbProgress step={1} total={6} />
-      <p style={{ fontSize: 12, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>Шаг 2 из 6</p>
-      <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8, color: C.text }}>Обязательные расходы</h2>
-      <p style={{ color: C.textSec, fontSize: 14, lineHeight: 1.5, marginBottom: 24 }}>Аренда, коммуналка, связь — то, что вы платите каждый месяц независимо.</p>
+      <p style={{ fontSize: 12, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>{t('onboarding.stepOf', { n: 2 })}</p>
+      <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8, color: C.text }}>{t('onboarding.obligTitle')}</h2>
+      <p style={{ color: C.textSec, fontSize: 14, lineHeight: 1.5, marginBottom: 24 }}>{t('onboarding.obligDesc')}</p>
 
       {items.map((item, i) => (
         <div key={i} style={{ background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 12, padding: 14, marginBottom: 10, position: 'relative' }}>
           {items.length > 1 && (
             <button onClick={() => remove(i)} style={{ position: 'absolute', top: 10, right: 10, background: 'none', border: 'none', color: C.textTertiary, cursor: 'pointer', fontSize: 16 }}>✕</button>
           )}
-          <input value={item.title} onChange={(e) => update(i, 'title', e.target.value)} placeholder="Название" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', marginBottom: 8, boxSizing: 'border-box' }} />
+          <input value={item.title} onChange={(e) => update(i, 'title', e.target.value)} placeholder={t('onboarding.obligNamePh')} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', marginBottom: 8, boxSizing: 'border-box' }} />
           <div style={{ display: 'flex', gap: 8 }}>
             <select value={item.type} onChange={(e) => update(i, 'type', e.target.value)} style={{ flex: 1, background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px', color: C.textSec, fontSize: 13, fontFamily: 'inherit', outline: 'none' }}>
-              {types.map((t) => <option key={t.v} value={t.v}>{t.l}</option>)}
+              {types.map((tt) => <option key={tt.v} value={tt.v}>{tt.l}</option>)}
             </select>
-            <input type="number" value={item.amount} onChange={(e) => update(i, 'amount', e.target.value)} placeholder="Сумма ₽" style={{ width: 110, background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none' }} />
+            <input type="number" value={item.amount} onChange={(e) => update(i, 'amount', e.target.value)} placeholder={t('onboarding.obligAmountPh')} style={{ width: 110, background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none' }} />
           </div>
         </div>
       ))}
 
       <button onClick={add} style={{ width: '100%', padding: '16px 0', background: 'transparent', border: `1px dashed ${C.border}`, borderRadius: 10, color: C.accent, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer', marginBottom: 20 }}>
-        + Добавить ещё
+        {t('onboarding.addMore')}
       </button>
 
-      <PrimaryBtn onClick={() => onNext(valid.map((it) => ({ title: it.title, type: it.type, amount: parseInt(it.amount, 10) * 100 })))} disabled={valid.length === 0}>Продолжить</PrimaryBtn>
-      <SecondaryBtn onClick={onSkip}>Пропустить</SecondaryBtn>
+      <PrimaryBtn onClick={() => onNext(valid.map((it) => ({ title: it.title, type: it.type, amount: parseInt(it.amount, 10) * 100 })))} disabled={valid.length === 0}>{t('common.continue')}</PrimaryBtn>
+      <SecondaryBtn onClick={onSkip}>{t('common.skip')}</SecondaryBtn>
     </div>
   );
 }
 
 function OnbDebts({ onNext, onSkip }: { onNext: (data: any[]) => void; onSkip: () => void }) {
+  const t = useT();
+  const locale = useLocale();
   const [items, setItems] = useState([{ title: '', type: 'CREDIT_CARD', balance: '', apr: '', minPayment: '' }]);
 
   const add = () => setItems([...items, { title: '', type: 'OTHER', balance: '', apr: '', minPayment: '' }]);
@@ -496,9 +519,12 @@ function OnbDebts({ onNext, onSkip }: { onNext: (data: any[]) => void; onSkip: (
   };
 
   const types = [
-    { v: 'CREDIT_CARD', l: 'Кредитка' }, { v: 'CREDIT', l: 'Кредит' },
-    { v: 'MORTGAGE', l: 'Ипотека' }, { v: 'CAR_LOAN', l: 'Автокредит' },
-    { v: 'PERSONAL_LOAN', l: 'Займ' }, { v: 'OTHER', l: 'Другое' },
+    { v: 'CREDIT_CARD', l: tr(locale, 'debtTypes.CREDIT_CARD') },
+    { v: 'CREDIT', l: tr(locale, 'debtTypes.CREDIT') },
+    { v: 'MORTGAGE', l: tr(locale, 'debtTypes.MORTGAGE') },
+    { v: 'CAR_LOAN', l: tr(locale, 'debtTypes.CAR_LOAN') },
+    { v: 'PERSONAL_LOAN', l: tr(locale, 'debtTypes.PERSONAL_LOAN') },
+    { v: 'OTHER', l: tr(locale, 'debtTypes.OTHER') },
   ];
 
   const valid = items.filter((i) => i.title && parseFloat(i.balance) > 0 && parseFloat(i.apr) >= 0 && parseInt(i.minPayment, 10) > 0);
@@ -506,25 +532,25 @@ function OnbDebts({ onNext, onSkip }: { onNext: (data: any[]) => void; onSkip: (
   return (
     <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px', paddingBottom: 40 }}>
       <OnbProgress step={2} total={6} />
-      <p style={{ fontSize: 12, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>Шаг 3 из 6</p>
-      <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8, color: C.text }}>Ваши долги</h2>
-      <p style={{ color: C.textSec, fontSize: 14, lineHeight: 1.5, marginBottom: 24 }}>Добавьте все активные долги. Мы используем стратегию Лавины — сначала высокий процент.</p>
+      <p style={{ fontSize: 12, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>{t('onboarding.stepOf', { n: 3 })}</p>
+      <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8, color: C.text }}>{t('onboarding.debtTitle')}</h2>
+      <p style={{ color: C.textSec, fontSize: 14, lineHeight: 1.5, marginBottom: 24 }}>{t('onboarding.debtDesc')}</p>
 
       {items.map((item, i) => (
         <div key={i} style={{ background: C.surface, border: `1px solid ${i === 0 ? C.accent : C.borderSubtle}`, borderLeft: i === 0 ? `3px solid ${C.accent}` : `1px solid ${C.borderSubtle}`, borderRadius: 12, padding: 14, marginBottom: 10, position: 'relative' }}>
-          {i === 0 && <span style={{ position: 'absolute', top: 10, right: 10, fontSize: 10, background: C.accentBg, color: C.accentLight, padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>ФОКУС</span>}
+          {i === 0 && <span style={{ position: 'absolute', top: 10, right: 10, fontSize: 10, background: C.accentBg, color: C.accentLight, padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>{t('onboarding.focusBadge')}</span>}
           {items.length > 1 && i > 0 && (
             <button onClick={() => remove(i)} style={{ position: 'absolute', top: 10, right: 10, background: 'none', border: 'none', color: C.textTertiary, cursor: 'pointer', fontSize: 16 }}>✕</button>
           )}
-          <input value={item.title} onChange={(e) => update(i, 'title', e.target.value)} placeholder="Название (Тинькофф, Сбер...)" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', marginBottom: 8, boxSizing: 'border-box' }} />
+          <input value={item.title} onChange={(e) => update(i, 'title', e.target.value)} placeholder={t('onboarding.debtNamePh')} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', marginBottom: 8, boxSizing: 'border-box' }} />
           <select value={item.type} onChange={(e) => update(i, 'type', e.target.value)} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px', color: C.textSec, fontSize: 13, fontFamily: 'inherit', outline: 'none', marginBottom: 8 }}>
-            {types.map((t) => <option key={t.v} value={t.v}>{t.l}</option>)}
+            {types.map((tt) => <option key={tt.v} value={tt.v}>{tt.l}</option>)}
           </select>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
             {[
-              { field: 'balance', placeholder: 'Остаток ₽' },
-              { field: 'apr', placeholder: 'Ставка %' },
-              { field: 'minPayment', placeholder: 'Мин. платёж' },
+              { field: 'balance', placeholder: t('onboarding.balancePh') },
+              { field: 'apr', placeholder: t('onboarding.aprPh') },
+              { field: 'minPayment', placeholder: t('onboarding.minPayPh') },
             ].map(({ field, placeholder }) => (
               <input key={field} type="number" value={(item as any)[field]} onChange={(e) => update(i, field, e.target.value)} placeholder={placeholder} style={{ background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 13, fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box' }} />
             ))}
@@ -533,62 +559,64 @@ function OnbDebts({ onNext, onSkip }: { onNext: (data: any[]) => void; onSkip: (
       ))}
 
       <button onClick={add} style={{ width: '100%', padding: '16px 0', background: 'transparent', border: `1px dashed ${C.border}`, borderRadius: 10, color: C.accent, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer', marginBottom: 20 }}>
-        + Добавить долг
+        {t('onboarding.addDebt')}
       </button>
 
-      <PrimaryBtn onClick={() => onNext(valid.map((it) => ({ title: it.title, type: it.type, balance: parseFloat(it.balance) * 100, apr: parseFloat(it.apr) / 100, minPayment: parseInt(it.minPayment, 10) * 100 })))} disabled={valid.length === 0}>Продолжить</PrimaryBtn>
-      <SecondaryBtn onClick={onSkip}>Долгов нет</SecondaryBtn>
+      <PrimaryBtn onClick={() => onNext(valid.map((it) => ({ title: it.title, type: it.type, balance: parseFloat(it.balance) * 100, apr: parseFloat(it.apr) / 100, minPayment: parseInt(it.minPayment, 10) * 100 })))} disabled={valid.length === 0}>{t('common.continue')}</PrimaryBtn>
+      <SecondaryBtn onClick={onSkip}>{t('onboarding.noDebts')}</SecondaryBtn>
     </div>
   );
 }
 
 function OnbEF({ onNext }: { onNext: (amount: number) => void }) {
+  const t = useT();
   const [amount, setAmount] = useState('0');
   return (
     <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px' }}>
       <OnbProgress step={3} total={6} />
-      <p style={{ fontSize: 12, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>Шаг 4 из 6</p>
-      <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8, color: C.text }}>Подушка безопасности</h2>
-      <p style={{ color: C.textSec, fontSize: 14, lineHeight: 1.5, marginBottom: 28 }}>Сколько у вас уже отложено на чёрный день? Цель — 3 месяца обязательных расходов.</p>
+      <p style={{ fontSize: 12, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>{t('onboarding.stepOf', { n: 4 })}</p>
+      <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8, color: C.text }}>{t('onboarding.efTitle')}</h2>
+      <p style={{ color: C.textSec, fontSize: 14, lineHeight: 1.5, marginBottom: 28 }}>{t('onboarding.efDesc')}</p>
 
       <div style={{ marginBottom: 24 }}>
-        <label style={{ display: 'block', fontSize: 13, color: C.textSec, marginBottom: 8 }}>Сумма на счёте (₽)</label>
+        <label style={{ display: 'block', fontSize: 13, color: C.textSec, marginBottom: 8 }}>{t('onboarding.efAmountLabel')}</label>
         <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: '14px 16px', color: C.text, fontSize: 18, fontWeight: 600, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
-        <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 8 }}>Введите 0, если ещё не начали — поможем спланировать</p>
+        <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 8 }}>{t('onboarding.efZeroHint')}</p>
       </div>
 
-      <PrimaryBtn onClick={() => onNext(Math.round(parseFloat(amount || '0') * 100))}>Продолжить</PrimaryBtn>
+      <PrimaryBtn onClick={() => onNext(Math.round(parseFloat(amount || '0') * 100))}>{t('common.continue')}</PrimaryBtn>
     </div>
   );
 }
 
 function OnbCash({ onNext, onSkip }: { onNext: (currentCash: number) => void; onSkip: () => void }) {
+  const t = useT();
   const [amount, setAmount] = useState('');
   return (
     <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px' }}>
       <OnbProgress step={4} total={6} />
-      <p style={{ fontSize: 12, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>Шаг 5 из 6</p>
-      <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8, color: C.text }}>Сколько сейчас на руках?</h2>
+      <p style={{ fontSize: 12, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>{t('onboarding.stepOf', { n: 5 })}</p>
+      <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8, color: C.text }}>{t('onboarding.cashTitle')}</h2>
       <p style={{ color: C.textSec, fontSize: 14, lineHeight: 1.5, marginBottom: 28 }}>
-        Укажите, сколько денег у вас сейчас на счёте или в кармане. Без этого бот не сможет точно посчитать, сколько можно тратить каждый день до следующей зарплаты.
+        {t('onboarding.cashDesc')}
       </p>
 
       <div style={{ background: C.accentBg, border: `1px solid ${C.accent}40`, borderRadius: 12, padding: '12px 16px', marginBottom: 24 }}>
         <p style={{ fontSize: 13, color: C.accentLight, lineHeight: 1.5 }}>
-          💡 Введите реальный остаток — именно от этой суммы мы посчитаем ваш дневной лимит. Данные хранятся только на вашем аккаунте.
+          {t('onboarding.cashTip')}
         </p>
       </div>
 
       <div style={{ marginBottom: 24 }}>
-        <label style={{ display: 'block', fontSize: 13, color: C.textSec, marginBottom: 8 }}>Сумма сейчас (₽)</label>
+        <label style={{ display: 'block', fontSize: 13, color: C.textSec, marginBottom: 8 }}>{t('onboarding.cashAmountLabel')}</label>
         <input
           type="number"
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
-          placeholder="50 000"
+          placeholder={t('onboarding.cashAmountPh')}
           style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: '14px 16px', color: C.text, fontSize: 18, fontWeight: 600, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }}
         />
-        <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 8 }}>Введите 0, если деньги ещё не пришли — бот пересчитает после первой зарплаты</p>
+        <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 8 }}>{t('onboarding.cashHint')}</p>
       </div>
 
       <PrimaryBtn
@@ -598,22 +626,24 @@ function OnbCash({ onNext, onSkip }: { onNext: (currentCash: number) => void; on
         }}
         disabled={amount === ''}
       >
-        Продолжить
+        {t('common.continue')}
       </PrimaryBtn>
-      <SecondaryBtn onClick={onSkip}>Пропустить — добавлю позже</SecondaryBtn>
+      <SecondaryBtn onClick={onSkip}>{t('onboarding.cashSkip')}</SecondaryBtn>
     </div>
   );
 }
 
 function OnbResult({ s2sDaily, currency, onDone }: { s2sDaily: number; currency: string; onDone: () => void }) {
+  const t = useT();
+  const locale = useLocale();
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', background: C.bg, padding: '0 24px', textAlign: 'center' }}>
-      <p style={{ fontSize: 14, color: C.textSec, marginBottom: 8 }}>Всё готово! Ваш Safe to Spend:</p>
-      <div style={{ fontSize: 56, fontWeight: 800, letterSpacing: -2, color: C.green, marginBottom: 8 }}>{fmt(s2sDaily, currency)}</div>
-      <p style={{ fontSize: 16, color: C.textSec, marginBottom: 8 }}>в день</p>
-      <p style={{ fontSize: 13, color: C.textTertiary, marginBottom: 40, maxWidth: 300, lineHeight: 1.6 }}>Тратьте в пределах этой суммы каждый день, и вы выберетесь из долгов быстрее, чем думаете.</p>
+      <p style={{ fontSize: 14, color: C.textSec, marginBottom: 8 }}>{t('onboarding.resultReady')}</p>
+      <div style={{ fontSize: 56, fontWeight: 800, letterSpacing: -2, color: C.green, marginBottom: 8 }}>{fmt(s2sDaily, currency, locale)}</div>
+      <p style={{ fontSize: 16, color: C.textSec, marginBottom: 8 }}>{t('onboarding.perDay')}</p>
+      <p style={{ fontSize: 13, color: C.textTertiary, marginBottom: 40, maxWidth: 300, lineHeight: 1.6 }}>{t('onboarding.resultDesc')}</p>
       <div style={{ width: '100%', maxWidth: 320 }}>
-        <PrimaryBtn onClick={onDone}>Начать отслеживать</PrimaryBtn>
+        <PrimaryBtn onClick={onDone}>{t('onboarding.startTracking')}</PrimaryBtn>
       </div>
     </div>
   );
@@ -622,6 +652,8 @@ function OnbResult({ s2sDaily, currency, onDone }: { s2sDaily: number; currency:
 // ── Dashboard ────────────────────────────────────────────────────────────────
 
 function Dashboard({ data, onAddExpense, onOpenDebts, onOpenEF, onOpenSummary, showSummaryBanner }: { data: DashboardData; onAddExpense: () => void; onOpenDebts: () => void; onOpenEF?: () => void; onOpenSummary?: () => void; showSummaryBanner?: boolean }) {
+  const t = useT();
+  const locale = useLocale();
   const color = s2sColor(data.s2sToday, data.s2sDaily);
   const mainColor = colorOf(color);
   const efPct = data.emergencyFund && data.emergencyFund.targetAmount > 0
@@ -637,41 +669,41 @@ function Dashboard({ data, onAddExpense, onOpenDebts, onOpenEF, onOpenSummary, s
       {showSummaryBanner && onOpenSummary && (
         <div onClick={onOpenSummary} style={{ background: C.accentBg, border: `1px solid ${C.accent}40`, borderRadius: 12, padding: '12px 16px', marginBottom: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}>
           <div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: C.accentLight }}>🔄 Период завершён</div>
-            <div style={{ fontSize: 12, color: C.textSec, marginTop: 2 }}>Посмотреть итоги прошлого периода →</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.accentLight }}>{t('dashboard.periodDoneBanner')}</div>
+            <div style={{ fontSize: 12, color: C.textSec, marginTop: 2 }}>{t('dashboard.periodDoneCta')}</div>
           </div>
         </div>
       )}
 
       {/* Greeting */}
-      <p style={{ fontSize: 13, color: C.textSec, marginBottom: 2 }}>Добрый день,</p>
-      <p style={{ fontSize: 22, fontWeight: 700, marginBottom: 16, color: C.text }}>Safe to Spend</p>
+      <p style={{ fontSize: 13, color: C.textSec, marginBottom: 2 }}>{t('dashboard.greeting')}</p>
+      <p style={{ fontSize: 22, fontWeight: 700, marginBottom: 16, color: C.text }}>{t('dashboard.title')}</p>
 
       {/* Period context bar */}
       <div style={{ background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 10, padding: '10px 14px', marginBottom: 14 }}>
         {data.usesLiveWindow && data.nextIncomeDate ? (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-              <span style={{ fontSize: 13, color: C.textSec }}>До следующей выплаты</span>
+              <span style={{ fontSize: 13, color: C.textSec }}>{t('dashboard.daysToNextPay')}</span>
               <span style={{ fontSize: 13, fontWeight: 700, color: C.accentLight }}>
-                {data.daysToNextIncome != null ? `${data.daysToNextIncome} дн.` : '—'}
+                {data.daysToNextIncome != null ? `${data.daysToNextIncome} ${t('common.daysShort')}` : '—'}
               </span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: 12, color: C.textTertiary }}>
-                {data.lastIncomeDate ? `${new Date(data.lastIncomeDate).getDate()} ${['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'][new Date(data.lastIncomeDate).getMonth()]}` : '—'}
+                {data.lastIncomeDate ? `${new Date(data.lastIncomeDate).getDate()} ${monthShortGen(new Date(data.lastIncomeDate).getMonth(), locale)}` : '—'}
                 {' → '}
-                {data.nextIncomeDate ? `${new Date(data.nextIncomeDate).getDate()} ${['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'][new Date(data.nextIncomeDate).getMonth()]}` : '—'}
+                {data.nextIncomeDate ? `${new Date(data.nextIncomeDate).getDate()} ${monthShortGen(new Date(data.nextIncomeDate).getMonth(), locale)}` : '—'}
               </span>
               {data.nextIncomeAmount != null && data.nextIncomeAmount > 0 && (
-                <span style={{ fontSize: 12, color: C.green, fontWeight: 600 }}>+{fmt(data.nextIncomeAmount, data.currency)}</span>
+                <span style={{ fontSize: 12, color: C.green, fontWeight: 600 }}>+{fmt(data.nextIncomeAmount, data.currency, locale)}</span>
               )}
             </div>
           </div>
         ) : (
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: 13, color: C.textSec }}>{periodLabel(data.periodStart, data.periodEnd)}</span>
-            <span style={{ fontSize: 13, fontWeight: 600, color: C.accentLight }}>День {data.dayNumber ?? (periodElapsed + 1)} из {data.daysTotal}</span>
+            <span style={{ fontSize: 13, color: C.textSec }}>{periodLabel(data.periodStart, data.periodEnd, locale)}</span>
+            <span style={{ fontSize: 13, fontWeight: 600, color: C.accentLight }}>{t('dashboard.dayOfPeriod', { n: data.dayNumber ?? (periodElapsed + 1), total: data.daysTotal })}</span>
           </div>
         )}
       </div>
@@ -679,29 +711,29 @@ function Dashboard({ data, onAddExpense, onOpenDebts, onOpenEF, onOpenSummary, s
       {/* S2S Card */}
       <div style={{ background: 'linear-gradient(145deg, #1E1535, #1A1028)', border: '1px solid rgba(139,92,246,0.25)', borderRadius: 16, padding: '22px 20px', marginBottom: 14, position: 'relative', overflow: 'hidden' }}>
         <div style={{ position: 'absolute', top: '-50%', right: '-20%', width: 200, height: 200, background: 'radial-gradient(circle, rgba(139,92,246,0.15), transparent 70%)', pointerEvents: 'none' }} />
-        <p style={{ fontSize: 12, color: C.textSec, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 8 }}>SAFE TO SPEND TODAY</p>
-        <p style={{ fontSize: 48, fontWeight: 800, letterSpacing: -2, lineHeight: 1, color: mainColor, marginBottom: 4 }}>{fmt(data.s2sToday, data.currency)}</p>
-        <p style={{ fontSize: 13, color: C.textTertiary, marginBottom: 16 }}>из дневного лимита {fmt(data.s2sDaily, data.currency)}</p>
+        <p style={{ fontSize: 12, color: C.textSec, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 8 }}>{t('dashboard.s2sTitle')}</p>
+        <p style={{ fontSize: 48, fontWeight: 800, letterSpacing: -2, lineHeight: 1, color: mainColor, marginBottom: 4 }}>{fmt(data.s2sToday, data.currency, locale)}</p>
+        <p style={{ fontSize: 13, color: C.textTertiary, marginBottom: 16 }}>{t('dashboard.dailyLimitLine', { amount: fmt(data.s2sDaily, data.currency, locale) })}</p>
         {data.s2sStatus === 'OVERSPENT' && (
           <div style={{ background: C.redBg, borderRadius: 8, padding: '8px 12px', marginBottom: 12 }}>
-            <p style={{ fontSize: 13, color: C.red, fontWeight: 600 }}>Перерасход на {fmt(data.todayTotal - data.s2sDaily, data.currency)}</p>
-            <p style={{ fontSize: 12, color: C.textTertiary }}>Завтра лимит уменьшится</p>
+            <p style={{ fontSize: 13, color: C.red, fontWeight: 600 }}>{t('dashboard.overspentBy', { amount: fmt(data.todayTotal - data.s2sDaily, data.currency, locale) })}</p>
+            <p style={{ fontSize: 12, color: C.textTertiary }}>{t('dashboard.tomorrowLowered')}</p>
           </div>
         )}
         <div style={{ borderTop: '1px solid rgba(139,92,246,0.15)', paddingTop: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-          <span style={{ fontSize: 13, color: C.textSec }}>Осталось в периоде</span>
-          <span style={{ fontSize: 18, fontWeight: 700, color: C.green }}>{fmt(data.periodRemaining ?? Math.max(0, data.s2sPeriod - data.periodSpent), data.currency)}</span>
+          <span style={{ fontSize: 13, color: C.textSec }}>{t('dashboard.periodRemaining')}</span>
+          <span style={{ fontSize: 18, fontWeight: 700, color: C.green }}>{fmt(data.periodRemaining ?? Math.max(0, data.s2sPeriod - data.periodSpent), data.currency, locale)}</span>
         </div>
         {data.cashOnHand != null && (
           <div style={{ borderTop: '1px solid rgba(139,92,246,0.15)', paddingTop: 14, marginTop: 0 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-              <span style={{ fontSize: 13, color: C.textSec }}>На руках сейчас</span>
-              <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{fmt(data.cashOnHand, data.currency)}</span>
+              <span style={{ fontSize: 13, color: C.textSec }}>{t('dashboard.cashOnHand')}</span>
+              <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{fmt(data.cashOnHand, data.currency, locale)}</span>
             </div>
             {data.reservedUpcoming != null && data.reservedUpcoming > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: 12, color: C.textTertiary }}>Зарезервировано (до выплаты)</span>
-                <span style={{ fontSize: 13, fontWeight: 600, color: C.orange }}>−{fmt(data.reservedUpcoming, data.currency)}</span>
+                <span style={{ fontSize: 12, color: C.textTertiary }}>{t('dashboard.reservedUntilPay')}</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: C.orange }}>−{fmt(data.reservedUpcoming, data.currency, locale)}</span>
               </div>
             )}
           </div>
@@ -712,11 +744,11 @@ function Dashboard({ data, onAddExpense, onOpenDebts, onOpenEF, onOpenSummary, s
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
         <button onClick={onAddExpense} style={{ background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 12, padding: '14px 12px', display: 'flex', alignItems: 'center', gap: 10, color: C.text, fontSize: 14, fontWeight: 500, fontFamily: 'inherit', cursor: 'pointer' }}>
           <span style={{ width: 36, height: 36, borderRadius: 10, background: C.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>+</span>
-          Добавить расход
+          {t('dashboard.addExpense')}
         </button>
         <button onClick={onOpenDebts} style={{ background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 12, padding: '14px 12px', display: 'flex', alignItems: 'center', gap: 10, color: C.text, fontSize: 14, fontWeight: 500, fontFamily: 'inherit', cursor: 'pointer' }}>
           <span style={{ width: 36, height: 36, borderRadius: 10, background: C.orangeBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>💳</span>
-          Долги
+          {t('dashboard.debtsBtn')}
         </button>
       </div>
 
@@ -724,13 +756,13 @@ function Dashboard({ data, onAddExpense, onOpenDebts, onOpenEF, onOpenSummary, s
       {data.emergencyFund && data.emergencyFund.targetAmount > 0 && (
         <Card style={{ cursor: 'pointer' }} onClick={onOpenEF}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>Подушка безопасности</span>
-            <span style={{ fontSize: 13, color: C.textSec }}>{fmt(data.emergencyFund.currentAmount, data.currency)} / {fmt(data.emergencyFund.targetAmount, data.currency)}</span>
+            <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{t('dashboard.efTitle')}</span>
+            <span style={{ fontSize: 13, color: C.textSec }}>{fmt(data.emergencyFund.currentAmount, data.currency, locale)} / {fmt(data.emergencyFund.targetAmount, data.currency, locale)}</span>
           </div>
           <ProgressBar value={data.emergencyFund.currentAmount} max={data.emergencyFund.targetAmount} color={C.accent} />
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textTertiary, marginTop: 8 }}>
             <span>{efPct}%</span>
-            <span>цель: {data.emergencyFund.targetAmount > 0 ? `${Math.round(data.emergencyFund.targetAmount / Math.max(1, data.emergencyFund.targetAmount / (data.emergencyFund as any).targetMonths || 3))} мес.` : '—'}</span>
+            <span>{data.emergencyFund.targetAmount > 0 ? t('dashboard.efGoal', { n: Math.round(data.emergencyFund.targetAmount / Math.max(1, data.emergencyFund.targetAmount / ((data.emergencyFund as any).targetMonths || 3))) }) : '—'}</span>
           </div>
         </Card>
       )}
@@ -739,8 +771,8 @@ function Dashboard({ data, onAddExpense, onOpenDebts, onOpenEF, onOpenSummary, s
       {data.debts && data.debts.length > 0 && (
         <Card>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>Долги (Лавина)</span>
-            <span style={{ fontSize: 11, background: C.accentBg, color: C.accentLight, padding: '3px 8px', borderRadius: 10, fontWeight: 600 }}>{data.debts.length} активн.</span>
+            <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{t('dashboard.debtsAvalanche')}</span>
+            <span style={{ fontSize: 11, background: C.accentBg, color: C.accentLight, padding: '3px 8px', borderRadius: 10, fontWeight: 600 }}>{t('dashboard.debtsActive', { n: data.debts.length })}</span>
           </div>
           {data.debts.slice(0, 3).map((d) => (
             <div key={d.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: `1px solid ${C.borderSubtle}` }}>
@@ -750,18 +782,18 @@ function Dashboard({ data, onAddExpense, onOpenDebts, onOpenEF, onOpenSummary, s
                   {d.title}
                 </p>
                 <p style={{ fontSize: 12, color: C.textTertiary }}>
-                  APR {(d.apr * 100).toFixed(1)}%{d.isFocusDebt ? ' · Фокус' : ''}
+                  {t('dashboard.aprLine', { pct: (d.apr * 100).toFixed(1) })}{d.isFocusDebt ? t('dashboard.focusSuffix') : ''}
                 </p>
               </div>
               <div style={{ textAlign: 'right' }}>
-                <p style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{fmt(d.balance, data.currency)}</p>
-                <p style={{ fontSize: 12, color: C.textTertiary }}>мин {fmt(d.minPayment, data.currency)}</p>
+                <p style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{fmt(d.balance, data.currency, locale)}</p>
+                <p style={{ fontSize: 12, color: C.textTertiary }}>{t('dashboard.minLine', { amount: fmt(d.minPayment, data.currency, locale) })}</p>
               </div>
             </div>
           ))}
           {data.debts.length > 3 && (
             <button onClick={onOpenDebts} style={{ width: '100%', padding: '10px 0', background: 'none', border: 'none', color: C.accentLight, fontSize: 13, fontWeight: 500, cursor: 'pointer', marginTop: 8, fontFamily: 'inherit' }}>
-              Показать все ({data.debts.length})
+              {t('dashboard.showAll', { n: data.debts.length })}
             </button>
           )}
         </Card>
@@ -771,13 +803,13 @@ function Dashboard({ data, onAddExpense, onOpenDebts, onOpenEF, onOpenSummary, s
       {data.todayExpenses.length > 0 && (
         <Card>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <span style={{ fontSize: 14, fontWeight: 600 }}>Сегодня</span>
-            <span style={{ fontSize: 13, color: C.red, fontWeight: 600 }}>-{fmt(data.todayTotal, data.currency)}</span>
+            <span style={{ fontSize: 14, fontWeight: 600 }}>{t('common.today')}</span>
+            <span style={{ fontSize: 13, color: C.red, fontWeight: 600 }}>-{fmt(data.todayTotal, data.currency, locale)}</span>
           </div>
           {data.todayExpenses.slice(0, 3).map((e) => (
             <div key={e.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${C.borderSubtle}` }}>
-              <span style={{ fontSize: 14, color: C.textSec }}>{e.note || 'Расход'}</span>
-              <span style={{ fontSize: 14, fontWeight: 600, color: C.red }}>-{fmt(e.amount, data.currency)}</span>
+              <span style={{ fontSize: 14, color: C.textSec }}>{e.note || t('addExpense.defaultNote')}</span>
+              <span style={{ fontSize: 14, fontWeight: 600, color: C.red }}>-{fmt(e.amount, data.currency, locale)}</span>
             </div>
           ))}
         </Card>
@@ -786,13 +818,13 @@ function Dashboard({ data, onAddExpense, onOpenDebts, onOpenEF, onOpenSummary, s
       {/* Period spending progress */}
       <Card>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-          <span style={{ fontSize: 14, fontWeight: 600 }}>Расходы за период</span>
-          <span style={{ fontSize: 13, color: C.textSec }}>{fmt(data.periodSpent, data.currency)} / {fmt(data.s2sPeriod, data.currency)}</span>
+          <span style={{ fontSize: 14, fontWeight: 600 }}>{t('dashboard.expensesPeriod')}</span>
+          <span style={{ fontSize: 13, color: C.textSec }}>{fmt(data.periodSpent, data.currency, locale)} / {fmt(data.s2sPeriod, data.currency, locale)}</span>
         </div>
         <ProgressBar value={data.periodSpent} max={data.s2sPeriod} color={periodPct > 80 ? C.red : periodPct > 50 ? C.orange : C.green} />
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textTertiary, marginTop: 8 }}>
-          <span>{periodPct}% потрачено</span>
-          <span>{data.daysLeft} дн. осталось</span>
+          <span>{t('dashboard.pctSpent', { pct: periodPct })}</span>
+          <span>{t('dashboard.daysLeft', { n: data.daysLeft })}</span>
         </div>
       </Card>
     </div>
@@ -802,6 +834,8 @@ function Dashboard({ data, onAddExpense, onOpenDebts, onOpenEF, onOpenSummary, s
 // ── Add Expense (Numpad) ─────────────────────────────────────────────────────
 
 function AddExpense({ s2sToday, currency, onSave, onBack }: { s2sToday: number; currency: string; onSave: (amount: number, note: string) => Promise<void>; onBack: () => void }) {
+  const t = useT();
+  const locale = useLocale();
   const [input, setInput] = useState('0');
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
@@ -831,21 +865,21 @@ function AddExpense({ s2sToday, currency, onSave, onBack }: { s2sToday: number; 
     <div style={{ background: C.bg, height: vh, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 20px 0' }}>
         <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.textSec, fontSize: 20, cursor: 'pointer' }}>←</button>
-        <span style={{ fontSize: 16, fontWeight: 600, color: C.text }}>Новый расход</span>
+        <span style={{ fontSize: 16, fontWeight: 600, color: C.text }}>{t('addExpense.title')}</span>
         <span style={{ width: 28 }} />
       </div>
 
       <div style={{ textAlign: 'center', padding: '32px 20px 16px' }}>
         <p style={{ fontSize: 16, color: C.textTertiary, marginBottom: 6 }}>{currency === 'USD' ? '$' : '₽'}</p>
-        <p style={{ fontSize: 52, fontWeight: 800, letterSpacing: -2, color: C.text, lineHeight: 1 }}>{parseFloat(input).toLocaleString('ru-RU', { maximumFractionDigits: 2 })}</p>
+        <p style={{ fontSize: 52, fontWeight: 800, letterSpacing: -2, color: C.text, lineHeight: 1 }}>{parseFloat(input).toLocaleString(locale === 'ru' ? 'ru-RU' : 'en-US', { maximumFractionDigits: 2 })}</p>
         <p style={{ fontSize: 14, color: C.textSec, marginTop: 10 }}>
-          Останется сегодня: <span style={{ color: remaining > 0 ? C.green : C.red, fontWeight: 600 }}>{fmt(remaining, currency)}</span>
+          {t('addExpense.remainsToday')} <span style={{ color: remaining > 0 ? C.green : C.red, fontWeight: 600 }}>{fmt(remaining, currency, locale)}</span>
         </p>
       </div>
 
       <div style={{ margin: '0 16px 8px', background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 10, padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
         <span style={{ color: C.textMuted, fontSize: 16 }}>✎</span>
-        <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Добавить заметку..." style={{ background: 'none', border: 'none', color: C.textSec, fontSize: 14, fontFamily: 'inherit', outline: 'none', flex: 1 }} />
+        <input value={note} onChange={(e) => setNote(e.target.value)} placeholder={t('addExpense.notePh')} style={{ background: 'none', border: 'none', color: C.textSec, fontSize: 14, fontFamily: 'inherit', outline: 'none', flex: 1 }} />
       </div>
 
       <div style={{ flex: 1 }} />
@@ -860,7 +894,7 @@ function AddExpense({ s2sToday, currency, onSave, onBack }: { s2sToday: number; 
 
       <div style={{ padding: '8px 16px 24px' }}>
         <PrimaryBtn onClick={save} disabled={amountKop <= 0 || saving}>
-          {saving ? 'Сохраняем...' : `Сохранить · ${fmt(amountKop, currency)}`}
+          {saving ? t('common.saving') : t('addExpense.saveWithAmount', { amount: fmt(amountKop, currency, locale) })}
         </PrimaryBtn>
       </div>
     </div>
@@ -870,6 +904,8 @@ function AddExpense({ s2sToday, currency, onSave, onBack }: { s2sToday: number; 
 // ── History ──────────────────────────────────────────────────────────────────
 
 function History({ api, currency, onRefresh }: { api: (path: string, opts?: RequestInit) => Promise<any>; currency: string; onRefresh: () => void }) {
+  const t = useT();
+  const locale = useLocale();
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -899,11 +935,11 @@ function History({ api, currency, onRefresh }: { api: (path: string, opts?: Requ
 
   return (
     <div style={{ background: C.bg, minHeight: '100vh', padding: '20px 16px', paddingBottom: 'calc(90px + env(safe-area-inset-bottom, 0px))' }}>
-      <p style={{ fontSize: 22, fontWeight: 700, marginBottom: 16, color: C.text }}>История</p>
+      <p style={{ fontSize: 22, fontWeight: 700, marginBottom: 16, color: C.text }}>{t('history.title')}</p>
 
       <div style={{ background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 10, padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <span style={{ fontSize: 13, color: C.textSec }}>Текущий период</span>
-        <span style={{ fontSize: 13, fontWeight: 600, color: C.red }}>-{fmt(total, currency)}</span>
+        <span style={{ fontSize: 13, color: C.textSec }}>{t('history.currentPeriod')}</span>
+        <span style={{ fontSize: 13, fontWeight: 600, color: C.red }}>-{fmt(total, currency, locale)}</span>
       </div>
 
       {loading && <div style={{ textAlign: 'center', paddingTop: 40 }}><Spinner /></div>}
@@ -911,24 +947,24 @@ function History({ api, currency, onRefresh }: { api: (path: string, opts?: Requ
       {!loading && groups.length === 0 && (
         <div style={{ textAlign: 'center', paddingTop: 60, color: C.textTertiary }}>
           <p style={{ fontSize: 32, marginBottom: 12 }}>📋</p>
-          <p>Расходов пока нет</p>
+          <p>{t('history.empty')}</p>
         </div>
       )}
 
       {groups.map((g) => (
         <div key={g.key}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 0 8px', fontSize: 13, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1px' }}>
-            <span>{dayLabel(g.date)}</span>
-            <span style={{ color: C.textSec, fontWeight: 500, textTransform: 'none', letterSpacing: 0 }}>-{fmt(g.total, currency)}</span>
+            <span>{dayLabel(g.date, locale)}</span>
+            <span style={{ color: C.textSec, fontWeight: 500, textTransform: 'none', letterSpacing: 0 }}>-{fmt(g.total, currency, locale)}</span>
           </div>
           {g.items.map((e) => (
             <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `1px solid ${C.borderSubtle}` }}>
               <div style={{ width: 40, height: 40, borderRadius: 12, background: C.elevated, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>💳</div>
               <div style={{ flex: 1 }}>
-                <p style={{ fontSize: 14, fontWeight: 500, color: C.text, marginBottom: 2 }}>{e.note || 'Расход'}</p>
-                <p style={{ fontSize: 12, color: C.textTertiary }}>{new Date(e.spentAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</p>
+                <p style={{ fontSize: 14, fontWeight: 500, color: C.text, marginBottom: 2 }}>{e.note || t('addExpense.defaultNote')}</p>
+                <p style={{ fontSize: 12, color: C.textTertiary }}>{new Date(e.spentAt).toLocaleTimeString(locale === 'ru' ? 'ru-RU' : 'en-US', { hour: '2-digit', minute: '2-digit' })}</p>
               </div>
-              <span style={{ fontSize: 15, fontWeight: 600, color: C.red, marginRight: 8 }}>-{fmt(e.amount, currency)}</span>
+              <span style={{ fontSize: 15, fontWeight: 600, color: C.red, marginRight: 8 }}>-{fmt(e.amount, currency, locale)}</span>
               <button
                 onClick={() => handleDelete(e.id)}
                 disabled={deletingId === e.id}
@@ -979,6 +1015,8 @@ interface EFEntry {
 }
 
 function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, opts?: RequestInit) => Promise<any>; onBack: () => void; onRefresh: () => void }) {
+  const t = useT();
+  const locale = useLocale();
   const [ef, setEf] = useState<EFDetail | null>(null);
   const [buckets, setBuckets] = useState<EFBucket[]>([]);
   const [planData, setPlanData] = useState<EFPlanData | null>(null);
@@ -1017,7 +1055,7 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
 
   const handleSubmit = async () => {
     const n = parseFloat(amount);
-    if (isNaN(n) || n <= 0) { setError('Введите корректную сумму'); return; }
+    if (isNaN(n) || n <= 0) { setError(t('validation.invalidAmount')); return; }
     setSaving(true); setError('');
     try {
       await api('/tg/ef/entries', {
@@ -1032,14 +1070,14 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
       setAmount(''); setMode('view'); setAffectsBudget(true); setSelectedBucket(null);
       await Promise.all([load(), onRefresh()]);
     } catch (err: any) {
-      setError(err?.message || 'Ошибка');
+      setError(err?.message || t('common.error'));
     }
     setSaving(false);
   };
 
   const handleSyncBalance = async () => {
     const n = parseFloat(amount);
-    if (isNaN(n) || n < 0) { setError('Введите корректную сумму'); return; }
+    if (isNaN(n) || n < 0) { setError(t('validation.invalidAmount')); return; }
     setSaving(true); setError('');
     try {
       await api('/tg/ef/entries', {
@@ -1048,7 +1086,7 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
       });
       setAmount(''); setMode('view');
       await Promise.all([load(), onRefresh()]);
-    } catch (err: any) { setError(err?.message || 'Ошибка'); }
+    } catch (err: any) { setError(err?.message || t('common.error')); }
     setSaving(false);
   };
 
@@ -1058,12 +1096,12 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
       await api('/tg/ef', { method: 'PATCH', body: JSON.stringify({ targetMonths }) });
       setMode('view');
       await load();
-    } catch (err: any) { setError(err?.message || 'Ошибка'); }
+    } catch (err: any) { setError(err?.message || t('common.error')); }
     setSaving(false);
   };
 
   const handleAddBucket = async () => {
-    if (!newBucket.name.trim()) { setError('Укажите название'); return; }
+    if (!newBucket.name.trim()) { setError(t('validation.requiredName')); return; }
     setSaving(true); setError('');
     try {
       await api('/tg/ef/buckets', {
@@ -1078,16 +1116,19 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
       setNewBucket({ name: '', type: 'SAVINGS_ACCOUNT', amount: '', countsForEF: true });
       setMode('view');
       await Promise.all([load(), onRefresh()]);
-    } catch (err: any) { setError(err?.message || 'Ошибка'); }
+    } catch (err: any) { setError(err?.message || t('common.error')); }
     setSaving(false);
   };
 
   const bucketTypes = [
-    { v: 'SAVINGS_ACCOUNT', l: 'Накопительный счёт' }, { v: 'DEPOSIT', l: 'Вклад' },
-    { v: 'CASH', l: 'Наличные' }, { v: 'CRYPTO', l: 'Крипта' },
-    { v: 'BROKERAGE', l: 'Брокерский счёт' }, { v: 'OTHER', l: 'Другое' },
+    { v: 'SAVINGS_ACCOUNT', l: tr(locale, 'bucketTypes.SAVINGS_ACCOUNT') },
+    { v: 'DEPOSIT', l: tr(locale, 'bucketTypes.DEPOSIT') },
+    { v: 'CASH', l: tr(locale, 'bucketTypes.CASH') },
+    { v: 'CRYPTO', l: tr(locale, 'bucketTypes.CRYPTO') },
+    { v: 'BROKERAGE', l: tr(locale, 'bucketTypes.BROKERAGE') },
+    { v: 'OTHER', l: tr(locale, 'bucketTypes.OTHER') },
   ];
-  const bucketTypeLabel = (t: string) => bucketTypes.find((bt) => bt.v === t)?.l ?? t;
+  const bucketTypeLabel = (type: string) => bucketTypes.find((bt) => bt.v === type)?.l ?? type;
 
   const currency = ef?.currency ?? 'RUB';
 
@@ -1095,7 +1136,7 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
   if (!ef) return (
     <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px' }}>
       <button onClick={onBack} style={{ background: C.surface, border: 'none', borderRadius: 10, color: C.textSec, fontSize: 20, width: 40, height: 40, cursor: 'pointer', fontFamily: 'inherit', marginBottom: 20 }}>←</button>
-      <p style={{ color: C.textSec, textAlign: 'center', marginTop: 40 }}>Подушка безопасности не настроена</p>
+      <p style={{ color: C.textSec, textAlign: 'center', marginTop: 40 }}>{t('ef.notSetUp')}</p>
     </div>
   );
 
@@ -1108,7 +1149,7 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
 
   const handleSaveCustomPlan = async () => {
     const n = parseFloat(customAmount);
-    if (isNaN(n) || n <= 0) { setError('Введите корректную сумму'); return; }
+    if (isNaN(n) || n <= 0) { setError(t('validation.invalidAmount')); return; }
     setSaving(true); setError('');
     try {
       await api('/tg/ef/plan', {
@@ -1117,7 +1158,7 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
       });
       setCustomMode(false); setCustomAmount('');
       await load();
-    } catch (err: any) { setError(err?.message || 'Ошибка'); }
+    } catch (err: any) { setError(err?.message || t('common.error')); }
     setSaving(false);
   };
 
@@ -1126,23 +1167,23 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
         <button onClick={onBack} style={{ background: C.surface, border: 'none', borderRadius: 10, color: C.textSec, fontSize: 20, width: 40, height: 40, cursor: 'pointer', fontFamily: 'inherit' }}>←</button>
-        <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, margin: 0 }}>Подушка безопасности</h2>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, margin: 0 }}>{t('ef.title')}</h2>
       </div>
 
       {/* Balance card */}
       <Card style={{ background: 'linear-gradient(145deg, #1E1535, #1A1028)', border: '1px solid rgba(139,92,246,0.25)' }}>
-        <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 4 }}>Накоплено</p>
-        <p style={{ fontSize: 28, fontWeight: 800, color: C.text, marginBottom: 8 }}>{fmt(ef.currentAmount, currency)}</p>
+        <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 4 }}>{t('ef.saved')}</p>
+        <p style={{ fontSize: 28, fontWeight: 800, color: C.text, marginBottom: 8 }}>{fmt(ef.currentAmount, currency, locale)}</p>
         <ProgressBar value={ef.currentAmount} max={Math.max(1, ef.targetAmount)} color={C.accent} />
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textTertiary, marginTop: 8 }}>
-          <span>{ef.progressPct}% от цели</span>
-          <span>Цель: {fmt(ef.targetAmount, currency)}</span>
+          <span>{t('ef.pctOfGoal', { pct: ef.progressPct })}</span>
+          <span>{t('ef.goal', { amount: fmt(ef.targetAmount, currency, locale) })}</span>
         </div>
         {ef.remainingToTarget > 0 && (
-          <p style={{ fontSize: 12, color: C.textSec, marginTop: 6 }}>Осталось: {fmt(ef.remainingToTarget, currency)}</p>
+          <p style={{ fontSize: 12, color: C.textSec, marginTop: 6 }}>{t('ef.leftToTarget', { amount: fmt(ef.remainingToTarget, currency, locale) })}</p>
         )}
         {ef.currentAmount >= ef.targetAmount && ef.targetAmount > 0 && (
-          <p style={{ fontSize: 13, color: C.green, fontWeight: 600, marginTop: 6 }}>Цель достигнута!</p>
+          <p style={{ fontSize: 13, color: C.green, fontWeight: 600, marginTop: 6 }}>{t('ef.goalReached')}</p>
         )}
       </Card>
 
@@ -1150,11 +1191,11 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
       {mode === 'view' && (
         <>
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-            <PrimaryBtn onClick={() => { setMode('deposit'); setAmount(''); setError(''); }} style={{ flex: 1 }}>Пополнить</PrimaryBtn>
-            <button onClick={() => { setMode('withdraw'); setAmount(''); setError(''); }} style={{ flex: 1, padding: '13px 0', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>Вывести</button>
+            <PrimaryBtn onClick={() => { setMode('deposit'); setAmount(''); setError(''); }} style={{ flex: 1 }}>{t('ef.deposit')}</PrimaryBtn>
+            <button onClick={() => { setMode('withdraw'); setAmount(''); setError(''); }} style={{ flex: 1, padding: '13px 0', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>{t('ef.withdraw')}</button>
           </div>
           <button onClick={() => { setMode('edit-goal'); setError(''); }} style={{ width: '100%', padding: '12px 0', background: 'transparent', border: `1px dashed ${C.border}`, borderRadius: 10, color: C.accent, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer', marginBottom: 20 }}>
-            Изменить цель ({ef.targetMonths} мес.)
+            {t('ef.changeGoal', { n: ef.targetMonths })}
           </button>
         </>
       )}
@@ -1163,36 +1204,36 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
       {(mode === 'deposit' || mode === 'withdraw') && (
         <Card>
           <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 12 }}>
-            {mode === 'deposit' ? 'Пополнить подушку' : 'Вывести из подушки'}
+            {mode === 'deposit' ? t('ef.depositTitle') : t('ef.withdrawTitle')}
           </p>
           <input
             type="number" inputMode="decimal" value={amount}
             onChange={(e) => setAmount(e.target.value)}
-            placeholder="Сумма ₽" autoFocus
+            placeholder={t('ef.amountPh')} autoFocus
             style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 10, padding: '14px 16px', fontSize: 18, fontWeight: 700, color: C.text, fontFamily: 'inherit', outline: 'none', marginBottom: 12, boxSizing: 'border-box' }}
           />
 
           {/* Budget impact choice */}
-          <p style={{ fontSize: 12, color: C.textSec, marginBottom: 8 }}>Откуда деньги?</p>
+          <p style={{ fontSize: 12, color: C.textSec, marginBottom: 8 }}>{t('ef.fromWhere')}</p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
             <button onClick={() => setAffectsBudget(true)} style={{ textAlign: 'left', padding: '12px 14px', background: affectsBudget ? C.accentBg : C.elevated, border: `1px solid ${affectsBudget ? C.accent : C.border}`, borderRadius: 10, color: affectsBudget ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>
-              {mode === 'deposit' ? '💰 Из доступных денег' : '💰 Вернуть в доступные'}
+              {mode === 'deposit' ? t('ef.fromAvailable') : t('ef.toAvailable')}
               <span style={{ display: 'block', fontSize: 11, color: C.textTertiary, marginTop: 2 }}>
-                {mode === 'deposit' ? 'Уменьшит дневной лимит' : 'Увеличит дневной лимит'}
+                {mode === 'deposit' ? t('ef.fromAvailableSub') : t('ef.toAvailableSub')}
               </span>
             </button>
             <button onClick={() => setAffectsBudget(false)} style={{ textAlign: 'left', padding: '12px 14px', background: !affectsBudget ? C.accentBg : C.elevated, border: `1px solid ${!affectsBudget ? C.accent : C.border}`, borderRadius: 10, color: !affectsBudget ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>
-              {mode === 'deposit' ? '📊 Уже лежит на счёте' : '📊 Просто исправляю баланс'}
-              <span style={{ display: 'block', fontSize: 11, color: C.textTertiary, marginTop: 2 }}>Не влияет на дневной лимит</span>
+              {mode === 'deposit' ? t('ef.fromAccount') : t('ef.fromAccountWithdraw')}
+              <span style={{ display: 'block', fontSize: 11, color: C.textTertiary, marginTop: 2 }}>{t('ef.fromAccountSub')}</span>
             </button>
           </div>
 
           {error && <p style={{ fontSize: 13, color: C.red, marginBottom: 10 }}>⚠ {error}</p>}
           <div style={{ display: 'flex', gap: 8 }}>
             <PrimaryBtn onClick={!affectsBudget && mode === 'deposit' ? handleSyncBalance : handleSubmit} disabled={saving || !amount} style={{ flex: 1 }}>
-              {saving ? '...' : 'Подтвердить'}
+              {saving ? '...' : t('common.confirm')}
             </PrimaryBtn>
-            <button onClick={() => { setMode('view'); setError(''); }} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>Отмена</button>
+            <button onClick={() => { setMode('view'); setError(''); }} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>{t('common.cancel')}</button>
           </div>
         </Card>
       )}
@@ -1200,18 +1241,18 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
       {/* Edit goal */}
       {mode === 'edit-goal' && (
         <Card>
-          <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 12 }}>Цель: сколько месяцев</p>
+          <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 12 }}>{t('ef.goalHeader')}</p>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
             {[1, 2, 3, 4, 6].map((m) => (
               <button key={m} onClick={() => setTargetMonths(m)} style={{ padding: '10px 18px', borderRadius: 24, background: targetMonths === m ? C.accentBgStrong : C.elevated, border: `1px solid ${targetMonths === m ? C.accent : C.border}`, color: targetMonths === m ? C.accentLight : C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>
-                {m} мес.
+                {t('ef.monthsSuffix', { n: m })}
               </button>
             ))}
           </div>
           {error && <p style={{ fontSize: 13, color: C.red, marginBottom: 10 }}>⚠ {error}</p>}
           <div style={{ display: 'flex', gap: 8 }}>
-            <PrimaryBtn onClick={handleGoalSave} disabled={saving} style={{ flex: 1 }}>{saving ? '...' : 'Сохранить'}</PrimaryBtn>
-            <button onClick={() => { setMode('view'); setError(''); }} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>Отмена</button>
+            <PrimaryBtn onClick={handleGoalSave} disabled={saving} style={{ flex: 1 }}>{saving ? '...' : t('common.save')}</PrimaryBtn>
+            <button onClick={() => { setMode('view'); setError(''); }} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>{t('common.cancel')}</button>
           </div>
         </Card>
       )}
@@ -1219,27 +1260,27 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
       {/* Add bucket form */}
       {mode === 'add-bucket' && (
         <Card>
-          <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 12 }}>Новое накопление</p>
-          <input value={newBucket.name} onChange={(e) => setNewBucket({ ...newBucket, name: e.target.value })} placeholder="Название (напр. Вклад Тинькофф)" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
+          <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 12 }}>{t('ef.newBucket')}</p>
+          <input value={newBucket.name} onChange={(e) => setNewBucket({ ...newBucket, name: e.target.value })} placeholder={t('ef.bucketNamePh')} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
           <select value={newBucket.type} onChange={(e) => setNewBucket({ ...newBucket, type: e.target.value })} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.textSec, fontSize: 13, fontFamily: 'inherit', marginBottom: 10, outline: 'none' }}>
-            {bucketTypes.map((t) => <option key={t.v} value={t.v}>{t.l}</option>)}
+            {bucketTypes.map((bt) => <option key={bt.v} value={bt.v}>{bt.l}</option>)}
           </select>
-          <input type="number" value={newBucket.amount} onChange={(e) => setNewBucket({ ...newBucket, amount: e.target.value })} placeholder="Текущий баланс ₽" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
+          <input type="number" value={newBucket.amount} onChange={(e) => setNewBucket({ ...newBucket, amount: e.target.value })} placeholder={t('ef.bucketAmountPh')} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
           {newBucket.type === 'CRYPTO' && (
             <p style={{ fontSize: 11, color: C.orange, marginBottom: 10, padding: '8px 12px', background: `${C.orange}15`, borderRadius: 8 }}>
-              Крипта волатильна и по умолчанию не считается надёжной частью подушки
+              {t('ef.cryptoWarning')}
             </p>
           )}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-            <span style={{ fontSize: 13, color: C.text }}>Учитывать в подушке</span>
+            <span style={{ fontSize: 13, color: C.text }}>{t('ef.countToward')}</span>
             <div onClick={() => setNewBucket({ ...newBucket, countsForEF: !newBucket.countsForEF })} style={{ width: 40, height: 24, background: newBucket.countsForEF ? C.accent : C.elevated, border: `1px solid ${C.border}`, borderRadius: 12, position: 'relative', cursor: 'pointer', transition: 'background 0.2s', flexShrink: 0 }}>
               <div style={{ width: 20, height: 20, background: '#fff', borderRadius: '50%', position: 'absolute', top: 1, left: newBucket.countsForEF ? 18 : 1, transition: 'left 0.2s' }} />
             </div>
           </div>
           {error && <p style={{ fontSize: 13, color: C.red, marginBottom: 10 }}>⚠ {error}</p>}
           <div style={{ display: 'flex', gap: 8 }}>
-            <PrimaryBtn onClick={handleAddBucket} disabled={saving || !newBucket.name.trim()} style={{ flex: 1 }}>{saving ? '...' : 'Добавить'}</PrimaryBtn>
-            <button onClick={() => { setMode('view'); setError(''); }} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>Отмена</button>
+            <PrimaryBtn onClick={handleAddBucket} disabled={saving || !newBucket.name.trim()} style={{ flex: 1 }}>{saving ? '...' : t('common.add')}</PrimaryBtn>
+            <button onClick={() => { setMode('view'); setError(''); }} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>{t('common.cancel')}</button>
           </div>
         </Card>
       )}
@@ -1247,7 +1288,7 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
       {/* Buckets list */}
       {mode === 'view' && buckets.filter((b) => !b.isArchived).length > 0 && (
         <>
-          <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 10 }}>Где лежат деньги</p>
+          <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 10 }}>{t('ef.bucketsLocation')}</p>
           {buckets.filter((b) => !b.isArchived).map((b) => (
             <Card key={b.id} style={{ padding: '12px 14px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1255,18 +1296,18 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
                   <p style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{b.name}</p>
                   <p style={{ fontSize: 11, color: C.textTertiary, marginTop: 2 }}>
                     {bucketTypeLabel(b.type)}
-                    {b.countsTowardEmergencyFund ? ' · в подушке' : ' · не в подушке'}
+                    {b.countsTowardEmergencyFund ? t('ef.inEf') : t('ef.notInEf')}
                   </p>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 15, fontWeight: 600, color: C.text }}>{fmt(b.currentAmount, currency)}</span>
+                  <span style={{ fontSize: 15, fontWeight: 600, color: C.text }}>{fmt(b.currentAmount, currency, locale)}</span>
                   <button onClick={() => { setSelectedBucket(b); setMode('deposit'); setAmount(''); setError(''); }} style={{ background: C.accentBg, border: 'none', borderRadius: 6, padding: '4px 8px', color: C.accentLight, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>+</button>
                 </div>
               </div>
             </Card>
           ))}
           <button onClick={() => { setMode('add-bucket'); setError(''); setNewBucket({ name: '', type: 'SAVINGS_ACCOUNT', amount: '', countsForEF: true }); }} style={{ width: '100%', padding: '12px 0', background: 'transparent', border: `1px dashed ${C.border}`, borderRadius: 10, color: C.accent, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer', marginBottom: 16 }}>
-            + Добавить накопление
+            {t('ef.addBucket')}
           </button>
         </>
       )}
@@ -1274,40 +1315,40 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
       {/* No buckets yet — CTA */}
       {mode === 'view' && buckets.filter((b) => !b.isArchived).length === 0 && (
         <button onClick={() => { setMode('add-bucket'); setError(''); setNewBucket({ name: '', type: 'SAVINGS_ACCOUNT', amount: '', countsForEF: true }); }} style={{ width: '100%', padding: '16px 0', background: 'transparent', border: `1px dashed ${C.border}`, borderRadius: 10, color: C.accent, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer', marginBottom: 16 }}>
-          + Добавить накопление
+          {t('ef.addBucket')}
         </button>
       )}
 
       {/* Plan scenarios */}
       {mode === 'view' && planData && Array.isArray(planData.scenarios) && planData.scenarios.length > 0 && (
         <>
-          <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 6 }}>План достижения цели</p>
+          <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 6 }}>{t('ef.planTitle')}</p>
           {planData.feasibility && (
             <p style={{ fontSize: 12, marginBottom: 10, color: planData.feasibility === 'REALISTIC' ? C.green : planData.feasibility === 'TIGHT' ? C.orange : C.red }}>
-              {planData.feasibility === 'REALISTIC' ? 'Цель достижима' : planData.feasibility === 'TIGHT' ? 'Напряжённо, но возможно' : 'Цель недостижима в выбранный срок'}
+              {planData.feasibility === 'REALISTIC' ? t('ef.feasibilityRealistic') : planData.feasibility === 'TIGHT' ? t('ef.feasibilityTight') : t('ef.feasibilityUnreal')}
             </p>
           )}
           {planData.message && <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 10 }}>{planData.message}</p>}
-          {planData.monthlyFreeCashflow != null && <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 10 }}>Свободный поток: {fmt(planData.monthlyFreeCashflow, currency)}/мес</p>}
+          {planData.monthlyFreeCashflow != null && <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 10 }}>{t('ef.freeFlow', { amount: fmt(planData.monthlyFreeCashflow, currency, locale) })}</p>}
           {planData.scenarios.map((sc: any) => {
             const isSelected = planData.selectedPlan?.mode === 'SYSTEM' && planData.selectedPlan?.pace === sc.pace;
+            const freqLabel = sc.frequency === 'WEEKLY' ? tr(locale, 'freqShort.WEEKLY') : sc.frequency === 'BIWEEKLY' ? tr(locale, 'freqShort.BIWEEKLY') : tr(locale, 'freqShort.MONTHLY');
+            const paceLabel = sc.pace === 'GENTLE' ? t('ef.paceGentle') : sc.pace === 'OPTIMAL' ? t('ef.paceOptimal') : t('ef.paceAggressive');
             return (
               <Card key={sc.pace} onClick={() => handleSelectPace(sc.pace)} style={{ padding: '12px 14px', borderLeft: isSelected ? `3px solid ${C.accent}` : sc.status === 'RECOMMENDED' ? `3px solid ${C.accent}40` : undefined, cursor: 'pointer', background: isSelected ? C.accentBg : undefined }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
-                    {sc.pace === 'GENTLE' ? 'Щадящий' : sc.pace === 'OPTIMAL' ? 'Оптимальный' : 'Агрессивный'}
-                  </span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{paceLabel}</span>
                   <div style={{ display: 'flex', gap: 4 }}>
-                    {isSelected && <span style={{ fontSize: 10, background: C.green + '30', color: C.green, padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>Выбрано</span>}
-                    {sc.status === 'RECOMMENDED' && <span style={{ fontSize: 10, background: C.accentBg, color: C.accentLight, padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>Рекомендуем</span>}
+                    {isSelected && <span style={{ fontSize: 10, background: C.green + '30', color: C.green, padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>{t('ef.selected')}</span>}
+                    {sc.status === 'RECOMMENDED' && <span style={{ fontSize: 10, background: C.accentBg, color: C.accentLight, padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>{t('ef.recommended')}</span>}
                   </div>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textSec }}>
-                  <span>{fmt(sc.contributionAmount, currency)}/{sc.frequency === 'WEEKLY' ? 'нед' : sc.frequency === 'BIWEEKLY' ? '2 нед' : 'мес'}</span>
-                  <span>{sc.projectedMonthsToTarget != null ? `~${sc.projectedMonthsToTarget} мес.` : 'Не определён'}</span>
+                  <span>{t('ef.perFreq', { amount: fmt(sc.contributionAmount, currency, locale), freq: freqLabel })}</span>
+                  <span>{sc.projectedMonthsToTarget != null ? t('ef.monthsApprox', { n: sc.projectedMonthsToTarget }) : t('common.notDefined')}</span>
                 </div>
                 {sc.loadPctOfFreeCashflow != null && (
-                  <p style={{ fontSize: 11, color: C.textTertiary, marginTop: 4 }}>{sc.loadPctOfFreeCashflow}% от свободного потока</p>
+                  <p style={{ fontSize: 11, color: C.textTertiary, marginTop: 4 }}>{t('ef.pctOfFlow', { pct: sc.loadPctOfFreeCashflow })}</p>
                 )}
               </Card>
             );
@@ -1316,23 +1357,23 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
           {/* Custom plan button / editor */}
           {!customMode ? (
             <button onClick={() => { setCustomMode(true); setError(''); setCustomAmount(''); }} style={{ width: '100%', padding: '12px 0', background: 'transparent', border: `1px dashed ${C.border}`, borderRadius: 10, color: C.accent, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer', marginBottom: 8 }}>
-              {planData.selectedPlan?.mode === 'CUSTOM' ? 'Изменить свой план' : 'Настроить свой план'}
+              {planData.selectedPlan?.mode === 'CUSTOM' ? t('ef.editCustom') : t('ef.setupCustom')}
             </button>
           ) : (
             <Card>
-              <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 10 }}>Свой план</p>
-              <input type="number" inputMode="decimal" value={customAmount} onChange={(e) => setCustomAmount(e.target.value)} placeholder="Сколько готов откладывать ₽" autoFocus style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 10, padding: '12px 14px', fontSize: 16, fontWeight: 600, color: C.text, fontFamily: 'inherit', outline: 'none', marginBottom: 10, boxSizing: 'border-box' }} />
+              <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 10 }}>{t('ef.customTitle')}</p>
+              <input type="number" inputMode="decimal" value={customAmount} onChange={(e) => setCustomAmount(e.target.value)} placeholder={t('ef.customAmountPh')} autoFocus style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 10, padding: '12px 14px', fontSize: 16, fontWeight: 600, color: C.text, fontFamily: 'inherit', outline: 'none', marginBottom: 10, boxSizing: 'border-box' }} />
               <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
-                {([['MONTHLY', 'мес'], ['BIWEEKLY', '2 нед'], ['WEEKLY', 'нед']] as const).map(([f, l]) => (
+                {([['MONTHLY', tr(locale, 'freqShort.MONTHLY')], ['BIWEEKLY', tr(locale, 'freqShort.BIWEEKLY')], ['WEEKLY', tr(locale, 'freqShort.WEEKLY')]] as const).map(([f, l]) => (
                   <button key={f} onClick={() => setCustomFreq(f as any)} style={{ flex: 1, padding: '8px 0', borderRadius: 20, background: customFreq === f ? C.accentBgStrong : C.elevated, border: `1px solid ${customFreq === f ? C.accent : C.border}`, color: customFreq === f ? C.accentLight : C.textSec, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer' }}>
-                    раз / {l}
+                    {t('ef.perFreqWord', { f: l })}
                   </button>
                 ))}
               </div>
               {error && <p style={{ fontSize: 12, color: C.red, marginBottom: 8 }}>⚠ {error}</p>}
               <div style={{ display: 'flex', gap: 8 }}>
-                <PrimaryBtn onClick={handleSaveCustomPlan} disabled={saving || !customAmount} style={{ flex: 1 }}>{saving ? '...' : 'Сохранить'}</PrimaryBtn>
-                <button onClick={() => { setCustomMode(false); setError(''); }} style={{ flex: 0.5, padding: '12px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>Отмена</button>
+                <PrimaryBtn onClick={handleSaveCustomPlan} disabled={saving || !customAmount} style={{ flex: 1 }}>{saving ? '...' : t('common.save')}</PrimaryBtn>
+                <button onClick={() => { setCustomMode(false); setError(''); }} style={{ flex: 0.5, padding: '12px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>{t('common.cancel')}</button>
               </div>
             </Card>
           )}
@@ -1340,21 +1381,21 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
           {/* My Plan summary */}
           {planData.selectedPlan?.mode && (
             <Card style={{ background: 'linear-gradient(145deg, #1E1535, #1A1028)', border: '1px solid rgba(139,92,246,0.25)', marginTop: 4 }}>
-              <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 4 }}>Мой план</p>
+              <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 4 }}>{t('ef.myPlan')}</p>
               <p style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>
                 {planData.selectedPlan.mode === 'SYSTEM'
-                  ? (planData.selectedPlan.pace === 'GENTLE' ? 'Щадящий' : planData.selectedPlan.pace === 'OPTIMAL' ? 'Оптимальный' : 'Агрессивный')
-                  : 'Свой план'}
+                  ? (planData.selectedPlan.pace === 'GENTLE' ? t('ef.paceGentle') : planData.selectedPlan.pace === 'OPTIMAL' ? t('ef.paceOptimal') : t('ef.paceAggressive'))
+                  : t('ef.customPlanLabel')}
               </p>
               {planData.selectedPlan.contributionAmount != null && (
                 <p style={{ fontSize: 14, color: C.textSec }}>
-                  {fmt(planData.selectedPlan.contributionAmount, currency)} / {planData.selectedPlan.frequency === 'WEEKLY' ? 'нед' : planData.selectedPlan.frequency === 'BIWEEKLY' ? '2 нед' : 'мес'}
+                  {fmt(planData.selectedPlan.contributionAmount, currency, locale)} / {planData.selectedPlan.frequency === 'WEEKLY' ? tr(locale, 'freqShort.WEEKLY') : planData.selectedPlan.frequency === 'BIWEEKLY' ? tr(locale, 'freqShort.BIWEEKLY') : tr(locale, 'freqShort.MONTHLY')}
                 </p>
               )}
               {planData.selectedPlan.projectedMonthsToTarget != null && (
                 <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 4 }}>
-                  Цель через ~{planData.selectedPlan.projectedMonthsToTarget} мес.
-                  {planData.selectedPlan.loadPctOfFreeCashflow != null && ` · ${planData.selectedPlan.loadPctOfFreeCashflow}% потока`}
+                  {t('ef.goalInMonths', { n: planData.selectedPlan.projectedMonthsToTarget })}
+                  {planData.selectedPlan.loadPctOfFreeCashflow != null && ` · ${t('ef.pctOfFlowSuffix', { pct: planData.selectedPlan.loadPctOfFreeCashflow })}`}
                 </p>
               )}
               {planData.selectedPlan.comparisonHint && (
@@ -1368,23 +1409,23 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
       {/* History */}
       {mode === 'view' && entries.length > 0 && (
         <>
-          <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 10, marginTop: 8 }}>История операций</p>
+          <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 10, marginTop: 8 }}>{t('ef.historyTitle')}</p>
           {entries.map((e) => (
             <Card key={e.id} style={{ padding: '12px 14px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
                   <p style={{ fontSize: 13, color: C.text, fontWeight: 500 }}>
-                    {e.type === 'DEPOSIT' ? '↗ Пополнение' : e.type === 'WITHDRAWAL' ? '↙ Вывод' : '🔄 Синхронизация'}
+                    {e.type === 'DEPOSIT' ? t('ef.deposit_short') : e.type === 'WITHDRAWAL' ? t('ef.withdraw_short') : t('ef.sync_short')}
                     {e.bucketName && ` · ${e.bucketName}`}
                   </p>
                   <p style={{ fontSize: 11, color: C.textTertiary, marginTop: 2 }}>
-                    {new Date(e.createdAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}
-                    {e.affectsCurrentBudget && ' · из бюджета'}
+                    {new Date(e.createdAt).toLocaleDateString(locale === 'ru' ? 'ru-RU' : 'en-US', { day: 'numeric', month: 'short' })}
+                    {e.affectsCurrentBudget && t('ef.fromBudget')}
                     {e.note && ` · ${e.note}`}
                   </p>
                 </div>
                 <span style={{ fontSize: 15, fontWeight: 600, color: e.type === 'DEPOSIT' ? C.green : e.type === 'WITHDRAWAL' ? C.red : C.textSec }}>
-                  {e.type === 'WITHDRAWAL' ? '−' : '+'}{fmt(e.amount, currency)}
+                  {e.type === 'WITHDRAWAL' ? '−' : '+'}{fmt(e.amount, currency, locale)}
                 </span>
               </div>
             </Card>
@@ -1398,6 +1439,8 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
 // ── Debts Screen ─────────────────────────────────────────────────────────────
 
 function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: string, opts?: RequestInit) => Promise<any>; currency: string; onRefresh: () => void; onOpenPro?: () => void }) {
+  const t = useT();
+  const locale = useLocale();
   const [debts, setDebts] = useState<Debt[]>([]);
   const [plan, setPlan] = useState<AvalanchePlan | null>(null);
   const [strategy, setStrategy] = useState<DebtStrategy | null>(null);
@@ -1446,10 +1489,10 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
     if (!newDebt.title || !newDebt.balance || !newDebt.minPayment) return;
     setSaveError('');
     const balanceRub = parseFloat(newDebt.balance);
-    if (isNaN(balanceRub) || balanceRub <= 0) { setSaveError('Укажите корректный остаток'); return; }
-    if (balanceRub > 21_474_836) { setSaveError('Максимальный остаток 21 474 836 ₽'); return; }
+    if (isNaN(balanceRub) || balanceRub <= 0) { setSaveError(t('validation.invalidBalance')); return; }
+    if (balanceRub > 21_474_836) { setSaveError(t('validation.maxBalance')); return; }
     const minPay = parseInt(newDebt.minPayment, 10);
-    if (isNaN(minPay) || minPay <= 0) { setSaveError('Укажите корректный минимальный платёж'); return; }
+    if (isNaN(minPay) || minPay <= 0) { setSaveError(t('validation.invalidMinPayment')); return; }
     const aprPct = parseFloat(newDebt.apr || '0');
     setSaving(true);
     try {
@@ -1468,7 +1511,7 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
       setNewDebt({ title: '', type: 'CREDIT_CARD', balance: '', apr: '', minPayment: '', dueDay: '' });
       await Promise.all([load(), onRefresh()]);
     } catch (err: any) {
-      setSaveError(err?.message || 'Ошибка сохранения. Проверьте данные.');
+      setSaveError(err?.message || t('validation.saveErrorDetails'));
     }
     setSaving(false);
   };
@@ -1481,7 +1524,7 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
   const handlePayment = async () => {
     if (!paymentModal) return;
     const amountRub = parseFloat(paymentAmount);
-    if (isNaN(amountRub) || amountRub <= 0) { setPaymentError('Укажите корректную сумму'); return; }
+    if (isNaN(amountRub) || amountRub <= 0) { setPaymentError(t('validation.invalidAmount')); return; }
     setPaymentSaving(true); setPaymentError('');
     try {
       await api(`/tg/debts/${paymentModal.debt.id}/payments`, {
@@ -1490,7 +1533,7 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
       });
       setPaymentModal(null); setPaymentAmount(''); setPaymentNote('');
       await Promise.all([load(), onRefresh()]);
-    } catch { setPaymentError('Ошибка сохранения'); }
+    } catch { setPaymentError(t('validation.saveError')); }
     setPaymentSaving(false);
   };
 
@@ -1511,14 +1554,14 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
     if (!editDebt) return;
     setEditError('');
     const balanceRub = parseFloat(editForm.balance);
-    if (isNaN(balanceRub) || balanceRub <= 0) { setEditError('Укажите корректный остаток'); return; }
-    if (balanceRub > 21_474_836) { setEditError('Максимальный остаток 21 474 836 ₽'); return; }
+    if (isNaN(balanceRub) || balanceRub <= 0) { setEditError(t('validation.invalidBalance')); return; }
+    if (balanceRub > 21_474_836) { setEditError(t('validation.maxBalance')); return; }
     const aprPct = parseFloat(editForm.apr || '0');
-    if (isNaN(aprPct) || aprPct < 0 || aprPct > 100) { setEditError('Ставка от 0 до 100%'); return; }
+    if (isNaN(aprPct) || aprPct < 0 || aprPct > 100) { setEditError(t('validation.invalidApr')); return; }
     const minPay = parseFloat(editForm.minPayment);
-    if (isNaN(minPay) || minPay < 0) { setEditError('Мин. платёж не может быть отрицательным'); return; }
+    if (isNaN(minPay) || minPay < 0) { setEditError(t('validation.minPaymentNegative')); return; }
     const dueDay = editForm.dueDay ? parseInt(editForm.dueDay) : null;
-    if (dueDay !== null && (isNaN(dueDay) || dueDay < 1 || dueDay > 31)) { setEditError('День платежа от 1 до 31'); return; }
+    if (dueDay !== null && (isNaN(dueDay) || dueDay < 1 || dueDay > 31)) { setEditError(t('validation.invalidDueDay')); return; }
 
     setEditSaving(true);
     try {
@@ -1534,11 +1577,11 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
         }),
       });
       setEditDebt(null);
-      setToast('Кредит обновлён');
+      setToast(t('debts.debtUpdated'));
       setTimeout(() => setToast(''), 2500);
       await Promise.all([load(), onRefresh()]);
     } catch (err: any) {
-      setEditError(err?.message || 'Ошибка сохранения');
+      setEditError(err?.message || t('validation.saveError'));
     }
     setEditSaving(false);
   };
@@ -1553,9 +1596,9 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
     if (!extraDebt) return;
     setExtraError('');
     const amountRub = parseFloat(extraAmount);
-    if (isNaN(amountRub) || amountRub <= 0) { setExtraError('Укажите корректную сумму'); return; }
+    if (isNaN(amountRub) || amountRub <= 0) { setExtraError(t('validation.invalidAmount')); return; }
     const amountMinor = Math.round(amountRub * 100);
-    if (amountMinor > extraDebt.balance) { setExtraError('Сумма не может быть больше остатка'); return; }
+    if (amountMinor > extraDebt.balance) { setExtraError(t('validation.amountTooBig')); return; }
 
     setExtraSaving(true);
     try {
@@ -1564,41 +1607,44 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
         body: JSON.stringify({ amountMinor, kind: 'EXTRA_PRINCIPAL_PAYMENT' }),
       });
       setExtraDebt(null);
-      setToast(amountMinor === extraDebt.balance ? 'Долг полностью погашен!' : 'Досрочное погашение учтено');
+      setToast(amountMinor === extraDebt.balance ? t('debts.debtPaidOff') : t('debts.extraRecorded'));
       setTimeout(() => setToast(''), 2500);
       await Promise.all([load(), onRefresh()]);
     } catch (err: any) {
-      setExtraError(err?.message || 'Ошибка сохранения');
+      setExtraError(err?.message || t('validation.saveError'));
     }
     setExtraSaving(false);
   };
 
   const paymentBadge = (status: 'PAID' | 'PARTIAL' | 'UNPAID') => {
-    if (status === 'PAID')    return { label: 'Оплачен ✓',   color: C.green,  bg: C.greenBg };
-    if (status === 'PARTIAL') return { label: 'Частично',    color: C.orange, bg: C.orangeBg };
-    return                           { label: 'Не оплачен',  color: C.red,    bg: C.redBg };
+    if (status === 'PAID')    return { label: t('debts.statusPaid'),   color: C.green,  bg: C.greenBg };
+    if (status === 'PARTIAL') return { label: t('debts.statusPartial'), color: C.orange, bg: C.orangeBg };
+    return                           { label: t('debts.statusUnpaid'), color: C.red,    bg: C.redBg };
   };
 
   const totalDebt = debts.reduce((s, d) => s + d.balance, 0);
   const totalMin = debts.reduce((s, d) => s + d.minPayment, 0);
 
   const types = [
-    { v: 'CREDIT_CARD', l: 'Кредитка' }, { v: 'CREDIT', l: 'Кредит' },
-    { v: 'MORTGAGE', l: 'Ипотека' }, { v: 'CAR_LOAN', l: 'Автокредит' },
-    { v: 'PERSONAL_LOAN', l: 'Займ' }, { v: 'OTHER', l: 'Другое' },
+    { v: 'CREDIT_CARD', l: tr(locale, 'debtTypes.CREDIT_CARD') },
+    { v: 'CREDIT', l: tr(locale, 'debtTypes.CREDIT') },
+    { v: 'MORTGAGE', l: tr(locale, 'debtTypes.MORTGAGE') },
+    { v: 'CAR_LOAN', l: tr(locale, 'debtTypes.CAR_LOAN') },
+    { v: 'PERSONAL_LOAN', l: tr(locale, 'debtTypes.PERSONAL_LOAN') },
+    { v: 'OTHER', l: tr(locale, 'debtTypes.OTHER') },
   ];
 
   return (
     <div style={{ background: C.bg, minHeight: '100vh', padding: '20px 16px', paddingBottom: 'calc(90px + env(safe-area-inset-bottom, 0px))' }}>
-      <p style={{ fontSize: 22, fontWeight: 700, marginBottom: 16, color: C.text }}>Долги</p>
+      <p style={{ fontSize: 22, fontWeight: 700, marginBottom: 16, color: C.text }}>{t('debts.title')}</p>
 
       {loading && <div style={{ textAlign: 'center', paddingTop: 40 }}><Spinner /></div>}
 
       {!loading && debts.length === 0 && !showAdd && (
         <div style={{ textAlign: 'center', paddingTop: 60, color: C.textTertiary }}>
           <p style={{ fontSize: 48, marginBottom: 12 }}>🎉</p>
-          <p style={{ fontSize: 16, fontWeight: 600, color: C.green, marginBottom: 8 }}>Долгов нет!</p>
-          <p style={{ fontSize: 13 }}>Так держать</p>
+          <p style={{ fontSize: 16, fontWeight: 600, color: C.green, marginBottom: 8 }}>{t('debts.none')}</p>
+          <p style={{ fontSize: 13 }}>{t('debts.keepItUp')}</p>
         </div>
       )}
 
@@ -1608,19 +1654,19 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
           <Card style={{ background: 'linear-gradient(145deg, #1E1535, #1A1028)', border: '1px solid rgba(139,92,246,0.25)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
               <div>
-                <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 4 }}>Общий долг</p>
-                <p style={{ fontSize: 24, fontWeight: 800, color: C.text }}>{fmt(totalDebt, currency)}</p>
+                <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 4 }}>{t('debts.totalDebt')}</p>
+                <p style={{ fontSize: 24, fontWeight: 800, color: C.text }}>{fmt(totalDebt, currency, locale)}</p>
               </div>
               <div style={{ textAlign: 'right' }}>
-                <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 4 }}>Мин. платежи/мес</p>
-                <p style={{ fontSize: 18, fontWeight: 700, color: C.orange }}>{fmt(totalMin, currency)}</p>
+                <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 4 }}>{t('debts.minPayments')}</p>
+                <p style={{ fontSize: 18, fontWeight: 700, color: C.orange }}>{fmt(totalMin, currency, locale)}</p>
               </div>
             </div>
             {strategy?.summary.estimatedDebtFreeMonths != null && (
               <div style={{ borderTop: '1px solid rgba(139,92,246,0.15)', paddingTop: 10, marginTop: 8 }}>
                 <p style={{ fontSize: 13, color: C.textSec }}>
-                  Свобода от долгов: ~{strategy.summary.estimatedDebtFreeMonths} мес.
-                  {strategy.summary.estimatedTotalInterest != null && ` · Переплата: ${fmt(strategy.summary.estimatedTotalInterest, currency)}`}
+                  {t('debts.debtFree', { n: strategy.summary.estimatedDebtFreeMonths })}
+                  {strategy.summary.estimatedTotalInterest != null && ` · ${t('debts.overpay', { amount: fmt(strategy.summary.estimatedTotalInterest, currency, locale) })}`}
                 </p>
               </div>
             )}
@@ -1635,22 +1681,22 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
                     {d.isFocusDebt && <span style={{ width: 8, height: 8, borderRadius: '50%', background: C.accent, display: 'inline-block', boxShadow: `0 0 8px ${C.accentGlow}` }} />}
                     {d.title}
                   </p>
-                  <p style={{ fontSize: 12, color: C.textTertiary }}>{debtTypeLabel(d.type)} · Ставка {(d.apr * 100).toFixed(1)}%</p>
+                  <p style={{ fontSize: 12, color: C.textTertiary }}>{t('debts.typeWithApr', { type: debtTypeLabel(d.type, locale), pct: (d.apr * 100).toFixed(1) })}</p>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  {d.isFocusDebt && <span style={{ fontSize: 10, background: C.accentBg, color: C.accentLight, padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>ФОКУС</span>}
+                  {d.isFocusDebt && <span style={{ fontSize: 10, background: C.accentBg, color: C.accentLight, padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>{t('onboarding.focusBadge')}</span>}
                   <button onClick={() => openEdit(d)} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: '4px 8px', color: C.textSec, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>✎</button>
                   <button onClick={() => handleDelete(d.id)} style={{ background: C.redBg, border: 'none', borderRadius: 6, padding: '4px 8px', color: C.red, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>✕</button>
                 </div>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                 <div>
-                  <p style={{ fontSize: 20, fontWeight: 700, color: C.text }}>{fmt(d.balance, currency)}</p>
-                  <p style={{ fontSize: 12, color: C.textTertiary }}>остаток</p>
+                  <p style={{ fontSize: 20, fontWeight: 700, color: C.text }}>{fmt(d.balance, currency, locale)}</p>
+                  <p style={{ fontSize: 12, color: C.textTertiary }}>{t('debts.balanceShort')}</p>
                 </div>
                 <div style={{ textAlign: 'right' }}>
-                  <p style={{ fontSize: 16, fontWeight: 600, color: C.textSec }}>{fmt(d.minPayment, currency)}</p>
-                  <p style={{ fontSize: 12, color: C.textTertiary }}>мин/мес</p>
+                  <p style={{ fontSize: 16, fontWeight: 600, color: C.textSec }}>{fmt(d.minPayment, currency, locale)}</p>
+                  <p style={{ fontSize: 12, color: C.textTertiary }}>{t('debts.minPerMonth')}</p>
                 </div>
               </div>
               {(() => {
@@ -1663,7 +1709,7 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textTertiary, marginBottom: si.isFocus ? 8 : 0 }}>
                         <span>{si.display.forecastLabel}</span>
                         {si.baseline.totalInterest != null && si.baseline.totalInterest > 0 && (
-                          <span>переплата {fmt(si.baseline.totalInterest, currency)}</span>
+                          <span>{t('debts.overpayShort', { amount: fmt(si.baseline.totalInterest, currency, locale) })}</span>
                         )}
                       </div>
                     ) : si.display.warningLabel ? (
@@ -1679,8 +1725,8 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
                         )}
                         {si.accelerateScenarios.filter((sc) => sc.status === 'OK' && sc.monthsSavedVsBaseline != null && sc.monthsSavedVsBaseline > 0).map((sc) => (
                           <div key={sc.extraPerMonth} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.textTertiary, marginTop: 3 }}>
-                            <span>+{Math.round(sc.extraPerMonth / 100).toLocaleString('ru-RU')} ₽/мес</span>
-                            <span style={{ color: C.green }}>−{sc.monthsSavedVsBaseline} мес.{sc.interestSavedVsBaseline != null && sc.interestSavedVsBaseline > 0 ? ` · экономия ${fmt(sc.interestSavedVsBaseline, currency)}` : ''}</span>
+                            <span>{t('debts.extraPerMonth', { amount: formatNumber(Math.round(sc.extraPerMonth / 100), locale) })}</span>
+                            <span style={{ color: C.green }}>{sc.interestSavedVsBaseline != null && sc.interestSavedVsBaseline > 0 ? t('debts.monthsSavedWithSavings', { n: sc.monthsSavedVsBaseline!, amount: fmt(sc.interestSavedVsBaseline, currency, locale) }) : t('debts.monthsSavedFmt', { n: sc.monthsSavedVsBaseline! })}</span>
                           </div>
                         ))}
                       </>
@@ -1698,7 +1744,7 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
               {d.currentPeriodPayment && (
                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderSubtle}` }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                    <span style={{ fontSize: 12, color: C.textTertiary }}>Обязательный платёж</span>
+                    <span style={{ fontSize: 12, color: C.textTertiary }}>{t('debts.requiredPayment')}</span>
                     <span style={{ fontSize: 11, fontWeight: 600, color: paymentBadge(d.currentPeriodPayment.status).color, background: paymentBadge(d.currentPeriodPayment.status).bg, padding: '2px 8px', borderRadius: 10 }}>
                       {paymentBadge(d.currentPeriodPayment.status).label}
                     </span>
@@ -1708,14 +1754,14 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
                     <div style={{ height: '100%', borderRadius: 2, background: d.currentPeriodPayment.status === 'PAID' ? C.green : C.orange, width: `${Math.min(100, d.currentPeriodPayment.required > 0 ? (d.currentPeriodPayment.paid / d.currentPeriodPayment.required) * 100 : 0)}%`, transition: 'width 0.3s' }} />
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.textTertiary }}>
-                    <span>Оплачено: {fmt(d.currentPeriodPayment.paid, currency)}</span>
-                    {d.currentPeriodPayment.remaining > 0 && <span>Осталось: {fmt(d.currentPeriodPayment.remaining, currency)}</span>}
+                    <span>{t('debts.paid', { amount: fmt(d.currentPeriodPayment.paid, currency, locale) })}</span>
+                    {d.currentPeriodPayment.remaining > 0 && <span>{t('debts.leftToPay', { amount: fmt(d.currentPeriodPayment.remaining, currency, locale) })}</span>}
                   </div>
                   <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                     <button
                       onClick={() => { setPaymentModal({ debt: d, kind: 'REQUIRED_MIN_PAYMENT' }); setPaymentAmount(''); setPaymentNote(''); setPaymentError(''); }}
                       style={{ flex: 1, padding: '8px 0', background: C.accentBg, border: `1px solid ${C.accent}40`, borderRadius: 8, color: C.accentLight, fontSize: 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}
-                    >Внести платёж</button>
+                    >{t('debts.payNow')}</button>
                   </div>
                 </div>
               )}
@@ -1723,7 +1769,7 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
               {/* Action: Extra payment */}
               <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderSubtle}`, display: 'flex', gap: 8 }}>
                 <button onClick={() => openExtraPayment(d)} style={{ flex: 1, padding: '8px 0', background: C.greenBg, border: `1px solid ${C.green}40`, borderRadius: 8, color: C.green, fontSize: 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}>
-                  Досрочное погашение
+                  {t('debts.extraPay')}
                 </button>
               </div>
             </Card>
@@ -1734,25 +1780,25 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
       {/* Add debt form */}
       {showAdd && (
         <Card>
-          <p style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Новый долг</p>
-          <input value={newDebt.title} onChange={(e) => setNewDebt({ ...newDebt, title: e.target.value })} placeholder="Название" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', marginBottom: 8, boxSizing: 'border-box' }} />
+          <p style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>{t('debts.newDebt')}</p>
+          <input value={newDebt.title} onChange={(e) => setNewDebt({ ...newDebt, title: e.target.value })} placeholder={t('debts.namePh')} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', marginBottom: 8, boxSizing: 'border-box' }} />
           <select value={newDebt.type} onChange={(e) => setNewDebt({ ...newDebt, type: e.target.value })} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px', color: C.textSec, fontSize: 13, fontFamily: 'inherit', outline: 'none', marginBottom: 8 }}>
-            {types.map((t) => <option key={t.v} value={t.v}>{t.l}</option>)}
+            {types.map((tt) => <option key={tt.v} value={tt.v}>{tt.l}</option>)}
           </select>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 12 }}>
-            <input type="number" value={newDebt.balance} onChange={(e) => setNewDebt({ ...newDebt, balance: e.target.value })} placeholder="Остаток" style={{ background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 13, fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box' }} />
-            <input type="number" value={newDebt.apr} onChange={(e) => setNewDebt({ ...newDebt, apr: e.target.value })} placeholder="Ставка %" style={{ background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 13, fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box' }} />
-            <input type="number" value={newDebt.minPayment} onChange={(e) => setNewDebt({ ...newDebt, minPayment: e.target.value })} placeholder="Мин. пл." style={{ background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 13, fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box' }} />
+            <input type="number" value={newDebt.balance} onChange={(e) => setNewDebt({ ...newDebt, balance: e.target.value })} placeholder={t('debts.balancePh')} style={{ background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 13, fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box' }} />
+            <input type="number" value={newDebt.apr} onChange={(e) => setNewDebt({ ...newDebt, apr: e.target.value })} placeholder={t('debts.aprPh')} style={{ background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 13, fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box' }} />
+            <input type="number" value={newDebt.minPayment} onChange={(e) => setNewDebt({ ...newDebt, minPayment: e.target.value })} placeholder={t('debts.minPayPh')} style={{ background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 13, fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box' }} />
           </div>
           <div style={{ marginTop: 8, marginBottom: 12 }}>
             <p style={{ fontSize: 12, color: C.orange, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
-              <span>⚠️</span> День ежемесячного списания (важно для точного расчёта)
+              {t('debts.dueDayHint')}
             </p>
             <input
               type="number"
               value={newDebt.dueDay}
               onChange={(e) => setNewDebt({ ...newDebt, dueDay: e.target.value })}
-              placeholder="Число месяца (напр. 15)"
+              placeholder={t('debts.dueDayPh')}
               style={{ width: '100%', background: C.elevated, border: `1px solid ${C.orange}60`, borderRadius: 8, padding: '10px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }}
             />
           </div>
@@ -1761,9 +1807,9 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
           )}
           <div style={{ display: 'flex', gap: 8 }}>
             <PrimaryBtn onClick={handleAdd} disabled={saving} style={{ flex: 1 }}>
-              {saving ? '...' : 'Добавить'}
+              {saving ? '...' : t('common.add')}
             </PrimaryBtn>
-            <button onClick={() => { setShowAdd(false); setSaveError(''); }} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>Отмена</button>
+            <button onClick={() => { setShowAdd(false); setSaveError(''); }} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>{t('common.cancel')}</button>
           </div>
         </Card>
       )}
@@ -1795,7 +1841,7 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
             {!hint.proScenarios && hint.baseScenario && (
               <>
                 <p style={{ fontSize: 12, color: C.textSec, lineHeight: 1.5, marginBottom: 10 }}>{hint.baseScenario.copy}</p>
-                <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 10 }}>Это поможет быстрее закрыть фокусный долг.</p>
+                <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 10 }}>{t('debts.accelHelp')}</p>
                 {hint.copy.cta && onOpenPro && (
                   <button onClick={onOpenPro} style={{ width: '100%', padding: '11px 0', background: `linear-gradient(135deg, ${C.accent}, ${C.accentDim})`, border: 'none', borderRadius: 10, color: '#fff', fontSize: 13, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}>
                     {hint.copy.cta}
@@ -1810,20 +1856,20 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
                   <div key={sc.key} style={{ background: C.surface, border: `1px solid ${sc.tooAggressive ? C.orange + '40' : C.borderSubtle}`, borderRadius: 10, padding: '10px 12px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
                       <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>
-                        −{Math.round(sc.dailyCutMinor / 100).toLocaleString('ru-RU')} ₽/день
+                        {t('debts.cutPerDay', { amount: formatNumber(Math.round(sc.dailyCutMinor / 100), locale) })}
                       </span>
                       {sc.monthsSaved != null && sc.monthsSaved > 0 && (
-                        <span style={{ fontSize: 11, fontWeight: 600, color: C.green }}>−{sc.monthsSaved} мес.</span>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: C.green }}>{t('debts.monthsSavedFmt', { n: sc.monthsSaved })}</span>
                       )}
                     </div>
                     <p style={{ fontSize: 11, color: C.textTertiary }}>
-                      до {fmt(sc.monthlyExtraMinor, currency)}/мес в долг
+                      {t('debts.upToInDebt', { amount: fmt(sc.monthlyExtraMinor, currency, locale) })}
                       {sc.interestSavedMinor != null && sc.interestSavedMinor > 0 && (
-                        <> · экономия {fmt(sc.interestSavedMinor, currency)}</>
+                        <>{t('debts.saveSuffix', { amount: fmt(sc.interestSavedMinor, currency, locale) })}</>
                       )}
                     </p>
                     {sc.tooAggressive && (
-                      <p style={{ fontSize: 10, color: C.orange, marginTop: 3 }}>Может быть слишком жёстким для текущего бюджета</p>
+                      <p style={{ fontSize: 10, color: C.orange, marginTop: 3 }}>{t('debts.tooHard')}</p>
                     )}
                   </div>
                 ))}
@@ -1835,7 +1881,7 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
 
       {!showAdd && !loading && (
         <button onClick={() => setShowAdd(true)} style={{ width: '100%', padding: '16px 0', background: 'transparent', border: `1px dashed ${C.border}`, borderRadius: 10, color: C.accent, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer', marginTop: 8 }}>
-          + Добавить долг
+          {t('debts.addDebt')}
         </button>
       )}
 
@@ -1843,25 +1889,25 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
       {paymentModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'flex-end', zIndex: 200 }}>
           <div style={{ background: C.bgSecondary, borderRadius: '20px 20px 0 0', width: '100%', padding: '24px 20px 40px', boxSizing: 'border-box' }}>
-            <p style={{ fontSize: 17, fontWeight: 700, color: C.text, marginBottom: 4 }}>Внести платёж</p>
+            <p style={{ fontSize: 17, fontWeight: 700, color: C.text, marginBottom: 4 }}>{t('debts.payTitle')}</p>
             <p style={{ fontSize: 13, color: C.textTertiary, marginBottom: 16 }}>{paymentModal.debt.title}</p>
 
             {paymentModal.debt.currentPeriodPayment && paymentModal.debt.currentPeriodPayment.remaining > 0 && (
               <div style={{ background: C.accentBg, border: `1px solid ${C.accent}30`, borderRadius: 10, padding: '10px 14px', marginBottom: 14 }}>
                 <p style={{ fontSize: 13, color: C.accentLight }}>
-                  Осталось оплатить: <strong>{fmt(paymentModal.debt.currentPeriodPayment.remaining, currency)}</strong>
+                  {t('debts.payRemaining')} <strong>{fmt(paymentModal.debt.currentPeriodPayment.remaining, currency, locale)}</strong>
                 </p>
               </div>
             )}
 
-            <input type="number" inputMode="decimal" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} placeholder="Сумма ₽" autoFocus
+            <input type="number" inputMode="decimal" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} placeholder={t('debts.payAmountPh')} autoFocus
               style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: '14px 16px', fontSize: 20, fontWeight: 700, color: C.text, fontFamily: 'inherit', outline: 'none', marginBottom: 10, boxSizing: 'border-box' }} />
-            <input value={paymentNote} onChange={(e) => setPaymentNote(e.target.value)} placeholder="Комментарий (необязательно)"
+            <input value={paymentNote} onChange={(e) => setPaymentNote(e.target.value)} placeholder={t('debts.payNotePh')}
               style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: '12px 16px', fontSize: 14, color: C.text, fontFamily: 'inherit', outline: 'none', marginBottom: 14, boxSizing: 'border-box' }} />
             {paymentError && <p style={{ fontSize: 13, color: C.red, marginBottom: 10 }}>⚠ {paymentError}</p>}
             <div style={{ display: 'flex', gap: 8 }}>
-              <PrimaryBtn onClick={handlePayment} disabled={paymentSaving} style={{ flex: 1 }}>{paymentSaving ? '...' : 'Подтвердить'}</PrimaryBtn>
-              <button onClick={() => { setPaymentModal(null); setPaymentError(''); }} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>Отмена</button>
+              <PrimaryBtn onClick={handlePayment} disabled={paymentSaving} style={{ flex: 1 }}>{paymentSaving ? '...' : t('common.confirm')}</PrimaryBtn>
+              <button onClick={() => { setPaymentModal(null); setPaymentError(''); }} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>{t('common.cancel')}</button>
             </div>
           </div>
         </div>
@@ -1871,22 +1917,22 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
       {extraDebt && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'flex-end', zIndex: 200 }}>
           <div style={{ background: C.bgSecondary, borderRadius: '20px 20px 0 0', width: '100%', padding: '24px 20px 40px', boxSizing: 'border-box' }}>
-            <p style={{ fontSize: 17, fontWeight: 700, color: C.text, marginBottom: 4 }}>Досрочное погашение</p>
+            <p style={{ fontSize: 17, fontWeight: 700, color: C.text, marginBottom: 4 }}>{t('debts.extraTitle')}</p>
             <p style={{ fontSize: 13, color: C.textTertiary, marginBottom: 6 }}>{extraDebt.title}</p>
-            <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 16 }}>Остаток: {fmt(extraDebt.balance, currency)}</p>
+            <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 16 }}>{t('debts.extraBalance', { amount: fmt(extraDebt.balance, currency, locale) })}</p>
 
-            <input type="number" inputMode="decimal" value={extraAmount} onChange={(e) => setExtraAmount(e.target.value)} placeholder="Сумма досрочного погашения ₽" autoFocus
+            <input type="number" inputMode="decimal" value={extraAmount} onChange={(e) => setExtraAmount(e.target.value)} placeholder={t('debts.extraAmountPh')} autoFocus
               style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: '14px 16px', fontSize: 20, fontWeight: 700, color: C.text, fontFamily: 'inherit', outline: 'none', marginBottom: 10, boxSizing: 'border-box' }} />
 
             <button onClick={() => setExtraAmount(String(extraDebt.balance / 100))}
               style={{ width: '100%', padding: '10px 0', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, color: C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer', marginBottom: 14 }}>
-              Погасить полностью — {fmt(extraDebt.balance, currency)}
+              {t('debts.payAllExact', { amount: fmt(extraDebt.balance, currency, locale) })}
             </button>
 
             {extraError && <p style={{ fontSize: 13, color: C.red, marginBottom: 10 }}>⚠ {extraError}</p>}
             <div style={{ display: 'flex', gap: 8 }}>
-              <PrimaryBtn onClick={handleExtraPayment} disabled={extraSaving} style={{ flex: 1 }}>{extraSaving ? '...' : 'Подтвердить'}</PrimaryBtn>
-              <button onClick={() => setExtraDebt(null)} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>Отмена</button>
+              <PrimaryBtn onClick={handleExtraPayment} disabled={extraSaving} style={{ flex: 1 }}>{extraSaving ? '...' : t('common.confirm')}</PrimaryBtn>
+              <button onClick={() => setExtraDebt(null)} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>{t('common.cancel')}</button>
             </div>
           </div>
         </div>
@@ -1896,24 +1942,24 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
       {editDebt && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'flex-end', zIndex: 200 }}>
           <div style={{ background: C.bgSecondary, borderRadius: '20px 20px 0 0', width: '100%', padding: '24px 20px 40px', boxSizing: 'border-box', maxHeight: '85vh', overflowY: 'auto' }}>
-            <p style={{ fontSize: 17, fontWeight: 700, color: C.text, marginBottom: 16 }}>Редактировать долг</p>
+            <p style={{ fontSize: 17, fontWeight: 700, color: C.text, marginBottom: 16 }}>{t('debts.editTitle')}</p>
 
-            <input value={editForm.title} onChange={(e) => setEditForm({ ...editForm, title: e.target.value })} placeholder="Название"
+            <input value={editForm.title} onChange={(e) => setEditForm({ ...editForm, title: e.target.value })} placeholder={t('debts.editName')}
               style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', marginBottom: 8, boxSizing: 'border-box' }} />
 
             <select value={editForm.type} onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}
               style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px', color: C.textSec, fontSize: 13, fontFamily: 'inherit', outline: 'none', marginBottom: 8 }}>
-              {types.map((t) => <option key={t.v} value={t.v}>{t.l}</option>)}
+              {types.map((tt) => <option key={tt.v} value={tt.v}>{tt.l}</option>)}
             </select>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
               <div>
-                <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 4 }}>Остаток, ₽</p>
+                <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 4 }}>{t('debts.editBalance')}</p>
                 <input type="number" inputMode="decimal" value={editForm.balance} onChange={(e) => setEditForm({ ...editForm, balance: e.target.value })}
                   style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
               </div>
               <div>
-                <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 4 }}>Ставка, %</p>
+                <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 4 }}>{t('debts.editApr')}</p>
                 <input type="number" inputMode="decimal" value={editForm.apr} onChange={(e) => setEditForm({ ...editForm, apr: e.target.value })}
                   style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
               </div>
@@ -1921,12 +1967,12 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
               <div>
-                <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 4 }}>Мин. платёж / мес, ₽</p>
+                <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 4 }}>{t('debts.editMinPay')}</p>
                 <input type="number" inputMode="decimal" value={editForm.minPayment} onChange={(e) => setEditForm({ ...editForm, minPayment: e.target.value })}
                   style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
               </div>
               <div>
-                <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 4 }}>День платежа</p>
+                <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 4 }}>{t('debts.editDueDay')}</p>
                 <input type="number" inputMode="numeric" value={editForm.dueDay} onChange={(e) => setEditForm({ ...editForm, dueDay: e.target.value })} placeholder="—"
                   style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 8px', color: C.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
               </div>
@@ -1934,8 +1980,8 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
 
             {editError && <p style={{ fontSize: 13, color: C.red, background: C.redBg, borderRadius: 8, padding: '10px 12px', marginBottom: 10 }}>⚠ {editError}</p>}
             <div style={{ display: 'flex', gap: 8 }}>
-              <PrimaryBtn onClick={handleEdit} disabled={editSaving} style={{ flex: 1 }}>{editSaving ? '...' : 'Сохранить'}</PrimaryBtn>
-              <button onClick={() => setEditDebt(null)} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>Отмена</button>
+              <PrimaryBtn onClick={handleEdit} disabled={editSaving} style={{ flex: 1 }}>{editSaving ? '...' : t('common.save')}</PrimaryBtn>
+              <button onClick={() => setEditDebt(null)} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>{t('common.cancel')}</button>
             </div>
           </div>
         </div>
@@ -1954,22 +2000,23 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
 // ── PRO Paywall ──────────────────────────────────────────────────────────────
 
 function ProPaywall({ onBack, api }: { onBack: () => void; api: (path: string, opts?: RequestInit) => Promise<any> }) {
+  const t = useT();
   const [loading, setLoading] = useState(false);
   const [paid, setPaid] = useState(false);
   const [err, setErr] = useState('');
 
   const features = [
-    { icon: '📊', title: 'Еженедельный дайджест', desc: 'Аналитика трат, тренды и прогресс по долгам' },
-    { icon: '⏰', title: 'Своё время уведомлений', desc: 'Настройте утреннее S2S и вечернее напоминание' },
-    { icon: '📈', title: 'Расширенная аналитика', desc: 'Графики, сравнение периодов, категории трат' },
-    { icon: '📤', title: 'Экспорт данных', desc: 'Скачайте историю расходов в CSV' },
-    { icon: '🚀', title: 'Приоритетная поддержка', desc: 'Быстрые ответы в выделенном канале' },
+    { icon: '📊', title: t('pro.weeklyDigest'), desc: t('pro.weeklyDigestDesc') },
+    { icon: '⏰', title: t('pro.customNotifyTime'), desc: t('pro.customNotifyTimeDesc') },
+    { icon: '📈', title: t('pro.advancedAnalytics'), desc: t('pro.advancedAnalyticsDesc') },
+    { icon: '📤', title: t('pro.exportData'), desc: t('pro.exportDataDesc') },
+    { icon: '🚀', title: t('pro.prioritySupport'), desc: t('pro.prioritySupportDesc') },
   ];
 
   const handleSubscribe = async () => {
     const tg = (window as any).Telegram?.WebApp;
     if (!tg?.openInvoice) {
-      setErr('Оплата доступна только в Telegram');
+      setErr(t('pro.onlyTelegram'));
       return;
     }
     setLoading(true);
@@ -1981,13 +2028,13 @@ function ProPaywall({ onBack, api }: { onBack: () => void; api: (path: string, o
         if (status === 'paid') {
           setPaid(true);
         } else if (status === 'failed') {
-          setErr('Ошибка оплаты. Попробуйте ещё раз.');
+          setErr(t('pro.payError'));
         }
         // 'cancelled' — просто закрыли, ничего не делаем
       });
     } catch {
       setLoading(false);
-      setErr('Не удалось создать счёт. Попробуйте позже.');
+      setErr(t('pro.invoiceError'));
     }
   };
 
@@ -1995,9 +2042,9 @@ function ProPaywall({ onBack, api }: { onBack: () => void; api: (path: string, o
     return (
       <div style={{ background: C.bg, minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '0 24px', textAlign: 'center' }}>
         <div style={{ fontSize: 64, marginBottom: 20 }}>🎉</div>
-        <h2 style={{ fontSize: 24, fontWeight: 800, color: C.text, marginBottom: 12 }}>PRO активирован!</h2>
-        <p style={{ fontSize: 15, color: C.textSec, lineHeight: 1.6, marginBottom: 36 }}>Спасибо за поддержку! Все PRO функции уже доступны.</p>
-        <PrimaryBtn onClick={onBack}>Отлично!</PrimaryBtn>
+        <h2 style={{ fontSize: 24, fontWeight: 800, color: C.text, marginBottom: 12 }}>{t('pro.activated')}</h2>
+        <p style={{ fontSize: 15, color: C.textSec, lineHeight: 1.6, marginBottom: 36 }}>{t('pro.activatedDesc')}</p>
+        <PrimaryBtn onClick={onBack}>{t('pro.great')}</PrimaryBtn>
       </div>
     );
   }
@@ -2008,8 +2055,8 @@ function ProPaywall({ onBack, api }: { onBack: () => void; api: (path: string, o
 
       <div style={{ textAlign: 'center', marginBottom: 32 }}>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 16px', background: C.accentBgStrong, border: `1px solid ${C.accent}`, borderRadius: 24, fontSize: 14, fontWeight: 700, color: C.accentLight, marginBottom: 16 }}>PRO</div>
-        <h2 style={{ fontSize: 22, fontWeight: 700, color: C.text, marginBottom: 8, lineHeight: 1.3 }}>Возьмите финансы под полный контроль</h2>
-        <p style={{ fontSize: 14, color: C.textSec, lineHeight: 1.5 }}>Автоматизация, аналитика и продвинутые сценарии</p>
+        <h2 style={{ fontSize: 22, fontWeight: 700, color: C.text, marginBottom: 8, lineHeight: 1.3 }}>{t('pro.headline')}</h2>
+        <p style={{ fontSize: 14, color: C.textSec, lineHeight: 1.5 }}>{t('pro.subheadline')}</p>
       </div>
 
       {features.map((f, i) => (
@@ -2024,37 +2071,54 @@ function ProPaywall({ onBack, api }: { onBack: () => void; api: (path: string, o
 
       <div style={{ textAlign: 'center', margin: '24px 0' }}>
         <p style={{ fontSize: 36, fontWeight: 800, color: C.text }}>⭐ 100</p>
-        <p style={{ fontSize: 14, color: C.textTertiary }}>Telegram Stars / месяц</p>
+        <p style={{ fontSize: 14, color: C.textTertiary }}>{t('pro.starsPerMonth')}</p>
       </div>
 
       {err && <p style={{ color: C.red, fontSize: 13, textAlign: 'center', marginBottom: 12 }}>{err}</p>}
 
       <PrimaryBtn onClick={handleSubscribe} disabled={loading}>
-        {loading ? 'Открываем счёт...' : 'Подписаться за 100 Stars'}
+        {loading ? t('pro.openingInvoice') : t('pro.subscribe')}
       </PrimaryBtn>
-      <SecondaryBtn onClick={onBack}>Позже</SecondaryBtn>
+      <SecondaryBtn onClick={onBack}>{t('pro.later')}</SecondaryBtn>
     </div>
   );
 }
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 
-function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPaydays, onRefresh }: { api: (path: string, opts?: RequestInit) => Promise<any>; onOpenPro: () => void; onOpenIncomes: () => void; onOpenObligations: () => void; onOpenPaydays: () => void; onRefresh?: () => void }) {
+function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPaydays, onRefresh, onLocaleChanged }: { api: (path: string, opts?: RequestInit) => Promise<any>; onOpenPro: () => void; onOpenIncomes: () => void; onOpenObligations: () => void; onOpenPaydays: () => void; onRefresh?: () => void; onLocaleChanged?: (newLocale: Locale) => void }) {
+  const t = useT();
   const [settings, setSettings] = useState<any>(null);
   const [plan, setPlan] = useState<any>(null);
+  const [localePref, setLocalePref] = useState<'auto' | 'ru' | 'en'>('auto');
+  const [localeSaving, setLocaleSaving] = useState(false);
   const [cashModal, setCashModal] = useState(false);
   const [cashInput, setCashInput] = useState('');
   const [cashSaving, setCashSaving] = useState(false);
   const [cashDone, setCashDone] = useState(false);
 
   useEffect(() => {
-    Promise.all([api('/tg/me/settings'), api('/tg/me/plan')]).then(([s, p]) => { setSettings(s); setPlan(p); });
+    Promise.all([api('/tg/me/settings'), api('/tg/me/plan'), api('/tg/me/locale').catch(() => null)]).then(([s, p, l]) => {
+      setSettings(s);
+      setPlan(p);
+      if (l?.pref) setLocalePref(l.pref);
+    });
   }, [api]);
 
   const toggle = async (key: string, val: boolean) => {
     const next = { ...settings, [key]: val };
     setSettings(next);
     await api('/tg/me/settings', { method: 'PATCH', body: JSON.stringify({ [key]: val }) });
+  };
+
+  const handleLocaleChange = async (pref: 'auto' | 'ru' | 'en') => {
+    if (pref === localePref) return;
+    setLocaleSaving(true);
+    try {
+      const res = await api('/tg/me/locale', { method: 'PATCH', body: JSON.stringify({ pref }) });
+      setLocalePref(res.pref ?? pref);
+      if (res.locale && onLocaleChanged) onLocaleChanged(res.locale as Locale);
+    } finally { setLocaleSaving(false); }
   };
 
   const handleCashSave = async () => {
@@ -2071,21 +2135,21 @@ function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPayd
 
   return (
     <div style={{ background: C.bg, minHeight: '100vh', padding: '20px 16px', paddingBottom: 'calc(90px + env(safe-area-inset-bottom, 0px))' }}>
-      <p style={{ fontSize: 22, fontWeight: 700, marginBottom: 20, color: C.text }}>Настройки</p>
+      <p style={{ fontSize: 22, fontWeight: 700, marginBottom: 20, color: C.text }}>{t('settings.title')}</p>
 
       {/* Cash anchor modal */}
       {cashModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 200, display: 'flex', alignItems: 'flex-end' }} onClick={() => setCashModal(false)}>
           <div style={{ background: C.bgSecondary, borderRadius: '20px 20px 0 0', padding: '24px 20px', paddingBottom: 'max(32px, env(safe-area-inset-bottom, 32px))', width: '100%', boxSizing: 'border-box' }} onClick={e => e.stopPropagation()}>
-            <p style={{ fontSize: 18, fontWeight: 700, color: C.text, marginBottom: 6 }}>Текущий остаток</p>
-            <p style={{ fontSize: 13, color: C.textSec, marginBottom: 20 }}>Укажите, сколько у вас сейчас на руках. Это обновит дневной лимит с учётом реального баланса.</p>
+            <p style={{ fontSize: 18, fontWeight: 700, color: C.text, marginBottom: 6 }}>{t('settings.cashTitle')}</p>
+            <p style={{ fontSize: 13, color: C.textSec, marginBottom: 20 }}>{t('settings.cashDesc')}</p>
             <input
               type="number" inputMode="decimal" placeholder="0"
               value={cashInput} onChange={e => setCashInput(e.target.value)}
               style={{ width: '100%', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: '14px 16px', fontSize: 20, fontWeight: 700, color: C.text, fontFamily: 'inherit', boxSizing: 'border-box', marginBottom: 16, outline: 'none' }}
             />
             <PrimaryBtn onClick={handleCashSave} disabled={cashSaving || cashDone}>
-              {cashDone ? '✓ Сохранено' : cashSaving ? 'Сохраняем...' : 'Обновить остаток'}
+              {cashDone ? t('common.saved') : cashSaving ? t('common.saving') : t('settings.updateBalance')}
             </PrimaryBtn>
           </div>
         </div>
@@ -2095,8 +2159,8 @@ function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPayd
         <Card style={{ marginBottom: 20, background: plan.plan === 'PRO' ? 'linear-gradient(145deg, #1E1535, #1A1028)' : C.surface, border: `1px solid ${plan.plan === 'PRO' ? C.accent : C.borderSubtle}` }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
-              <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 2 }}>{plan.plan === 'PRO' ? 'PRO план' : 'FREE план'}</p>
-              <p style={{ fontSize: 12, color: C.textSec }}>{plan.plan === 'PRO' ? 'Активна подписка' : 'Обновитесь до PRO'}</p>
+              <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 2 }}>{plan.plan === 'PRO' ? t('settings.proLabel') : t('settings.freeLabel')}</p>
+              <p style={{ fontSize: 12, color: C.textSec }}>{plan.plan === 'PRO' ? t('settings.proActive') : t('settings.upgradeToPro')}</p>
             </div>
             {plan.plan === 'FREE' && (
               <button onClick={onOpenPro} style={{ padding: '8px 16px', background: `linear-gradient(135deg, ${C.accent}, ${C.accentDim})`, border: 'none', borderRadius: 8, color: '#fff', fontSize: 13, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}>PRO</button>
@@ -2106,12 +2170,12 @@ function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPayd
       )}
 
       {/* Budget management links */}
-      <p style={{ fontSize: 12, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 10 }}>Бюджет</p>
+      <p style={{ fontSize: 12, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 10 }}>{t('settings.sectionBudget')}</p>
       {[
-        { label: 'Текущий остаток', icon: '💵', desc: 'Обновить сколько денег на руках', onClick: () => setCashModal(true) },
-        { label: 'Даты зарплаты', icon: '📅', desc: 'Когда приходят деньги', onClick: onOpenPaydays },
-        { label: 'Доходы', icon: '💰', desc: 'Зарплата и другие поступления', onClick: onOpenIncomes },
-        { label: 'Обязательства', icon: '📋', desc: 'Аренда, ЖКХ, подписки', onClick: onOpenObligations },
+        { label: t('settings.cashRowLabel'), icon: '💵', desc: t('settings.cashRowDesc'), onClick: () => setCashModal(true) },
+        { label: t('settings.paydaysRowLabel'), icon: '📅', desc: t('settings.paydaysRowDesc'), onClick: onOpenPaydays },
+        { label: t('settings.incomesRowLabel'), icon: '💰', desc: t('settings.incomesRowDesc'), onClick: onOpenIncomes },
+        { label: t('settings.obligationsRowLabel'), icon: '📋', desc: t('settings.obligationsRowDesc'), onClick: onOpenObligations },
       ].map((item) => (
         <div key={item.label} onClick={item.onClick} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 10, padding: '14px 16px', marginBottom: 2, cursor: 'pointer' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -2128,12 +2192,12 @@ function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPayd
 
       {settings && (
         <>
-          <p style={{ fontSize: 12, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 10 }}>Уведомления</p>
+          <p style={{ fontSize: 12, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 10 }}>{t('settings.sectionNotifications')}</p>
           {[
-            { key: 'morningNotifyEnabled', label: 'Утреннее S2S', desc: settings.morningNotifyTime },
-            { key: 'eveningNotifyEnabled', label: 'Вечернее напоминание', desc: settings.eveningNotifyTime },
-            { key: 'paymentAlerts', label: 'Напоминания о платежах', desc: 'за день до' },
-            { key: 'deficitAlerts', label: 'Дефицит бюджета', desc: 'когда перерасход' },
+            { key: 'morningNotifyEnabled', label: t('settings.morningNotify'), desc: settings.morningNotifyTime },
+            { key: 'eveningNotifyEnabled', label: t('settings.eveningNotify'), desc: settings.eveningNotifyTime },
+            { key: 'paymentAlerts', label: t('settings.paymentAlerts'), desc: t('settings.paymentAlertsDesc') },
+            { key: 'deficitAlerts', label: t('settings.deficitAlerts'), desc: t('settings.deficitAlertsDesc') },
           ].map(({ key, label, desc }) => (
             <div key={key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 10, padding: '14px 16px', marginBottom: 2 }}>
               <div>
@@ -2150,6 +2214,35 @@ function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPayd
           ))}
         </>
       )}
+
+      {/* Language */}
+      <p style={{ fontSize: 12, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', margin: '24px 0 10px' }}>{t('settings.sectionLanguage')}</p>
+      <div style={{ background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 10, padding: '14px 16px' }}>
+        <p style={{ fontSize: 14, color: C.text, marginBottom: 10 }}>{t('settings.languageRowLabel')}</p>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {(['auto', 'ru', 'en'] as const).map((pref) => (
+            <button
+              key={pref}
+              onClick={() => handleLocaleChange(pref)}
+              disabled={localeSaving}
+              style={{
+                flex: 1,
+                padding: '10px 12px',
+                borderRadius: 8,
+                background: localePref === pref ? C.accentBgStrong : C.elevated,
+                border: `1px solid ${localePref === pref ? C.accent : C.border}`,
+                color: localePref === pref ? C.accentLight : C.textSec,
+                fontSize: 13,
+                fontWeight: 600,
+                fontFamily: 'inherit',
+                cursor: localeSaving ? 'wait' : 'pointer',
+              }}
+            >
+              {pref === 'auto' ? t('settings.languageAuto') : pref === 'ru' ? t('settings.languageRu') : t('settings.languageEn')}
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -2157,6 +2250,8 @@ function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPayd
 // ── Paydays Screen ───────────────────────────────────────────────────────────
 
 function PaydaysScreen({ api, onBack, onChanged }: { api: (p: string, o?: RequestInit) => Promise<any>; onBack: () => void; onChanged: () => void }) {
+  const t = useT();
+  const locale = useLocale();
   const [incomes, setIncomes] = useState<any[]>([]);
   const [edits, setEdits] = useState<Record<string, { payday: number; customPayday: string; twoPaydays: boolean; payday2: number; customPayday2: string }>>({});
   const [loading, setLoading] = useState(true);
@@ -2216,14 +2311,14 @@ function PaydaysScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
     <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px 40px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
         <button onClick={onBack} style={{ background: C.surface, border: 'none', borderRadius: 10, color: C.textSec, fontSize: 20, width: 40, height: 40, cursor: 'pointer', fontFamily: 'inherit' }}>←</button>
-        <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, margin: 0 }}>Даты зарплаты</h2>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, margin: 0 }}>{t('paydays.title')}</h2>
       </div>
-      <p style={{ fontSize: 13, color: C.textSec, marginBottom: 20 }}>Укажите, в какие дни вы получаете деньги. Это влияет на расчёт дневного лимита.</p>
+      <p style={{ fontSize: 13, color: C.textSec, marginBottom: 20 }}>{t('paydays.desc')}</p>
 
       {loading ? (
         <div style={{ display: 'flex', justifyContent: 'center', marginTop: 40 }}><Spinner /></div>
       ) : incomes.length === 0 ? (
-        <Card><p style={{ color: C.textSec, fontSize: 14, textAlign: 'center' }}>Нет доходов. Сначала добавьте доход в разделе «Доходы».</p></Card>
+        <Card><p style={{ color: C.textSec, fontSize: 14, textAlign: 'center' }}>{t('paydays.noIncomes')}</p></Card>
       ) : (
         incomes.map((inc) => {
           const e = edits[inc.id];
@@ -2235,16 +2330,16 @@ function PaydaysScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
                 <div>
                   <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 2 }}>{inc.title}</p>
-                  <p style={{ fontSize: 12, color: C.textTertiary }}>{fmt(inc.amount, inc.currency)} / мес</p>
+                  <p style={{ fontSize: 12, color: C.textTertiary }}>{t('paydays.perMonth', { amount: fmt(inc.amount, inc.currency, locale) })}</p>
                 </div>
                 <button
                   onClick={() => handleDeleteIncome(inc.id)}
                   style={{ background: C.redBg, border: 'none', borderRadius: 8, color: C.red, fontSize: 16, width: 32, height: 32, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}
-                  title="Удалить источник дохода"
+                  title={t('paydays.deleteIncomeTitle')}
                 >✕</button>
               </div>
 
-              <p style={{ fontSize: 12, color: C.textSec, marginBottom: 8, marginTop: 12 }}>День зарплаты</p>
+              <p style={{ fontSize: 12, color: C.textSec, marginBottom: 8, marginTop: 12 }}>{t('paydays.paydayLabel')}</p>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
                 {payOptions.map((d) => (
                   <button key={d} onClick={() => upd(inc.id, { payday: d, customPayday: String(d) })}
@@ -2256,19 +2351,19 @@ function PaydaysScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
                   type="number" min={1} max={31}
                   value={e.customPayday}
                   onChange={(ev) => upd(inc.id, { customPayday: ev.target.value })}
-                  placeholder="др."
+                  placeholder={t('paydays.otherPh')}
                   style={{ width: 52, padding: '8px 8px', borderRadius: 20, background: !payOptions.includes(day1) ? C.accentBgStrong : C.elevated, border: `1px solid ${!payOptions.includes(day1) ? C.accent : C.border}`, color: C.text, fontSize: 13, fontFamily: 'inherit', outline: 'none', textAlign: 'center' }}
                 />
                 <button
                   onClick={() => upd(inc.id, { twoPaydays: !e.twoPaydays })}
                   style={{ padding: '8px 14px', borderRadius: 20, background: e.twoPaydays ? C.accentBgStrong : C.elevated, border: `1px solid ${e.twoPaydays ? C.accent : C.border}`, color: e.twoPaydays ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>
-                  {e.twoPaydays ? '− убрать 2-й' : '+ 2-й день'}
+                  {e.twoPaydays ? t('paydays.remove2nd') : t('paydays.add2nd')}
                 </button>
               </div>
 
               {e.twoPaydays && (
                 <div style={{ marginTop: 4, padding: '12px', background: C.elevated, borderRadius: 10 }}>
-                  <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 8 }}>Второй день зарплаты:</p>
+                  <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 8 }}>{t('paydays.second')}</p>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     {payOptions.map((d) => (
                       <button key={d} onClick={() => upd(inc.id, { payday2: d, customPayday2: String(d) })}
@@ -2280,7 +2375,7 @@ function PaydaysScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
                       type="number" min={1} max={31}
                       value={e.customPayday2}
                       onChange={(ev) => upd(inc.id, { customPayday2: ev.target.value })}
-                      placeholder="др."
+                      placeholder={t('paydays.otherPh')}
                       style={{ width: 52, padding: '8px 8px', borderRadius: 20, background: !payOptions.includes(day2) ? C.accentBgStrong : C.elevated, border: `1px solid ${!payOptions.includes(day2) ? C.accent : C.border}`, color: C.text, fontSize: 13, fontFamily: 'inherit', outline: 'none', textAlign: 'center' }}
                     />
                   </div>
@@ -2293,7 +2388,7 @@ function PaydaysScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
 
       {incomes.length > 0 && (
         <PrimaryBtn onClick={handleSave} disabled={saving} style={{ marginTop: 8 }}>
-          {saving ? 'Сохранение...' : 'Сохранить и пересчитать'}
+          {saving ? t('paydays.saving') : t('paydays.saveAndRecalc')}
         </PrimaryBtn>
       )}
     </div>
@@ -2307,11 +2402,15 @@ interface Income {
   frequency: string; paydays: number[]; monthlyEquivalent?: number;
 }
 
-const FREQ_LABELS: Record<string, string> = {
-  MONTHLY: 'Ежемесячно', BIWEEKLY: 'Раз в 2 недели', WEEKLY: 'Еженедельно', IRREGULAR: 'Нерегулярно',
-};
-
 function IncomesScreen({ api, onBack, onChanged }: { api: (p: string, o?: RequestInit) => Promise<any>; onBack: () => void; onChanged: () => void }) {
+  const t = useT();
+  const locale = useLocale();
+  const FREQ_LABELS: Record<string, string> = {
+    MONTHLY: tr(locale, 'freqLabels.MONTHLY'),
+    BIWEEKLY: tr(locale, 'freqLabels.BIWEEKLY'),
+    WEEKLY: tr(locale, 'freqLabels.WEEKLY'),
+    IRREGULAR: tr(locale, 'freqLabels.IRREGULAR'),
+  };
   const [incomes, setIncomes] = useState<Income[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -2356,28 +2455,28 @@ function IncomesScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <button onClick={onBack} style={{ background: C.surface, border: 'none', borderRadius: 10, color: C.textSec, fontSize: 20, width: 40, height: 40, cursor: 'pointer', fontFamily: 'inherit' }}>←</button>
-          <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, margin: 0 }}>Доходы</h2>
+          <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, margin: 0 }}>{t('incomes.title')}</h2>
         </div>
         <button onClick={() => setShowForm(!showForm)} style={{ padding: '8px 16px', background: showForm ? C.surface : `linear-gradient(135deg, ${C.accent}, ${C.accentDim})`, border: 'none', borderRadius: 10, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
-          {showForm ? 'Отмена' : '+ Добавить'}
+          {showForm ? t('incomes.cancel') : t('incomes.addBtn')}
         </button>
       </div>
 
       {showForm && (
         <Card style={{ marginBottom: 16 }}>
-          <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 16 }}>Новый доход</p>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Название (напр. Зарплата)" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
-          <input value={amount} onChange={(e) => setAmount(e.target.value)} type="number" placeholder="Сумма в месяц (₽)" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
-          <p style={{ fontSize: 12, color: C.textSec, marginBottom: 8 }}>День зарплаты</p>
+          <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 16 }}>{t('incomes.newIncome')}</p>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('incomes.namePh')} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
+          <input value={amount} onChange={(e) => setAmount(e.target.value)} type="number" placeholder={t('incomes.monthlyPh')} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
+          <p style={{ fontSize: 12, color: C.textSec, marginBottom: 8 }}>{t('incomes.paydayLabel')}</p>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
             {payOptions.map((d) => (
               <button key={d} onClick={() => setPayday(d)} style={{ padding: '8px 14px', borderRadius: 20, background: payday === d ? C.accentBgStrong : C.elevated, border: `1px solid ${payday === d ? C.accent : C.border}`, color: payday === d ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>{d}</button>
             ))}
-            <button onClick={() => { setTwoPaydays(!twoPaydays); if (!twoPaydays) { const other = payOptions.find(d => d !== payday) ?? 1; setPayday2(other); } }} style={{ padding: '8px 14px', borderRadius: 20, background: twoPaydays ? C.accentBgStrong : C.elevated, border: `1px solid ${twoPaydays ? C.accent : C.border}`, color: twoPaydays ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>2 раза</button>
+            <button onClick={() => { setTwoPaydays(!twoPaydays); if (!twoPaydays) { const other = payOptions.find(d => d !== payday) ?? 1; setPayday2(other); } }} style={{ padding: '8px 14px', borderRadius: 20, background: twoPaydays ? C.accentBgStrong : C.elevated, border: `1px solid ${twoPaydays ? C.accent : C.border}`, color: twoPaydays ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>{t('incomes.twice')}</button>
           </div>
           {twoPaydays && (
             <div style={{ marginBottom: 8 }}>
-              <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 6 }}>Второй день зарплаты:</p>
+              <p style={{ fontSize: 12, color: C.textTertiary, marginBottom: 6 }}>{t('incomes.secondPay')}</p>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {payOptions.map((d) => (
                   <button key={d} onClick={() => setPayday2(d)} style={{ padding: '8px 14px', borderRadius: 20, background: payday2 === d ? C.accentBgStrong : C.elevated, border: `1px solid ${payday2 === d ? C.accent : C.border}`, color: payday2 === d ? C.accentLight : C.textSec, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>{d}</button>
@@ -2387,8 +2486,8 @@ function IncomesScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
           )}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, padding: '10px 12px', background: C.elevated, borderRadius: 8 }}>
             <div>
-              <p style={{ fontSize: 13, color: C.text, marginBottom: 2 }}>Производственный календарь РФ</p>
-              <p style={{ fontSize: 11, color: C.textTertiary }}>Перенос на пятницу при выходном/празднике</p>
+              <p style={{ fontSize: 13, color: C.text, marginBottom: 2 }}>{t('onboarding.ruCalLabel')}</p>
+              <p style={{ fontSize: 11, color: C.textTertiary }}>{t('onboarding.ruCalDescFull')}</p>
             </div>
             <div
               onClick={() => setUseRuCalendar(!useRuCalendar)}
@@ -2399,7 +2498,7 @@ function IncomesScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
           </div>
           <div style={{ marginBottom: 14 }} />
           <PrimaryBtn onClick={handleAdd} disabled={saving || !title.trim() || !amount}>
-            {saving ? 'Сохранение...' : 'Сохранить'}
+            {saving ? t('paydays.saving') : t('common.save')}
           </PrimaryBtn>
         </Card>
       )}
@@ -2409,15 +2508,15 @@ function IncomesScreen({ api, onBack, onChanged }: { api: (p: string, o?: Reques
       ) : incomes.length === 0 ? (
         <div style={{ textAlign: 'center', color: C.textSec, marginTop: 60 }}>
           <div style={{ fontSize: 40, marginBottom: 12 }}>💰</div>
-          <p>Нет источников дохода</p>
+          <p>{t('incomes.none')}</p>
         </div>
       ) : (
         incomes.map((inc) => (
           <Card key={inc.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
               <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 3 }}>{inc.title}</p>
-              <p style={{ fontSize: 13, color: C.textSec }}>{fmt(inc.monthlyEquivalent ?? inc.amount, inc.currency)} / мес · {FREQ_LABELS[inc.frequency] || inc.frequency}</p>
-              <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 2 }}>Зарплата: {(inc.paydays as number[]).join(', ')} числа</p>
+              <p style={{ fontSize: 13, color: C.textSec }}>{t('incomes.perMonthFreq', { amount: fmt(inc.monthlyEquivalent ?? inc.amount, inc.currency, locale), freq: FREQ_LABELS[inc.frequency] || inc.frequency })}</p>
+              <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 2 }}>{t('incomes.paydayLine', { days: (inc.paydays as number[]).join(', ') })}</p>
             </div>
             <button onClick={() => handleDelete(inc.id)} style={{ background: C.redBg, border: 'none', borderRadius: 8, color: C.red, fontSize: 18, width: 36, height: 36, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}>✕</button>
           </Card>
@@ -2433,16 +2532,17 @@ interface Obligation {
   id: string; title: string; type: string; amount: number; currency: string; dueDay?: number;
 }
 
-const OB_TYPES = [
-  { value: 'RENT', label: 'Аренда' },
-  { value: 'UTILITIES', label: 'ЖКХ' },
-  { value: 'SUBSCRIPTION', label: 'Подписка' },
-  { value: 'TELECOM', label: 'Связь' },
-  { value: 'INSURANCE', label: 'Страховка' },
-  { value: 'OTHER', label: 'Другое' },
-];
-
 function ObligationsScreen({ api, onBack, onChanged }: { api: (p: string, o?: RequestInit) => Promise<any>; onBack: () => void; onChanged: () => void }) {
+  const t = useT();
+  const locale = useLocale();
+  const OB_TYPES = [
+    { value: 'RENT', label: tr(locale, 'obligationTypes.RENT') },
+    { value: 'UTILITIES', label: tr(locale, 'obligationTypes.UTILITIES') },
+    { value: 'SUBSCRIPTION', label: tr(locale, 'obligationTypes.SUBSCRIPTION_SINGLE') },
+    { value: 'TELECOM', label: tr(locale, 'obligationTypes.TELECOM') },
+    { value: 'INSURANCE', label: tr(locale, 'obligationTypes.INSURANCE') },
+    { value: 'OTHER', label: tr(locale, 'obligationTypes.OTHER') },
+  ];
   const [obligations, setObligations] = useState<Obligation[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -2485,27 +2585,27 @@ function ObligationsScreen({ api, onBack, onChanged }: { api: (p: string, o?: Re
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <button onClick={onBack} style={{ background: C.surface, border: 'none', borderRadius: 10, color: C.textSec, fontSize: 20, width: 40, height: 40, cursor: 'pointer', fontFamily: 'inherit' }}>←</button>
-          <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, margin: 0 }}>Обязательства</h2>
+          <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, margin: 0 }}>{t('obligations.title')}</h2>
         </div>
         <button onClick={() => setShowForm(!showForm)} style={{ padding: '8px 16px', background: showForm ? C.surface : `linear-gradient(135deg, ${C.accent}, ${C.accentDim})`, border: 'none', borderRadius: 10, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
-          {showForm ? 'Отмена' : '+ Добавить'}
+          {showForm ? t('obligations.cancel') : t('obligations.addBtn')}
         </button>
       </div>
 
       {showForm && (
         <Card style={{ marginBottom: 16 }}>
-          <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 16 }}>Новое обязательство</p>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Название (напр. Аренда квартиры)" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
-          <input value={amount} onChange={(e) => setAmount(e.target.value)} type="number" placeholder="Сумма в месяц (₽)" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
-          <p style={{ fontSize: 12, color: C.textSec, marginBottom: 8 }}>Категория</p>
+          <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 16 }}>{t('obligations.newObligation')}</p>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('obligations.namePh')} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
+          <input value={amount} onChange={(e) => setAmount(e.target.value)} type="number" placeholder={t('obligations.monthlyPh')} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
+          <p style={{ fontSize: 12, color: C.textSec, marginBottom: 8 }}>{t('obligations.categoryLabel')}</p>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-            {OB_TYPES.map((t) => (
-              <button key={t.value} onClick={() => setType(t.value)} style={{ padding: '7px 14px', borderRadius: 20, background: type === t.value ? C.accentBgStrong : C.elevated, border: `1px solid ${type === t.value ? C.accent : C.border}`, color: type === t.value ? C.accentLight : C.textSec, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer' }}>{t.label}</button>
+            {OB_TYPES.map((tt) => (
+              <button key={tt.value} onClick={() => setType(tt.value)} style={{ padding: '7px 14px', borderRadius: 20, background: type === tt.value ? C.accentBgStrong : C.elevated, border: `1px solid ${type === tt.value ? C.accent : C.border}`, color: type === tt.value ? C.accentLight : C.textSec, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer' }}>{tt.label}</button>
             ))}
           </div>
-          <input value={dueDay} onChange={(e) => setDueDay(e.target.value)} type="number" placeholder="День списания (необязательно)" style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 14, outline: 'none', boxSizing: 'border-box' }} />
+          <input value={dueDay} onChange={(e) => setDueDay(e.target.value)} type="number" placeholder={t('obligations.dueDayPh')} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 14, outline: 'none', boxSizing: 'border-box' }} />
           <PrimaryBtn onClick={handleAdd} disabled={saving || !title.trim() || !amount}>
-            {saving ? 'Сохранение...' : 'Сохранить'}
+            {saving ? t('paydays.saving') : t('common.save')}
           </PrimaryBtn>
         </Card>
       )}
@@ -2515,15 +2615,15 @@ function ObligationsScreen({ api, onBack, onChanged }: { api: (p: string, o?: Re
       ) : obligations.length === 0 ? (
         <div style={{ textAlign: 'center', color: C.textSec, marginTop: 60 }}>
           <div style={{ fontSize: 40, marginBottom: 12 }}>📋</div>
-          <p>Нет обязательных расходов</p>
+          <p>{t('obligations.none')}</p>
         </div>
       ) : (
         obligations.map((ob) => (
           <Card key={ob.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
               <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 3 }}>{ob.title}</p>
-              <p style={{ fontSize: 13, color: C.textSec }}>{fmt(ob.amount, ob.currency || 'RUB')} / мес · {obTypeLabel(ob.type)}</p>
-              {ob.dueDay && <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 2 }}>Списание: {ob.dueDay} числа</p>}
+              <p style={{ fontSize: 13, color: C.textSec }}>{t('obligations.perMonthType', { amount: fmt(ob.amount, ob.currency || 'RUB', locale), type: obTypeLabel(ob.type) })}</p>
+              {ob.dueDay && <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 2 }}>{t('obligations.dueLine', { n: ob.dueDay })}</p>}
             </div>
             <button onClick={() => handleDelete(ob.id)} style={{ background: C.redBg, border: 'none', borderRadius: 8, color: C.red, fontSize: 18, width: 36, height: 36, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}>✕</button>
           </Card>
@@ -2536,15 +2636,16 @@ function ObligationsScreen({ api, onBack, onChanged }: { api: (p: string, o?: Re
 // ── Period Summary ───────────────────────────────────────────────────────────
 
 function PeriodSummary({ data, onClose }: { data: PeriodSummaryData; onClose: () => void }) {
+  const t = useT();
+  const locale = useLocale();
   const { currency } = data;
   const saved = data.saved;
   const isSaved = saved >= 0;
   const pct = data.s2sPeriod > 0 ? Math.min(100, Math.round((data.totalSpent / data.s2sPeriod) * 100)) : 0;
 
-  const mo = ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];
   const s = new Date(data.startDate);
   const e = new Date(data.endDate);
-  const periodLabel = `${mo[s.getMonth()]} ${s.getDate()} — ${mo[e.getMonth()]} ${e.getDate()}`;
+  const periodLabel = `${monthShortCap(s.getMonth(), locale)} ${s.getDate()} — ${monthShortCap(e.getMonth(), locale)} ${e.getDate()}`;
 
   const barColor = pct > 100 ? C.red : pct > 80 ? C.orange : C.green;
 
@@ -2552,29 +2653,29 @@ function PeriodSummary({ data, onClose }: { data: PeriodSummaryData; onClose: ()
     <div style={{ background: C.bg, minHeight: '100vh', padding: '24px 20px 40px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 28 }}>
         <button onClick={onClose} style={{ background: C.surface, border: 'none', borderRadius: 10, color: C.textSec, fontSize: 20, width: 40, height: 40, cursor: 'pointer', fontFamily: 'inherit' }}>←</button>
-        <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, margin: 0 }}>Итоги периода</h2>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, margin: 0 }}>{t('summary.title')}</h2>
       </div>
 
-      <p style={{ fontSize: 13, color: C.textSec, marginBottom: 20, marginTop: -16 }}>{periodLabel} · {data.daysTotal} дней</p>
+      <p style={{ fontSize: 13, color: C.textSec, marginBottom: 20, marginTop: -16 }}>{t('summary.periodDays', { period: periodLabel, days: data.daysTotal })}</p>
 
       {/* Result banner */}
       <div style={{ background: isSaved ? C.greenBg : C.redBg, border: `1px solid ${isSaved ? C.greenDim : C.red}40`, borderRadius: 16, padding: '20px 18px', marginBottom: 16, textAlign: 'center' }}>
         <div style={{ fontSize: 40, marginBottom: 8 }}>{isSaved ? '🎉' : '😬'}</div>
         <div style={{ fontSize: 14, color: C.textSec, marginBottom: 4 }}>
-          {isSaved ? 'Сэкономили' : 'Перерасход'}
+          {isSaved ? t('summary.saved') : t('summary.overspent')}
         </div>
         <div style={{ fontSize: 28, fontWeight: 800, color: isSaved ? C.green : C.red }}>
-          {fmt(Math.abs(saved), currency)}
+          {fmt(Math.abs(saved), currency, locale)}
         </div>
       </div>
 
       {/* Stats grid */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 }}>
         {[
-          { label: 'Бюджет периода', value: fmt(data.s2sPeriod, currency), color: C.text },
-          { label: 'Потрачено', value: fmt(data.totalSpent, currency), color: pct > 100 ? C.red : C.text },
-          { label: 'Дн. лимит был', value: fmt(data.s2sDaily, currency), color: C.text },
-          { label: 'Дней с перерасх.', value: `${data.overspentDays}`, color: data.overspentDays > 0 ? C.orange : C.green },
+          { label: t('summary.budget'), value: fmt(data.s2sPeriod, currency, locale), color: C.text },
+          { label: t('summary.spent'), value: fmt(data.totalSpent, currency, locale), color: pct > 100 ? C.red : C.text },
+          { label: t('summary.dailyLimitWas'), value: fmt(data.s2sDaily, currency, locale), color: C.text },
+          { label: t('summary.overspentDays'), value: `${data.overspentDays}`, color: data.overspentDays > 0 ? C.orange : C.green },
         ].map((stat) => (
           <Card key={stat.label} style={{ marginBottom: 0, padding: '14px 14px' }}>
             <div style={{ fontSize: 11, color: C.textSec, marginBottom: 4 }}>{stat.label}</div>
@@ -2586,7 +2687,7 @@ function PeriodSummary({ data, onClose }: { data: PeriodSummaryData; onClose: ()
       {/* Spend progress */}
       <Card>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-          <span style={{ fontSize: 13, color: C.textSec }}>Израсходовано бюджета</span>
+          <span style={{ fontSize: 13, color: C.textSec }}>{t('summary.pctSpent')}</span>
           <span style={{ fontSize: 13, fontWeight: 600, color: barColor }}>{pct}%</span>
         </div>
         <ProgressBar value={data.totalSpent} max={data.s2sPeriod} color={barColor} />
@@ -2595,17 +2696,17 @@ function PeriodSummary({ data, onClose }: { data: PeriodSummaryData; onClose: ()
       {/* Top expenses */}
       {data.topExpenses.length > 0 && (
         <Card>
-          <div style={{ fontSize: 13, color: C.textSec, marginBottom: 12 }}>Крупные траты</div>
+          <div style={{ fontSize: 13, color: C.textSec, marginBottom: 12 }}>{t('summary.bigExpenses')}</div>
           {data.topExpenses.map((e, i) => (
             <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: i < data.topExpenses.length - 1 ? 10 : 0, marginBottom: i < data.topExpenses.length - 1 ? 10 : 0, borderBottom: i < data.topExpenses.length - 1 ? `1px solid ${C.borderSubtle}` : 'none' }}>
-              <span style={{ fontSize: 14, color: C.text }}>{e.note || 'Без комментария'}</span>
-              <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{fmt(e.amount, currency)}</span>
+              <span style={{ fontSize: 14, color: C.text }}>{e.note || t('summary.noNote')}</span>
+              <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{fmt(e.amount, currency, locale)}</span>
             </div>
           ))}
         </Card>
       )}
 
-      <PrimaryBtn onClick={onClose}>Перейти к новому периоду</PrimaryBtn>
+      <PrimaryBtn onClick={onClose}>{t('summary.goNew')}</PrimaryBtn>
     </div>
   );
 }
@@ -2620,7 +2721,16 @@ export default function MiniApp() {
   const [onbResult, setOnbResult] = useState<{ s2sDaily: number; currency: string } | null>(null);
   const [periodSummary, setPeriodSummary] = useState<PeriodSummaryData | null>(null);
   const [showSummaryBanner, setShowSummaryBanner] = useState(false);
+  // Start with client-detected locale (instant) and then reconcile with server's effective locale.
+  const [locale, setLocale] = useState<Locale>(() => detectClientLocale());
   const { api, initDataRef, devMode } = useApi();
+
+  // Keep <html lang> in sync with active locale
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      document.documentElement.lang = locale;
+    }
+  }, [locale]);
 
   const loadDashboard = useCallback(async () => {
     const data = await api('/tg/dashboard');
@@ -2645,6 +2755,8 @@ export default function MiniApp() {
       devMode.current = true;
 
       api('/tg/onboarding/status').then((d) => {
+        // Reconcile locale with server (picks up user override if any)
+        api('/tg/me/locale').then((l) => { if (l?.locale === 'ru' || l?.locale === 'en') setLocale(l.locale); }).catch(() => {});
         if (d.onboardingDone) {
           loadDashboard().then(() => setScreen('dashboard')).catch(() => setScreen('dashboard'));
         } else {
@@ -2660,6 +2772,8 @@ export default function MiniApp() {
     try { tg.setHeaderColor(C.bg); tg.setBackgroundColor(C.bg); } catch {}
 
     api('/tg/onboarding/status').then((d) => {
+      // Reconcile locale with server (respects user's explicit override)
+      api('/tg/me/locale').then((l) => { if (l?.locale === 'ru' || l?.locale === 'en') setLocale(l.locale); }).catch(() => {});
       if (d.onboardingDone) {
         loadDashboard().then(() => setScreen('dashboard')).catch(() => setScreen('dashboard'));
       } else {
@@ -2719,99 +2833,113 @@ export default function MiniApp() {
 
   // ── Render ───────────────────────────────────────────────────────────────
 
-  if (screen === 'loading') return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', background: C.bg, gap: 16 }}>
-      <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
-      <Spinner />
-      <p style={{ color: C.textSec, fontSize: 14 }}>Загрузка...</p>
-    </div>
-  );
+  const content = (() => {
+    if (screen === 'loading') return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', background: C.bg, gap: 16 }}>
+        <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+        <Spinner />
+        <p style={{ color: C.textSec, fontSize: 14 }}>{tr(locale, 'common.loading')}</p>
+      </div>
+    );
 
-  if (screen === 'error') return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', background: C.bg, gap: 16, padding: 24 }}>
-      <p style={{ color: C.red, fontSize: 16, textAlign: 'center' }}>{error || 'Ошибка загрузки'}</p>
-      <PrimaryBtn onClick={() => window.location.reload()} style={{ maxWidth: 200 }}>Повторить</PrimaryBtn>
-    </div>
-  );
+    if (screen === 'error') return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', background: C.bg, gap: 16, padding: 24 }}>
+        <p style={{ color: C.red, fontSize: 16, textAlign: 'center' }}>{error || tr(locale, 'errors.loadingError')}</p>
+        <PrimaryBtn onClick={() => window.location.reload()} style={{ maxWidth: 200 }}>{tr(locale, 'common.retry')}</PrimaryBtn>
+      </div>
+    );
 
-  if (screen === 'onboarding-welcome') return <OnbWelcome onStart={() => setScreen('onboarding-income')} />;
-  if (screen === 'onboarding-income') return <OnbIncome onNext={handleIncome} />;
-  if (screen === 'onboarding-obligations') return <OnbObligations onNext={handleObligations} onSkip={() => handleObligations([])} />;
-  if (screen === 'onboarding-debts') return <OnbDebts onNext={handleDebts} onSkip={() => handleDebts([])} />;
-  if (screen === 'onboarding-ef') return <OnbEF onNext={handleEF} />;
-  if (screen === 'onboarding-cash') return <OnbCash onNext={handleCash} onSkip={() => handleCash(0)} />;
-  if (screen === 'onboarding-result' && onbResult) return <OnbResult s2sDaily={onbResult.s2sDaily} currency={onbResult.currency} onDone={handleOnbDone} />;
+    if (screen === 'onboarding-welcome') return <OnbWelcome onStart={() => setScreen('onboarding-income')} />;
+    if (screen === 'onboarding-income') return <OnbIncome onNext={handleIncome} />;
+    if (screen === 'onboarding-obligations') return <OnbObligations onNext={handleObligations} onSkip={() => handleObligations([])} />;
+    if (screen === 'onboarding-debts') return <OnbDebts onNext={handleDebts} onSkip={() => handleDebts([])} />;
+    if (screen === 'onboarding-ef') return <OnbEF onNext={handleEF} />;
+    if (screen === 'onboarding-cash') return <OnbCash onNext={handleCash} onSkip={() => handleCash(0)} />;
+    if (screen === 'onboarding-result' && onbResult) return <OnbResult s2sDaily={onbResult.s2sDaily} currency={onbResult.currency} onDone={handleOnbDone} />;
 
-  if (screen === 'add-expense') return (
-    <AddExpense
-      s2sToday={dashboard?.s2sToday ?? 0}
-      currency={dashboard?.currency ?? 'RUB'}
-      onSave={handleSaveExpense}
-      onBack={() => { setScreen('dashboard'); setNavTab('dashboard'); }}
-    />
-  );
-
-  if (screen === 'pro') return <ProPaywall onBack={() => { setScreen('settings'); setNavTab('settings'); }} api={api} />;
-
-  if (screen === 'incomes') return (
-    <IncomesScreen
-      api={api}
-      onBack={() => { setScreen('settings'); setNavTab('settings'); }}
-      onChanged={loadDashboard}
-    />
-  );
-
-  if (screen === 'obligations') return (
-    <ObligationsScreen
-      api={api}
-      onBack={() => { setScreen('settings'); setNavTab('settings'); }}
-      onChanged={loadDashboard}
-    />
-  );
-
-  if (screen === 'paydays') return (
-    <PaydaysScreen
-      api={api}
-      onBack={() => { setScreen('settings'); setNavTab('settings'); }}
-      onChanged={loadDashboard}
-    />
-  );
-
-  if (screen === 'period-summary' && periodSummary) return (
-    <PeriodSummary
-      data={periodSummary}
-      onClose={() => { setShowSummaryBanner(false); setScreen('dashboard'); setNavTab('dashboard'); }}
-    />
-  );
-
-  // Screens with bottom nav
-  return (
-    <div style={{ background: C.bg, minHeight: '100vh' }}>
-      <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
-
-      {screen === 'dashboard' && dashboard && (
-        <Dashboard
-          data={dashboard}
-          onAddExpense={() => setScreen('add-expense')}
-          onOpenDebts={() => { setScreen('debts'); setNavTab('debts'); }}
-          onOpenEF={() => setScreen('emergency-fund-detail')}
-          onOpenSummary={periodSummary ? () => setScreen('period-summary') : undefined}
-          showSummaryBanner={showSummaryBanner}
-        />
-      )}
-      {screen === 'dashboard' && !dashboard && (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh' }}><Spinner /></div>
-      )}
-      {screen === 'history' && <History api={api} currency={dashboard?.currency ?? 'RUB'} onRefresh={loadDashboard} />}
-      {screen === 'debts' && <DebtsScreen api={api} currency={dashboard?.currency ?? 'RUB'} onRefresh={loadDashboard} onOpenPro={() => setScreen('pro')} />}
-      {screen === 'emergency-fund-detail' && <EmergencyFundScreen api={api} onBack={() => setScreen('dashboard')} onRefresh={loadDashboard} />}
-      {screen === 'settings' && <Settings api={api} onOpenPro={() => setScreen('pro')} onOpenIncomes={() => setScreen('incomes')} onOpenObligations={() => setScreen('obligations')} onOpenPaydays={() => setScreen('paydays')} onRefresh={loadDashboard} />}
-
-      <BottomNav
-        active={navTab}
-        onTab={handleTab}
-        onAdd={() => setScreen('add-expense')}
+    if (screen === 'add-expense') return (
+      <AddExpense
+        s2sToday={dashboard?.s2sToday ?? 0}
+        currency={dashboard?.currency ?? 'RUB'}
+        onSave={handleSaveExpense}
+        onBack={() => { setScreen('dashboard'); setNavTab('dashboard'); }}
       />
-    </div>
-  );
+    );
+
+    if (screen === 'pro') return <ProPaywall onBack={() => { setScreen('settings'); setNavTab('settings'); }} api={api} />;
+
+    if (screen === 'incomes') return (
+      <IncomesScreen
+        api={api}
+        onBack={() => { setScreen('settings'); setNavTab('settings'); }}
+        onChanged={loadDashboard}
+      />
+    );
+
+    if (screen === 'obligations') return (
+      <ObligationsScreen
+        api={api}
+        onBack={() => { setScreen('settings'); setNavTab('settings'); }}
+        onChanged={loadDashboard}
+      />
+    );
+
+    if (screen === 'paydays') return (
+      <PaydaysScreen
+        api={api}
+        onBack={() => { setScreen('settings'); setNavTab('settings'); }}
+        onChanged={loadDashboard}
+      />
+    );
+
+    if (screen === 'period-summary' && periodSummary) return (
+      <PeriodSummary
+        data={periodSummary}
+        onClose={() => { setShowSummaryBanner(false); setScreen('dashboard'); setNavTab('dashboard'); }}
+      />
+    );
+
+    // Screens with bottom nav
+    return (
+      <div style={{ background: C.bg, minHeight: '100vh' }}>
+        <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+
+        {screen === 'dashboard' && dashboard && (
+          <Dashboard
+            data={dashboard}
+            onAddExpense={() => setScreen('add-expense')}
+            onOpenDebts={() => { setScreen('debts'); setNavTab('debts'); }}
+            onOpenEF={() => setScreen('emergency-fund-detail')}
+            onOpenSummary={periodSummary ? () => setScreen('period-summary') : undefined}
+            showSummaryBanner={showSummaryBanner}
+          />
+        )}
+        {screen === 'dashboard' && !dashboard && (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh' }}><Spinner /></div>
+        )}
+        {screen === 'history' && <History api={api} currency={dashboard?.currency ?? 'RUB'} onRefresh={loadDashboard} />}
+        {screen === 'debts' && <DebtsScreen api={api} currency={dashboard?.currency ?? 'RUB'} onRefresh={loadDashboard} onOpenPro={() => setScreen('pro')} />}
+        {screen === 'emergency-fund-detail' && <EmergencyFundScreen api={api} onBack={() => setScreen('dashboard')} onRefresh={loadDashboard} />}
+        {screen === 'settings' && (
+          <Settings
+            api={api}
+            onOpenPro={() => setScreen('pro')}
+            onOpenIncomes={() => setScreen('incomes')}
+            onOpenObligations={() => setScreen('obligations')}
+            onOpenPaydays={() => setScreen('paydays')}
+            onRefresh={loadDashboard}
+            onLocaleChanged={(next) => setLocale(next)}
+          />
+        )}
+
+        <BottomNav
+          active={navTab}
+          onTab={handleTab}
+          onAdd={() => setScreen('add-expense')}
+        />
+      </div>
+    );
+  })();
+
+  return <LocaleCtx.Provider value={locale}>{content}</LocaleCtx.Provider>;
 }

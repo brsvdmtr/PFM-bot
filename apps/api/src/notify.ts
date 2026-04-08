@@ -1,6 +1,8 @@
 // ── Telegram notification sender ────────────────────────
 // Calls Telegram Bot API directly (no Telegraf dependency)
 
+import { t, formatNumber, type Locale } from '@pfm/shared';
+
 const BOT_TOKEN = process.env.BOT_TOKEN || '';
 const TG_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 const MINI_APP_URL = process.env.MINI_APP_URL || 'https://localhost:3003/miniapp';
@@ -10,6 +12,7 @@ const MINI_APP_URL = process.env.MINI_APP_URL || 'https://localhost:3003/miniapp
 export async function sendTelegramMessage(
   chatId: string,
   text: string,
+  locale: Locale = 'en',
   parseMode: 'Markdown' | 'HTML' = 'Markdown',
 ): Promise<void> {
   if (!BOT_TOKEN) return;
@@ -22,7 +25,7 @@ export async function sendTelegramMessage(
         text,
         parse_mode: parseMode,
         reply_markup: {
-          inline_keyboard: [[{ text: 'Открыть PFM 💰', web_app: { url: MINI_APP_URL } }]],
+          inline_keyboard: [[{ text: t(locale, 'bot.openApp'), web_app: { url: MINI_APP_URL } }]],
         },
       }),
     });
@@ -40,22 +43,26 @@ export async function sendMorningNotification(
   daysLeft: number,
   currency: string,
   s2sStatus: string,
+  locale: Locale = 'en',
 ): Promise<void> {
   const sym = currency === 'USD' ? '$' : '₽';
-  const fmt = (n: number) => (n / 100).toLocaleString('ru-RU', { maximumFractionDigits: 0 });
+  const fmt = (n: number) => formatNumber(Math.round(n / 100), locale);
 
   let emoji = '🟢';
   if (s2sStatus === 'OVERSPENT' || s2sStatus === 'DEFICIT') emoji = '🔴';
   else if (s2sStatus === 'WARNING') emoji = '🟡';
 
   const text =
-    `🌅 *Доброе утро!*\n\n` +
-    `${emoji} *Safe to Spend сегодня:*\n` +
-    `*${fmt(s2sToday)} ${sym}*\n` +
-    `из дневного лимита ${fmt(s2sDaily)} ${sym}\n\n` +
-    `📅 Осталось дней в периоде: ${daysLeft}`;
+    `${t(locale, 'notify.morningGreeting')}\n\n` +
+    `${emoji} ${t(locale, 'notify.morningS2s')}\n` +
+    t(locale, 'notify.morningBody', {
+      s2s: fmt(s2sToday),
+      sym,
+      daily: fmt(s2sDaily),
+      daysLeft,
+    });
 
-  await sendTelegramMessage(chatId, text);
+  await sendTelegramMessage(chatId, text, locale);
 }
 
 export async function sendEveningNotification(
@@ -63,23 +70,24 @@ export async function sendEveningNotification(
   todaySpent: number,
   s2sDaily: number,
   currency: string,
+  locale: Locale = 'en',
 ): Promise<void> {
   const sym = currency === 'USD' ? '$' : '₽';
-  const fmt = (n: number) => (n / 100).toLocaleString('ru-RU', { maximumFractionDigits: 0 });
+  const fmt = (n: number) => formatNumber(Math.round(n / 100), locale);
   const remaining = s2sDaily - todaySpent;
   const isOverspent = remaining < 0;
 
   const statusLine = isOverspent
-    ? `⚠️ Перерасход: *${fmt(Math.abs(remaining))} ${sym}* — завтра лимит уменьшится`
-    : `✅ Остаток: *${fmt(remaining)} ${sym}*`;
+    ? t(locale, 'notify.eveningOver', { over: fmt(Math.abs(remaining)), sym })
+    : t(locale, 'notify.eveningOk', { remaining: fmt(remaining), sym });
 
   const text =
-    `🌙 *Итог дня*\n\n` +
-    `Потрачено сегодня: *${fmt(todaySpent)} ${sym}*\n` +
-    `Дневной лимит: ${fmt(s2sDaily)} ${sym}\n\n` +
+    `${t(locale, 'notify.eveningHeader')}\n\n` +
+    `${t(locale, 'notify.eveningSpent', { spent: fmt(todaySpent), sym })}\n` +
+    `${t(locale, 'notify.eveningLimit', { limit: fmt(s2sDaily), sym })}\n\n` +
     statusLine;
 
-  await sendTelegramMessage(chatId, text);
+  await sendTelegramMessage(chatId, text, locale);
 }
 
 export async function sendPaymentAlert(
@@ -88,18 +96,23 @@ export async function sendPaymentAlert(
   minPayment: number,
   currency: string,
   daysUntil: number,
+  locale: Locale = 'en',
 ): Promise<void> {
   const sym = currency === 'USD' ? '$' : '₽';
-  const fmt = (n: number) => (n / 100).toLocaleString('ru-RU', { maximumFractionDigits: 0 });
-  const when = daysUntil === 0 ? 'сегодня' : 'завтра';
+  const fmt = (n: number) => formatNumber(Math.round(n / 100), locale);
+
+  const headerLine =
+    daysUntil === 0
+      ? t(locale, 'notify.paymentLineToday', { title: debtTitle })
+      : t(locale, 'notify.paymentLineTomorrow', { title: debtTitle });
 
   const text =
-    `⚠️ *Напоминание о платеже*\n\n` +
-    `${when.charAt(0).toUpperCase() + when.slice(1)} нужно заплатить по «${debtTitle}»:\n` +
-    `*${fmt(minPayment)} ${sym}*\n\n` +
-    `Не забудьте внести платёж вовремя!`;
+    `${t(locale, 'notify.paymentHeader')}\n\n` +
+    `${headerLine}\n` +
+    `${t(locale, 'notify.paymentAmount', { amount: fmt(minPayment), sym })}\n\n` +
+    t(locale, 'notify.paymentFooter');
 
-  await sendTelegramMessage(chatId, text);
+  await sendTelegramMessage(chatId, text, locale);
 }
 
 export async function sendNewPeriodNotification(
@@ -107,38 +120,39 @@ export async function sendNewPeriodNotification(
   s2sDaily: number,
   daysTotal: number,
   currency: string,
-  prevSaved?: number,
+  prevSaved: number | undefined,
+  locale: Locale = 'en',
 ): Promise<void> {
   const sym = currency === 'USD' ? '$' : '₽';
-  const fmt = (n: number) => (n / 100).toLocaleString('ru-RU', { maximumFractionDigits: 0 });
+  const fmt = (n: number) => formatNumber(Math.round(n / 100), locale);
 
   const savedLine =
     prevSaved !== undefined && prevSaved > 0
-      ? `\n✨ В прошлом периоде сэкономили: *${fmt(prevSaved)} ${sym}*`
+      ? t(locale, 'notify.newPeriodSaved', { amount: fmt(prevSaved), sym })
       : prevSaved !== undefined && prevSaved < 0
-        ? `\n⚠️ Перерасход в прошлом периоде: *${fmt(Math.abs(prevSaved))} ${sym}*`
+        ? t(locale, 'notify.newPeriodOver', { amount: fmt(Math.abs(prevSaved)), sym })
         : '';
 
   const text =
-    `🔄 *Начался новый период!*${savedLine}\n\n` +
-    `💰 Дневной лимит: *${fmt(s2sDaily)} ${sym}*\n` +
-    `📅 Дней в периоде: ${daysTotal}`;
+    `${t(locale, 'notify.newPeriodHeader')}${savedLine}\n\n` +
+    `${t(locale, 'notify.newPeriodLimit', { limit: fmt(s2sDaily), sym })}\n` +
+    t(locale, 'notify.newPeriodDays', { days: daysTotal });
 
-  await sendTelegramMessage(chatId, text);
+  await sendTelegramMessage(chatId, text, locale);
 }
 
 export async function sendDeficitAlert(
   chatId: string,
   deficit: number,
   currency: string,
+  locale: Locale = 'en',
 ): Promise<void> {
   const sym = currency === 'USD' ? '$' : '₽';
-  const fmt = (n: number) => (n / 100).toLocaleString('ru-RU', { maximumFractionDigits: 0 });
+  const fmt = (n: number) => formatNumber(Math.round(n / 100), locale);
 
   const text =
-    `🔴 *Дефицит бюджета*\n\n` +
-    `Ваши обязательства превышают доходы на *${fmt(deficit)} ${sym}*.\n\n` +
-    `Откройте PFM, чтобы пересмотреть расходы.`;
+    `${t(locale, 'notify.deficitHeader')}\n\n` +
+    t(locale, 'notify.deficitBody', { amount: fmt(deficit), sym });
 
-  await sendTelegramMessage(chatId, text);
+  await sendTelegramMessage(chatId, text, locale);
 }

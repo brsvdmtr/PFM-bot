@@ -8,6 +8,8 @@
  * 4. When focus debt paid off, move to next
  */
 
+import { t, formatMoney, type Locale } from '@pfm/shared';
+
 export interface AvalancheDebt {
   id: string;
   title: string;
@@ -163,6 +165,7 @@ export function buildDebtStrategy(
   avalanchePoolMinor: number,
   daysTotal: number,
   currency: string,
+  locale: Locale = 'en',
 ): DebtStrategy {
   const active = debts.filter((d) => !d.isPaidOff && d.balance > 0);
   const generatedAt = new Date().toISOString();
@@ -201,13 +204,13 @@ export function buildDebtStrategy(
     let warningLabel: string | null = null;
 
     if (status === 'OK' && months !== null) {
-      forecastLabel = `~${months} мес. до закрытия`;
+      forecastLabel = t(locale, 'strategy.forecastLabel', { n: months });
     } else if (status === 'NO_MIN_PAYMENT') {
-      warningLabel = 'Укажи ежемесячный платёж';
+      warningLabel = t(locale, 'strategy.warnNoMin');
     } else if (status === 'PAYMENT_TOO_SMALL') {
-      warningLabel = 'Платёж слишком мал: долг не уменьшается';
+      warningLabel = t(locale, 'strategy.warnTooSmall');
     } else if (status === 'UNDEFINED_HORIZON') {
-      warningLabel = 'Срок не определён при текущем платеже';
+      warningLabel = t(locale, 'strategy.warnUndefined');
     }
 
     const accelerateScenarios: AccelerateScenario[] = isFocus
@@ -229,7 +232,7 @@ export function buildDebtStrategy(
       : [];
 
     const extraLabel = isFocus && extraPayment > 0
-      ? `Уже резервируется на ускорение: ~${Math.round(extraPayment / 100).toLocaleString('ru-RU')} ₽/мес`
+      ? t(locale, 'strategy.extraAlready', { amount: formatMoney(extraPayment, currency, locale) })
       : null;
 
     return {
@@ -241,7 +244,9 @@ export function buildDebtStrategy(
       isFocus,
       payoffStatus: status,
       display: {
-        primaryAction: isFocus ? 'Все свободные деньги сверх минимума — сюда' : 'Сейчас не приоритет',
+        primaryAction: isFocus
+          ? t(locale, 'strategy.primaryFocus')
+          : t(locale, 'strategy.primaryNotPriority'),
         secondaryAction: extraLabel,
         forecastLabel,
         warningLabel,
@@ -335,15 +340,18 @@ export function buildDebtAccelerationHint(input: {
   s2sDaily: number;
   isPro: boolean;
   currency: string;
+  locale?: Locale;
 }): DebtAccelerationHint {
   const { focusDebt, baselineMonthlyPayment, s2sDaily, isPro, currency } = input;
+  const locale: Locale = input.locale ?? 'en';
+  const accelTitle = t(locale, 'strategy.accelTitle');
 
   // No focus debt → ineligible
   if (!focusDebt || focusDebt.balance <= 0) {
     return {
       eligible: false, state: 'INELIGIBLE', isPro, currency, focusDebtId: null,
       baseScenario: null, proScenarios: null,
-      copy: { title: 'Как ускорить выплату долга', body: '' },
+      copy: { title: accelTitle, body: '' },
     };
   }
 
@@ -353,8 +361,8 @@ export function buildDebtAccelerationHint(input: {
       eligible: true, state: 'DEFICIT', isPro, currency, focusDebtId: focusDebt.id,
       baseScenario: null, proScenarios: null,
       copy: {
-        title: 'Как ускорить выплату долга',
-        body: 'Сейчас свободного бюджета нет. Сначала нужно выйти из дефицита, потом можно подключить ускоренное погашение.',
+        title: accelTitle,
+        body: t(locale, 'strategy.accelDeficit'),
       },
     };
   }
@@ -367,8 +375,8 @@ export function buildDebtAccelerationHint(input: {
       eligible: true, state: 'BASELINE_UNSTABLE', isPro, currency, focusDebtId: focusDebt.id,
       baseScenario: null, proScenarios: null,
       copy: {
-        title: 'Как ускорить выплату долга',
-        body: 'Текущий прогноз погашения не определён. Укажите корректный минимальный платёж.',
+        title: accelTitle,
+        body: t(locale, 'strategy.accelUnstable'),
       },
     };
   }
@@ -395,13 +403,14 @@ export function buildDebtAccelerationHint(input: {
 
   // Base scenario = optimal (1000₽/day)
   const optimalSc = scenarios.find((s) => s.key === 'optimal')!;
-  const dailyRub = Math.round(optimalSc.dailyCutMinor / 100);
-  const monthlyRub = Math.round(optimalSc.monthlyExtraMinor / 100);
 
   const baseScenario = {
     dailyCutMinor: optimalSc.dailyCutMinor,
     monthlyExtraMinor: optimalSc.monthlyExtraMinor,
-    copy: `Если сократить ежедневные траты на ${dailyRub.toLocaleString('ru-RU')} ₽, можно направлять до ${monthlyRub.toLocaleString('ru-RU')} ₽ в месяц на досрочное погашение.`,
+    copy: t(locale, 'strategy.accelBaseCopy', {
+      daily: formatMoney(optimalSc.dailyCutMinor, currency, locale),
+      monthly: formatMoney(optimalSc.monthlyExtraMinor, currency, locale),
+    }),
   };
 
   return {
@@ -413,9 +422,9 @@ export function buildDebtAccelerationHint(input: {
     baseScenario,
     proScenarios: isPro ? scenarios : null,
     copy: {
-      title: 'Как ускорить выплату долга',
+      title: accelTitle,
       body: baseScenario.copy,
-      cta: isPro ? undefined : 'Посмотреть сценарии',
+      cta: isPro ? undefined : t(locale, 'strategy.accelCta'),
     },
   };
 }

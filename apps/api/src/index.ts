@@ -2,6 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
 import { prisma } from '@pfm/db';
+import { detectLocale, type Locale } from '@pfm/shared';
 import { determineFocusDebt, buildAvalanchePlan, buildDebtStrategy, buildDebtAccelerationHint } from './avalanche';
 import { getLastActualPayday, getNextActualPayday, getNextIncomeAmount } from './payday-calendar';
 import {
@@ -34,6 +35,7 @@ interface TelegramUser {
 interface AuthenticatedRequest extends Request {
   tgUser?: TelegramUser;
   userId?: string;
+  locale?: Locale;
 }
 
 // ── Config ─────────────────────────────────────────────
@@ -114,7 +116,7 @@ function internalAuth(req: Request, res: Response, next: NextFunction): void {
   next();
 }
 
-/** Ensure user exists in DB, set req.userId */
+/** Ensure user exists in DB, set req.userId and req.locale (with auto-redetect when not user-set). */
 async function ensureUser(req: AuthenticatedRequest, _res: Response, next: NextFunction): Promise<void> {
   if (!req.tgUser) {
     next();
@@ -122,6 +124,7 @@ async function ensureUser(req: AuthenticatedRequest, _res: Response, next: NextF
   }
 
   const telegramId = String(req.tgUser.id);
+  const detected = detectLocale(req.tgUser.language_code);
   let user = await prisma.user.findUnique({ where: { telegramId } });
 
   if (!user) {
@@ -130,14 +133,22 @@ async function ensureUser(req: AuthenticatedRequest, _res: Response, next: NextF
         telegramId,
         firstName: req.tgUser.first_name,
         godMode: GOD_MODE_IDS.includes(telegramId),
-        locale: req.tgUser.language_code === 'en' ? 'en' : 'ru',
+        locale: detected,
+        localeUserSet: false,
         profile: { create: { displayName: req.tgUser.first_name } },
         settings: { create: {} },
       },
     });
+  } else if (!user.localeUserSet && user.locale !== detected) {
+    // User hasn't manually picked a locale — auto-redetect from current Telegram language_code
+    user = await prisma.user.update({
+      where: { id: user.id },
+      data: { locale: detected },
+    });
   }
 
   req.userId = user.id;
+  req.locale = (user.locale === 'ru' || user.locale === 'en' ? user.locale : 'en') as Locale;
   next();
 }
 
@@ -466,6 +477,49 @@ tg.get('/me/settings', async (req: AuthenticatedRequest, res) => {
     where: { userId: req.userId! },
   });
   res.json(settings);
+});
+
+// Locale: get current effective locale + override flag
+tg.get('/me/locale', async (req: AuthenticatedRequest, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.userId! },
+    select: { locale: true, localeUserSet: true },
+  });
+  if (!user) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+  res.json({
+    locale: user.locale,
+    userSet: user.localeUserSet,
+    pref: user.localeUserSet ? user.locale : 'auto',
+  });
+});
+
+// Locale: set explicit override (or revert to auto)
+tg.patch('/me/locale', async (req: AuthenticatedRequest, res) => {
+  const { pref } = req.body as { pref?: 'auto' | 'ru' | 'en' };
+  if (pref !== 'auto' && pref !== 'ru' && pref !== 'en') {
+    res.status(400).json({ error: 'pref must be auto, ru, or en' });
+    return;
+  }
+  const userId = req.userId!;
+  if (pref === 'auto') {
+    const detected = detectLocale(req.tgUser?.language_code);
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: { locale: detected, localeUserSet: false },
+      select: { locale: true, localeUserSet: true },
+    });
+    res.json({ locale: updated.locale, userSet: updated.localeUserSet, pref: 'auto' });
+    return;
+  }
+  const updated = await prisma.user.update({
+    where: { id: userId },
+    data: { locale: pref, localeUserSet: true },
+    select: { locale: true, localeUserSet: true },
+  });
+  res.json({ locale: updated.locale, userSet: updated.localeUserSet, pref: updated.locale });
 });
 
 // ── Onboarding ─────────────────────────────────────────
@@ -851,6 +905,7 @@ tg.get('/ef', async (req: AuthenticatedRequest, res) => {
     targetDeadlineAt: plan?.targetDeadlineAt ?? null,
     preferredPace: (plan?.preferredPace ?? null) as any,
     now: new Date(),
+    locale: req.locale,
   });
 
   res.json({
@@ -1068,6 +1123,7 @@ tg.get('/ef/plan', async (req: AuthenticatedRequest, res) => {
     targetDeadlineAt: plan?.targetDeadlineAt ?? null,
     preferredPace: (plan?.preferredPace ?? null) as any,
     now: new Date(),
+    locale: req.locale,
   });
 
   // Build selectedPlan from stored plan preferences
@@ -1653,6 +1709,7 @@ tg.get('/debts/strategy', async (req: AuthenticatedRequest, res) => {
     avalanchePool,
     daysTotal,
     currency,
+    req.locale,
   );
 
   // Build acceleration hint
@@ -1669,6 +1726,7 @@ tg.get('/debts/strategy', async (req: AuthenticatedRequest, res) => {
     s2sDaily,
     isPro: isPro === true,
     currency,
+    locale: req.locale,
   });
 
   res.json({ ...strategy, accelerationHint });

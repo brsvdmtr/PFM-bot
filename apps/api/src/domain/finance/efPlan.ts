@@ -5,6 +5,8 @@
  * and plan progress. No DB, no side effects.
  */
 
+import { t, formatNumber, type Locale } from '@pfm/shared';
+
 export interface EFPlanInputs {
   targetAmount: number;           // minor units
   currentAmount: number;          // minor units (sum of included buckets)
@@ -14,6 +16,7 @@ export interface EFPlanInputs {
   targetDeadlineAt: Date | null;
   preferredPace: 'GENTLE' | 'OPTIMAL' | 'AGGRESSIVE' | null;
   now: Date;
+  locale?: Locale;
 }
 
 export interface EFScenario {
@@ -55,6 +58,7 @@ export function computeEFPlan(inputs: EFPlanInputs): EFPlanResult {
     monthlyRequiredExpenses, contributionFrequency,
     targetDeadlineAt, now,
   } = inputs;
+  const locale: Locale = inputs.locale ?? 'en';
 
   const remainingGap = Math.max(0, targetAmount - currentAmount);
   const monthlyFreeCashflow = Math.max(0, monthlyIncomeBase - monthlyRequiredExpenses);
@@ -67,7 +71,7 @@ export function computeEFPlan(inputs: EFPlanInputs): EFPlanResult {
       requiredContribution: null,
       feasibility: 'REALISTIC',
       scenarios: [],
-      message: 'Цель достигнута!',
+      message: t(locale, 'ef.goalReached'),
     };
   }
 
@@ -165,9 +169,12 @@ export function computeEFPlan(inputs: EFPlanInputs): EFPlanResult {
   // Message
   let message: string | null = null;
   if (feasibility === 'UNREALISTIC' && requiredContribution) {
-    message = `Чтобы достичь цели к выбранной дате, нужно откладывать ${Math.round(requiredContribution.amount / 100).toLocaleString('ru-RU')} ₽/${freqLabel(contributionFrequency)}, что превышает доступный ресурс.`;
+    message = t(locale, 'efPlan.unrealisticMessage', {
+      amount: formatNumber(Math.round(requiredContribution.amount / 100), locale),
+      freq: freqLabel(contributionFrequency, locale),
+    });
   } else if (monthlyFreeCashflow <= 0) {
-    message = 'Свободного денежного потока недостаточно для накоплений.';
+    message = t(locale, 'efPlan.noFreeCashflow');
   }
 
   return {
@@ -177,8 +184,10 @@ export function computeEFPlan(inputs: EFPlanInputs): EFPlanResult {
   };
 }
 
-function freqLabel(f: string): string {
-  return f === 'WEEKLY' ? 'нед.' : f === 'BIWEEKLY' ? '2 нед.' : 'мес.';
+function freqLabel(f: string, locale: Locale): string {
+  if (f === 'WEEKLY') return t(locale, 'efPlan.freqWeek');
+  if (f === 'BIWEEKLY') return t(locale, 'efPlan.freqBiweek');
+  return t(locale, 'efPlan.freqMonth');
 }
 
 /**

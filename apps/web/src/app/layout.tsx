@@ -15,8 +15,10 @@ export const viewport: Viewport = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  // SSR can't know the user's Telegram language_code; the MiniApp updates
+  // document.documentElement.lang on mount based on the detected/selected locale.
   return (
-    <html lang="ru">
+    <html lang="en">
       <head>
         <script src="https://telegram.org/js/telegram-web-app.js" />
       </head>

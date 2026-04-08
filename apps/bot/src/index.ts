@@ -1,4 +1,5 @@
-import { Telegraf } from 'telegraf';
+import { Telegraf, Context } from 'telegraf';
+import { detectLocale, formatNumber, t, type Locale } from '@pfm/shared';
 
 // ── Types ─────────────────────────────────────────────
 
@@ -24,9 +25,24 @@ if (!BOT_TOKEN) {
 
 const bot = new Telegraf(BOT_TOKEN);
 
+// ── Locale helpers ────────────────────────────────────
+
+function getLocale(ctx: Context): Locale {
+  return detectLocale(ctx.from?.language_code);
+}
+
+function openAppKeyboard(locale: Locale, url: string) {
+  return {
+    inline_keyboard: [
+      [{ text: t(locale, 'bot.openApp'), web_app: { url } }],
+    ],
+  };
+}
+
 // ── /start ─────────────────────────────────────────────
 
 bot.start(async (ctx) => {
+  const locale = getLocale(ctx);
   const payload = ctx.startPayload;
 
   // Store chatId for notifications
@@ -57,42 +73,21 @@ bot.start(async (ctx) => {
 
   if (payload) {
     // Deep link — open Mini App with payload
-    await ctx.reply('👋 Открываю PFM Bot...', {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            {
-              text: 'Открыть PFM 💰',
-              web_app: { url: `${MINI_APP_URL}?startapp=${payload}` },
-            },
-          ],
-        ],
-      },
+    await ctx.reply(t(locale, 'bot.welcomeShort'), {
+      reply_markup: openAppKeyboard(locale, `${MINI_APP_URL}?startapp=${payload}`),
     });
   } else {
     // Regular start
-    await ctx.reply(
-      '👋 Привет! Я PFM Bot — помогу контролировать расходы и выбраться из долгов.\n\n' +
-        'Нажми кнопку, чтобы открыть приложение 👇',
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [
-              {
-                text: 'Открыть PFM 💰',
-                web_app: { url: MINI_APP_URL },
-              },
-            ],
-          ],
-        },
-      }
-    );
+    await ctx.reply(t(locale, 'bot.welcome'), {
+      reply_markup: openAppKeyboard(locale, MINI_APP_URL),
+    });
   }
 });
 
 // ── /today — quick S2S check ───────────────────────────
 
 bot.command('today', async (ctx) => {
+  const locale = getLocale(ctx);
   try {
     // Find user by telegram ID via internal endpoint
     const res = await fetch(`${API_BASE_URL}/tg/dashboard`, {
@@ -106,18 +101,14 @@ bot.command('today', async (ctx) => {
     const data = (await res.json()) as DashboardResponse;
 
     if (!data.onboardingDone) {
-      await ctx.reply('Сначала пройдите настройку в Mini App 👇', {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: 'Открыть PFM 💰', web_app: { url: MINI_APP_URL } }],
-          ],
-        },
+      await ctx.reply(t(locale, 'bot.onboardingFirst'), {
+        reply_markup: openAppKeyboard(locale, MINI_APP_URL),
       });
       return;
     }
 
-    const s2s = (data.s2sToday / 100).toLocaleString('ru-RU', { maximumFractionDigits: 0 });
-    const daily = (data.s2sDaily / 100).toLocaleString('ru-RU', { maximumFractionDigits: 0 });
+    const s2s = formatNumber(Math.round(data.s2sToday / 100), locale);
+    const daily = formatNumber(Math.round(data.s2sDaily / 100), locale);
     const sym = data.currency === 'USD' ? '$' : '₽';
     const daysLeft = data.daysLeft;
 
@@ -127,35 +118,30 @@ bot.command('today', async (ctx) => {
     else if (data.s2sStatus === 'DEFICIT') emoji = '🔴';
 
     await ctx.reply(
-      `${emoji} *Safe to Spend сегодня:*\n\n` +
-      `*${s2s} ${sym}*\n` +
-      `из дневного лимита ${daily} ${sym}\n\n` +
-      `📅 Осталось дней в периоде: ${daysLeft}`,
+      `${emoji} ${t(locale, 'bot.todayHeader')}\n\n` +
+        t(locale, 'bot.todayBody', { s2s, sym, daily, daysLeft }),
       {
         parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: 'Открыть PFM 💰', web_app: { url: MINI_APP_URL } }],
-          ],
-        },
-      }
+        reply_markup: openAppKeyboard(locale, MINI_APP_URL),
+      },
     );
   } catch (err) {
     console.error('[PFM Bot] /today error:', err);
-    await ctx.reply('Произошла ошибка. Попробуйте позже.');
+    await ctx.reply(t(locale, 'bot.genericError'));
   }
 });
 
 // ── /spend <amount> — quick expense ────────────────────
 
 bot.command('spend', async (ctx) => {
+  const locale = getLocale(ctx);
   const text = ctx.message.text.replace('/spend', '').trim();
   const parts = text.split(/\s+/);
   const amount = parseFloat(parts[0]);
   const note = parts.slice(1).join(' ') || undefined;
 
   if (!parts[0] || isNaN(amount) || amount <= 0) {
-    await ctx.reply('Использование: /spend 500 обед\n(сумма в рублях, заметка опционально)');
+    await ctx.reply(t(locale, 'bot.spendUsage'));
     return;
   }
 
@@ -175,12 +161,8 @@ bot.command('spend', async (ctx) => {
     if (!res.ok) {
       const err = (await res.json().catch(() => ({}))) as { error?: string };
       if (err.error === 'No active period. Complete onboarding first.') {
-        await ctx.reply('Сначала пройдите настройку в Mini App 👇', {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: 'Открыть PFM 💰', web_app: { url: MINI_APP_URL } }],
-            ],
-          },
+        await ctx.reply(t(locale, 'bot.onboardingFirst'), {
+          reply_markup: openAppKeyboard(locale, MINI_APP_URL),
         });
         return;
       }
@@ -196,49 +178,30 @@ bot.command('spend', async (ctx) => {
     });
     const data = (await dashRes.json()) as DashboardResponse;
 
-    const s2s = (data.s2sToday / 100).toLocaleString('ru-RU', { maximumFractionDigits: 0 });
+    const s2s = formatNumber(Math.round(data.s2sToday / 100), locale);
     const sym = data.currency === 'USD' ? '$' : '₽';
 
     const noteText = note ? ` (${note})` : '';
     await ctx.reply(
-      `✅ Расход ${amount} ${sym}${noteText} записан.\n\n` +
-      `Осталось сегодня: *${s2s} ${sym}*`,
+      t(locale, 'bot.spendSuccess', { amount, sym, noteText, s2s }),
       {
         parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: 'Открыть PFM 💰', web_app: { url: MINI_APP_URL } }],
-          ],
-        },
-      }
+        reply_markup: openAppKeyboard(locale, MINI_APP_URL),
+      },
     );
   } catch (err) {
     console.error('[PFM Bot] /spend error:', err);
-    await ctx.reply('Произошла ошибка. Попробуйте позже.');
+    await ctx.reply(t(locale, 'bot.genericError'));
   }
 });
 
 // ── /help ──────────────────────────────────────────────
 
 bot.help(async (ctx) => {
-  await ctx.reply(
-    'PFM Bot — персональный финансовый менеджер.\n\n' +
-      '📊 Рассчитывает, сколько можно безопасно тратить каждый день\n' +
-      '💳 Помогает выбраться из долгов (стратегия «лавина»)\n' +
-      '🛡 Формирует подушку безопасности\n\n' +
-      'Команды:\n' +
-      '/start — Открыть приложение\n' +
-      '/today — Лимит на сегодня\n' +
-      '/spend <сумма> — Быстрый ввод расхода\n' +
-      '/help — Справка',
-    {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: 'Открыть PFM 💰', web_app: { url: MINI_APP_URL } }],
-        ],
-      },
-    }
-  );
+  const locale = getLocale(ctx);
+  await ctx.reply(t(locale, 'bot.help'), {
+    reply_markup: openAppKeyboard(locale, MINI_APP_URL),
+  });
 });
 
 // ── Pre-checkout (Telegram Stars) ──────────────────────
@@ -252,6 +215,7 @@ bot.on('pre_checkout_query', async (ctx) => {
 bot.on('message', async (ctx, next) => {
   const msg = ctx.message;
   if ('successful_payment' in msg && msg.successful_payment) {
+    const locale = getLocale(ctx);
     const payment = msg.successful_payment;
     try {
       await fetch(`${API_BASE_URL}/internal/activate-subscription`, {
@@ -267,10 +231,10 @@ bot.on('message', async (ctx, next) => {
           currency: payment.currency,
         }),
       });
-      await ctx.reply('🎉 PRO подписка активирована! Спасибо за поддержку.');
+      await ctx.reply(t(locale, 'bot.payActivated'));
     } catch (err) {
       console.error('[PFM Bot] Payment processing error:', err);
-      await ctx.reply('Произошла ошибка при активации. Напишите в поддержку.');
+      await ctx.reply(t(locale, 'bot.payError'));
     }
     return;
   }
