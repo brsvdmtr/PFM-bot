@@ -64,7 +64,11 @@ jobs:
   deploy:
     name: SSH deploy
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Pulling three fresh images on the 2 GB server (Timeweb) can take
+    # 10+ minutes when the layer cache is cold, so the 10-minute default
+    # was cancelling valid deploys. 25 minutes covers worst-case cold pulls
+    # while still failing fast on a real hang.
+    timeout-minutes: 25
     needs: build
     steps:
       - name: Configure SSH
