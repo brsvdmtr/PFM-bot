@@ -341,6 +341,144 @@ function BottomNav({ active, onTab, onAdd }: { active: NavTab; onTab: (t: NavTab
   );
 }
 
+// ── Add Chooser (bottom sheet shown when + is tapped) ────────────────────────
+//
+// Lets the user pick between "Add Expense" and "Add Free Cash" when tapping the
+// central + button in BottomNav. Before Free Cash existed, + went straight to
+// AddExpense. Now it's ambiguous, so we show a two-option chooser.
+
+function AddChooser({
+  onPickExpense,
+  onPickFreeCash,
+  onClose,
+}: {
+  onPickExpense: () => void;
+  onPickFreeCash: () => void;
+  onClose: () => void;
+}) {
+  const t = useT();
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.55)',
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'flex-end',
+        zIndex: 200,
+        backdropFilter: 'blur(4px)',
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: C.bg,
+          borderTopLeftRadius: 20,
+          borderTopRightRadius: 20,
+          padding: '16px 16px calc(20px + env(safe-area-inset-bottom, 0px))',
+          boxShadow: '0 -8px 32px rgba(0,0,0,0.4)',
+          animation: 'slideUp 220ms ease-out',
+        }}
+      >
+        <style>{`
+          @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+        `}</style>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, padding: '4px 4px 0' }}>
+          <span style={{ fontSize: 17, fontWeight: 700, color: C.text }}>{t('addChooser.title')}</span>
+          <button
+            onClick={onClose}
+            style={{ background: 'none', border: 'none', color: C.textSec, fontSize: 22, cursor: 'pointer', lineHeight: 1, padding: '4px 8px', fontFamily: 'inherit' }}
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        <button
+          onClick={onPickExpense}
+          style={{
+            width: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 14,
+            padding: '16px 14px',
+            background: C.surface,
+            border: `1px solid ${C.borderSubtle}`,
+            borderRadius: 14,
+            marginBottom: 10,
+            cursor: 'pointer',
+            fontFamily: 'inherit',
+            textAlign: 'left',
+            color: C.text,
+          }}
+        >
+          <span
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 12,
+              background: 'rgba(239, 68, 68, 0.15)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: 22,
+              flexShrink: 0,
+            }}
+          >
+            📝
+          </span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 2 }}>{t('addChooser.expenseTitle')}</div>
+            <div style={{ fontSize: 12, color: C.textSec, lineHeight: 1.35 }}>{t('addChooser.expenseHint')}</div>
+          </div>
+          <span style={{ fontSize: 18, color: C.textMuted, flexShrink: 0 }}>›</span>
+        </button>
+
+        <button
+          onClick={onPickFreeCash}
+          style={{
+            width: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 14,
+            padding: '16px 14px',
+            background: C.surface,
+            border: `1px solid ${C.borderSubtle}`,
+            borderRadius: 14,
+            cursor: 'pointer',
+            fontFamily: 'inherit',
+            textAlign: 'left',
+            color: C.text,
+          }}
+        >
+          <span
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 12,
+              background: 'rgba(34, 197, 94, 0.18)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: 22,
+              flexShrink: 0,
+            }}
+          >
+            💰
+          </span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 2 }}>{t('addChooser.freeCashTitle')}</div>
+            <div style={{ fontSize: 12, color: C.textSec, lineHeight: 1.35 }}>{t('addChooser.freeCashHint')}</div>
+          </div>
+          <span style={{ fontSize: 18, color: C.textMuted, flexShrink: 0 }}>›</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Onboarding Screens ───────────────────────────────────────────────────────
 
 function OnbWelcome({ onStart }: { onStart: () => void }) {
@@ -3430,6 +3568,7 @@ export default function MiniApp() {
   const [onbResult, setOnbResult] = useState<{ s2sDaily: number; currency: string } | null>(null);
   const [periodSummary, setPeriodSummary] = useState<PeriodSummaryData | null>(null);
   const [showSummaryBanner, setShowSummaryBanner] = useState(false);
+  const [showAddChooser, setShowAddChooser] = useState(false);
   // Start with client-detected locale (instant) and then reconcile with server's effective locale.
   const [locale, setLocale] = useState<Locale>(() => detectClientLocale());
   const { api, initDataRef, devMode } = useApi();
@@ -3608,6 +3747,17 @@ export default function MiniApp() {
       />
     );
 
+    // Free Cash is a modal-like flow — render without BottomNav to avoid the
+    // bottom "+" button accidentally redirecting to Add Expense mid-flow.
+    if (screen === 'free-cash') return (
+      <FreeCashFlow
+        api={api}
+        currency={dashboard?.currency ?? 'RUB'}
+        onBack={() => setScreen('dashboard')}
+        onApplied={loadDashboard}
+      />
+    );
+
     // Screens with bottom nav
     return (
       <div style={{ background: C.bg, minHeight: '100vh' }}>
@@ -3627,14 +3777,6 @@ export default function MiniApp() {
         {screen === 'dashboard' && !dashboard && (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh' }}><Spinner /></div>
         )}
-        {screen === 'free-cash' && (
-          <FreeCashFlow
-            api={api}
-            currency={dashboard?.currency ?? 'RUB'}
-            onBack={() => setScreen('dashboard')}
-            onApplied={loadDashboard}
-          />
-        )}
         {screen === 'history' && <History api={api} currency={dashboard?.currency ?? 'RUB'} onRefresh={loadDashboard} />}
         {screen === 'debts' && <DebtsScreen api={api} currency={dashboard?.currency ?? 'RUB'} onRefresh={loadDashboard} onOpenPro={() => setScreen('pro')} />}
         {screen === 'emergency-fund-detail' && <EmergencyFundScreen api={api} onBack={() => setScreen('dashboard')} onRefresh={loadDashboard} />}
@@ -3653,8 +3795,16 @@ export default function MiniApp() {
         <BottomNav
           active={navTab}
           onTab={handleTab}
-          onAdd={() => setScreen('add-expense')}
+          onAdd={() => setShowAddChooser(true)}
         />
+
+        {showAddChooser && (
+          <AddChooser
+            onPickExpense={() => { setShowAddChooser(false); setScreen('add-expense'); }}
+            onPickFreeCash={() => { setShowAddChooser(false); setScreen('free-cash'); }}
+            onClose={() => setShowAddChooser(false)}
+          />
+        )}
       </div>
     );
   })();

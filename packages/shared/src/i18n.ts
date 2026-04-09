@@ -562,6 +562,13 @@ const ru = {
     errLoad: 'Не удалось посчитать рекомендацию',
     errApply: 'Не удалось применить — попробуйте снова',
   },
+  addChooser: {
+    title: 'Что добавить?',
+    expenseTitle: 'Расход',
+    expenseHint: 'Запишите траты за сегодня',
+    freeCashTitle: 'Свободные деньги',
+    freeCashHint: 'Бонус, премия, подарок — получим рекомендацию',
+  },
   errors: {
     loadingError: 'Ошибка загрузки',
   },
@@ -1118,6 +1125,13 @@ const en = {
     // Errors
     errLoad: 'Could not compute recommendation',
     errApply: 'Could not apply — please try again',
+  },
+  addChooser: {
+    title: 'What to add?',
+    expenseTitle: 'Expense',
+    expenseHint: 'Log today\u2019s spending',
+    freeCashTitle: 'Free cash',
+    freeCashHint: 'Bonus, gift, windfall — get a recommendation',
   },
   errors: {
     loadingError: 'Loading error',
