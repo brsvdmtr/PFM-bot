@@ -72,6 +72,20 @@ function escapeMarkdown(s: string): string {
 }
 
 // ── API helpers ───────────────────────────────────────
+//
+// The bot talks to /tg/* endpoints server-to-server. In production the API's
+// tgAuth middleware requires either valid Telegram initData (which only the
+// Mini App has) or the bot's internal auth pair: `X-Internal-Key` = ADMIN_KEY
+// plus `X-Bot-Telegram-Id` = the acting user's Telegram id. We always send
+// that pair from the bot, so the same code path works in dev and prod.
+
+function tgHeaders(telegramId: number): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    'X-Internal-Key': ADMIN_KEY,
+    'X-Bot-Telegram-Id': String(telegramId),
+  };
+}
 
 async function apiCreateExpense(
   telegramId: number,
@@ -81,14 +95,12 @@ async function apiCreateExpense(
   try {
     const res = await fetch(`${API_BASE_URL}/tg/expenses`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-TG-DEV': String(telegramId),
-      },
+      headers: tgHeaders(telegramId),
       body: JSON.stringify({ amount: amountMinor, note }),
     });
     if (!res.ok) {
       const err = (await res.json().catch(() => ({}))) as { error?: string };
+      console.error('[PFM Bot] apiCreateExpense non-2xx:', res.status, err);
       if (err.error === 'No active period. Complete onboarding first.') {
         return { ok: false, kind: 'onboarding' };
       }
@@ -106,8 +118,11 @@ async function apiDeleteExpense(telegramId: number, expenseId: string): Promise<
   try {
     const res = await fetch(`${API_BASE_URL}/tg/expenses/${expenseId}`, {
       method: 'DELETE',
-      headers: { 'X-TG-DEV': String(telegramId) },
+      headers: tgHeaders(telegramId),
     });
+    if (!res.ok) {
+      console.error('[PFM Bot] apiDeleteExpense non-2xx:', res.status);
+    }
     return res.ok;
   } catch (err) {
     console.error('[PFM Bot] apiDeleteExpense failed:', err);
@@ -118,12 +133,12 @@ async function apiDeleteExpense(telegramId: number, expenseId: string): Promise<
 async function apiGetDashboard(telegramId: number): Promise<DashboardResponse | null> {
   try {
     const res = await fetch(`${API_BASE_URL}/tg/dashboard`, {
-      headers: {
-        'Content-Type': 'application/json',
-        'X-TG-DEV': String(telegramId),
-      },
+      headers: tgHeaders(telegramId),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.error('[PFM Bot] apiGetDashboard non-2xx:', res.status);
+      return null;
+    }
     return (await res.json()) as DashboardResponse;
   } catch (err) {
     console.error('[PFM Bot] apiGetDashboard failed:', err);
@@ -217,16 +232,8 @@ bot.start(async (ctx) => {
 bot.command('today', async (ctx) => {
   const locale = getLocale(ctx);
   try {
-    // Find user by telegram ID via internal endpoint
-    const res = await fetch(`${API_BASE_URL}/tg/dashboard`, {
-      headers: {
-        'Content-Type': 'application/json',
-        'X-TG-DEV': String(ctx.from.id),
-      },
-    });
-
-    if (!res.ok) throw new Error('API error');
-    const data = (await res.json()) as DashboardResponse;
+    const data = await apiGetDashboard(ctx.from.id);
+    if (!data) throw new Error('API error');
 
     if (!data.onboardingDone) {
       await ctx.reply(t(locale, 'bot.onboardingFirst'), {

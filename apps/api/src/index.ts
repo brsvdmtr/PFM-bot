@@ -81,11 +81,27 @@ function validateTelegramInitData(initData: string): TelegramUser | null {
 // ── Middleware ──────────────────────────────────────────
 
 function tgAuth(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
-  // Dev bypass
+  // Dev bypass (only in non-production)
   if (process.env.NODE_ENV !== 'production') {
     const devId = req.headers['x-tg-dev'] as string | undefined;
     if (devId) {
       req.tgUser = { id: parseInt(devId, 10), first_name: 'Dev' };
+      next();
+      return;
+    }
+  }
+
+  // Bot server-to-server path: the bot process has ADMIN_KEY (it already
+  // uses it for /internal/*) and tells us which Telegram user it is acting
+  // on behalf of. This is how the bot calls /tg/expenses and /tg/dashboard
+  // for /spend, /today, and free-text expense logging — the bot never has
+  // Telegram initData, only the Mini App does.
+  const internalKey = req.headers['x-internal-key'] as string | undefined;
+  const botTelegramId = req.headers['x-bot-telegram-id'] as string | undefined;
+  if (ADMIN_KEY && internalKey && internalKey === ADMIN_KEY && botTelegramId) {
+    const parsed = parseInt(botTelegramId, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      req.tgUser = { id: parsed, first_name: 'Bot' };
       next();
       return;
     }
