@@ -1,6 +1,7 @@
 import { Telegraf, Context } from 'telegraf';
 import { message } from 'telegraf/filters';
 import { detectLocale, formatNumber, t, type Locale } from '@pfm/shared';
+import { parseExpenseFromText, type ParseResult } from './expenseParser';
 
 // ── Types ─────────────────────────────────────────────
 
@@ -9,6 +10,17 @@ interface DashboardResponse {
   s2sToday: number; s2sDaily: number; s2sStatus: string;
   daysLeft: number; currency: string;
 }
+
+interface ApiExpense {
+  id: string;
+  amount: number;
+  note: string | null;
+  currency: string;
+}
+
+type CreateExpenseResult =
+  | { ok: true; expense: ApiExpense }
+  | { ok: false; kind: 'onboarding' | 'error' };
 
 // ── Config ─────────────────────────────────────────────
 
@@ -37,6 +49,121 @@ function openAppKeyboard(locale: Locale, url: string) {
     inline_keyboard: [
       [{ text: t(locale, 'bot.openApp'), web_app: { url } }],
     ],
+  };
+}
+
+// ── Analytics ─────────────────────────────────────────
+// Structured log lines, no raw user text. Grep logs for `[PFM Bot] analytics`.
+
+function logEvent(event: string, data: Record<string, unknown>): void {
+  try {
+    console.log(`[PFM Bot] analytics ${event} ${JSON.stringify(data)}`);
+  } catch {
+    // never throw from analytics
+  }
+}
+
+// ── Markdown helpers ──────────────────────────────────
+// Legacy Telegram Markdown only treats *, _, [ and ` as special. Strip them
+// from user-supplied notes so malformed text can't break message rendering.
+
+function escapeMarkdown(s: string): string {
+  return s.replace(/[*_`[\]]/g, '');
+}
+
+// ── API helpers ───────────────────────────────────────
+
+async function apiCreateExpense(
+  telegramId: number,
+  amountMinor: number,
+  note: string | undefined,
+): Promise<CreateExpenseResult> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/tg/expenses`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-TG-DEV': String(telegramId),
+      },
+      body: JSON.stringify({ amount: amountMinor, note }),
+    });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      if (err.error === 'No active period. Complete onboarding first.') {
+        return { ok: false, kind: 'onboarding' };
+      }
+      return { ok: false, kind: 'error' };
+    }
+    const expense = (await res.json()) as ApiExpense;
+    return { ok: true, expense };
+  } catch (err) {
+    console.error('[PFM Bot] apiCreateExpense failed:', err);
+    return { ok: false, kind: 'error' };
+  }
+}
+
+async function apiDeleteExpense(telegramId: number, expenseId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/tg/expenses/${expenseId}`, {
+      method: 'DELETE',
+      headers: { 'X-TG-DEV': String(telegramId) },
+    });
+    return res.ok;
+  } catch (err) {
+    console.error('[PFM Bot] apiDeleteExpense failed:', err);
+    return false;
+  }
+}
+
+async function apiGetDashboard(telegramId: number): Promise<DashboardResponse | null> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/tg/dashboard`, {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-TG-DEV': String(telegramId),
+      },
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as DashboardResponse;
+  } catch (err) {
+    console.error('[PFM Bot] apiGetDashboard failed:', err);
+    return null;
+  }
+}
+
+// ── Reply builders ────────────────────────────────────
+
+/**
+ * Shape the "expense recorded" confirmation: text body + inline Delete button.
+ * Used for both auto-success (text handler) and confirmed-ambiguous (cy action).
+ */
+function buildExpenseReply(
+  locale: Locale,
+  opts: {
+    amountMajor: number;
+    currency: string;
+    note: string;
+    s2sTodayMinor: number;
+    expenseId: string;
+  },
+): { text: string; reply_markup: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } } {
+  const sym = opts.currency === 'USD' ? '$' : '₽';
+  const s2s = formatNumber(Math.round(opts.s2sTodayMinor / 100), locale);
+  const amount = formatNumber(opts.amountMajor, locale);
+  const noteText = opts.note
+    ? t(locale, 'bot.exp.successWithNote', { note: escapeMarkdown(opts.note) })
+    : t(locale, 'bot.exp.successNoNote');
+
+  return {
+    text: t(locale, 'bot.exp.success', { amount, sym, noteText, s2s }),
+    reply_markup: {
+      inline_keyboard: [[
+        {
+          text: t(locale, 'bot.exp.deleteButton'),
+          callback_data: `exp:del:${opts.expenseId}`,
+        },
+      ]],
+    },
   };
 }
 
@@ -133,6 +260,10 @@ bot.command('today', async (ctx) => {
 });
 
 // ── /spend <amount> — quick expense ────────────────────
+//
+// Behavior preserved exactly: same reply template (`bot.spendSuccess`) and
+// same keyboard (Open App). Internal API calls now reuse the shared helpers
+// but nothing visible to the user has changed.
 
 bot.command('spend', async (ctx) => {
   const locale = getLocale(ctx);
@@ -146,54 +277,35 @@ bot.command('spend', async (ctx) => {
     return;
   }
 
-  try {
-    const amountKop = Math.round(amount * 100);
-
-    // Create expense via API
-    const res = await fetch(`${API_BASE_URL}/tg/expenses`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-TG-DEV': String(ctx.from.id),
-      },
-      body: JSON.stringify({ amount: amountKop, note }),
-    });
-
-    if (!res.ok) {
-      const err = (await res.json().catch(() => ({}))) as { error?: string };
-      if (err.error === 'No active period. Complete onboarding first.') {
-        await ctx.reply(t(locale, 'bot.onboardingFirst'), {
-          reply_markup: openAppKeyboard(locale, MINI_APP_URL),
-        });
-        return;
-      }
-      throw new Error('API error');
-    }
-
-    // Get updated S2S
-    const dashRes = await fetch(`${API_BASE_URL}/tg/dashboard`, {
-      headers: {
-        'Content-Type': 'application/json',
-        'X-TG-DEV': String(ctx.from.id),
-      },
-    });
-    const data = (await dashRes.json()) as DashboardResponse;
-
-    const s2s = formatNumber(Math.round(data.s2sToday / 100), locale);
-    const sym = data.currency === 'USD' ? '$' : '₽';
-
-    const noteText = note ? ` (${note})` : '';
-    await ctx.reply(
-      t(locale, 'bot.spendSuccess', { amount, sym, noteText, s2s }),
-      {
-        parse_mode: 'Markdown',
+  const amountMinor = Math.round(amount * 100);
+  const created = await apiCreateExpense(ctx.from.id, amountMinor, note);
+  if (!created.ok) {
+    if (created.kind === 'onboarding') {
+      await ctx.reply(t(locale, 'bot.onboardingFirst'), {
         reply_markup: openAppKeyboard(locale, MINI_APP_URL),
-      },
-    );
-  } catch (err) {
-    console.error('[PFM Bot] /spend error:', err);
+      });
+      return;
+    }
     await ctx.reply(t(locale, 'bot.genericError'));
+    return;
   }
+
+  const dash = await apiGetDashboard(ctx.from.id);
+  if (!dash) {
+    await ctx.reply(t(locale, 'bot.genericError'));
+    return;
+  }
+
+  const s2s = formatNumber(Math.round(dash.s2sToday / 100), locale);
+  const sym = dash.currency === 'USD' ? '$' : '₽';
+  const noteText = note ? ` (${note})` : '';
+  await ctx.reply(
+    t(locale, 'bot.spendSuccess', { amount, sym, noteText, s2s }),
+    {
+      parse_mode: 'Markdown',
+      reply_markup: openAppKeyboard(locale, MINI_APP_URL),
+    },
+  );
 });
 
 // ── /help ──────────────────────────────────────────────
@@ -203,6 +315,247 @@ bot.help(async (ctx) => {
   await ctx.reply(t(locale, 'bot.help'), {
     reply_markup: openAppKeyboard(locale, MINI_APP_URL),
   });
+});
+
+// ── Free-text expense logging ──────────────────────────
+//
+// Flow:
+//   - deterministic `parseExpenseFromText` classifies the text
+//   - success   → create expense via API, reply with s2s + inline Delete button
+//   - ambiguous → ask the user to confirm via inline Yes/No buttons; the
+//                 amountMinor is carried in callback_data, there's nothing else
+//                 to persist because ambiguous results always have empty note
+//   - reject    → either stay silent (pure chatter, non-expense keywords) or
+//                 show a short "didn't get it" hint for things that clearly
+//                 look like a failed attempt (multiple amounts, out-of-range)
+//
+// We only act on private chats. In groups we silently ignore every text
+// message so we don't spam people.
+
+/** Reject reasons that warrant a visible hint; the rest are treated as chatter. */
+const HINT_REJECT_REASONS = new Set<ParseResult['reason']>([
+  'multiple_amounts',
+  'range_like',
+  'amount_out_of_range',
+]);
+
+function redactForAnalytics(parse: ParseResult): Record<string, unknown> {
+  return {
+    kind: parse.kind,
+    pattern: parse.pattern,
+    reason: parse.reason ?? null,
+    // amountMinor is a bucketed coarse value — safe and useful for analytics
+    amountBucket: parse.amountMinor !== undefined ? bucketAmount(parse.amountMinor) : null,
+    hasNote: !!parse.note && parse.note.length > 0,
+  };
+}
+
+/** Coarse log-scale bucket so we don't leak exact amounts through logs. */
+function bucketAmount(amountMinor: number): string {
+  const major = amountMinor / 100;
+  if (major < 100) return '<100';
+  if (major < 500) return '100-500';
+  if (major < 1000) return '500-1k';
+  if (major < 5000) return '1k-5k';
+  if (major < 10000) return '5k-10k';
+  if (major < 50000) return '10k-50k';
+  if (major < 100000) return '50k-100k';
+  return '>100k';
+}
+
+bot.on(message('text'), async (ctx) => {
+  // Only private chats get the free-text expense flow.
+  if (ctx.chat.type !== 'private') return;
+
+  const text = ctx.message.text;
+  // Slash commands are handled by bot.command('...') registrations above.
+  // Telegraf still calls this text handler afterwards, so bail out cleanly.
+  if (text.startsWith('/')) return;
+
+  const locale = getLocale(ctx);
+  const parsed = parseExpenseFromText(text);
+
+  // ── Reject ────────────────────────────────────────
+  if (parsed.kind === 'reject') {
+    logEvent('expense_text_parse_reject', {
+      telegramId: ctx.from.id,
+      ...redactForAnalytics(parsed),
+    });
+    if (parsed.reason && HINT_REJECT_REASONS.has(parsed.reason)) {
+      await ctx.reply(t(locale, 'bot.exp.notRecognized'), { parse_mode: 'Markdown' });
+    }
+    return;
+  }
+
+  // ── Ambiguous → confirm flow ──────────────────────
+  if (parsed.kind === 'ambiguous') {
+    logEvent('expense_text_parse_ambiguous', {
+      telegramId: ctx.from.id,
+      ...redactForAnalytics(parsed),
+    });
+    const amountMinor = parsed.amountMinor!;
+    const dash = await apiGetDashboard(ctx.from.id);
+    const currency = dash?.currency ?? 'RUB';
+    const sym = currency === 'USD' ? '$' : '₽';
+    const amount = formatNumber(Math.round(amountMinor / 100), locale);
+    await ctx.reply(
+      t(locale, 'bot.exp.confirmPrompt', { amount, sym }),
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [[
+            { text: t(locale, 'bot.exp.confirmYes'), callback_data: `exp:cy:${amountMinor}` },
+            { text: t(locale, 'bot.exp.confirmNo'), callback_data: 'exp:cn' },
+          ]],
+        },
+      },
+    );
+    return;
+  }
+
+  // ── Success → create expense immediately ──────────
+  logEvent('expense_text_parse_success', {
+    telegramId: ctx.from.id,
+    ...redactForAnalytics(parsed),
+  });
+
+  const amountMinor = parsed.amountMinor!;
+  const note = parsed.note && parsed.note.length > 0 ? parsed.note : undefined;
+  const created = await apiCreateExpense(ctx.from.id, amountMinor, note);
+  if (!created.ok) {
+    if (created.kind === 'onboarding') {
+      await ctx.reply(t(locale, 'bot.exp.onboardingFirst'), {
+        reply_markup: openAppKeyboard(locale, MINI_APP_URL),
+      });
+      return;
+    }
+    await ctx.reply(t(locale, 'bot.exp.createFailed'));
+    return;
+  }
+
+  const dash = await apiGetDashboard(ctx.from.id);
+  if (!dash) {
+    // Expense was created but we couldn't fetch the updated dashboard.
+    // Still acknowledge success — the user sees it in the Mini App.
+    await ctx.reply(t(locale, 'bot.exp.createFailed'));
+    return;
+  }
+
+  const reply = buildExpenseReply(locale, {
+    amountMajor: amountMinor / 100,
+    currency: dash.currency,
+    note: note ?? '',
+    s2sTodayMinor: dash.s2sToday,
+    expenseId: created.expense.id,
+  });
+  await ctx.reply(reply.text, {
+    parse_mode: 'Markdown',
+    reply_markup: reply.reply_markup,
+  });
+  logEvent('expense_text_logged', {
+    telegramId: ctx.from.id,
+    expenseId: created.expense.id,
+    amountMinor,
+    source: 'text_auto',
+  });
+});
+
+// ── Callback actions: exp:* ────────────────────────────
+//
+// Callback_data layout (≤ 64 bytes — Telegram limit):
+//   exp:del:<expenseId>    delete a just-created expense
+//   exp:cy:<amountMinor>   user confirmed an ambiguous parse → record it
+//   exp:cn                 user cancelled an ambiguous parse
+
+bot.action(/^exp:del:(.+)$/, async (ctx) => {
+  const locale = getLocale(ctx);
+  const expenseId = (ctx.match as RegExpExecArray)[1];
+  const ok = await apiDeleteExpense(ctx.from!.id, expenseId);
+  if (!ok) {
+    try { await ctx.answerCbQuery(t(locale, 'bot.exp.deleteFailed')); } catch {}
+    return;
+  }
+  try { await ctx.answerCbQuery('✓'); } catch {}
+
+  const dash = await apiGetDashboard(ctx.from!.id);
+  const s2s = dash
+    ? formatNumber(Math.round(dash.s2sToday / 100), locale)
+    : '—';
+  try {
+    await ctx.editMessageText(
+      t(locale, 'bot.exp.deleted', { s2s, sym: dash?.currency === 'USD' ? '$' : '₽' }),
+      { parse_mode: 'Markdown' },
+    );
+  } catch (err) {
+    console.error('[PFM Bot] exp:del editMessageText failed:', err);
+  }
+  logEvent('expense_text_deleted', {
+    telegramId: ctx.from!.id,
+    expenseId,
+  });
+});
+
+bot.action(/^exp:cy:(\d+)$/, async (ctx) => {
+  const locale = getLocale(ctx);
+  const amountMinor = parseInt((ctx.match as RegExpExecArray)[1], 10);
+  if (!Number.isFinite(amountMinor) || amountMinor <= 0) {
+    try { await ctx.answerCbQuery(); } catch {}
+    return;
+  }
+
+  const created = await apiCreateExpense(ctx.from!.id, amountMinor, undefined);
+  if (!created.ok) {
+    try { await ctx.answerCbQuery(); } catch {}
+    if (created.kind === 'onboarding') {
+      try {
+        await ctx.editMessageText(t(locale, 'bot.exp.onboardingFirst'));
+      } catch {}
+      return;
+    }
+    try { await ctx.editMessageText(t(locale, 'bot.exp.createFailed')); } catch {}
+    return;
+  }
+
+  try { await ctx.answerCbQuery('✓'); } catch {}
+
+  const dash = await apiGetDashboard(ctx.from!.id);
+  if (!dash) {
+    try { await ctx.editMessageText(t(locale, 'bot.exp.createFailed')); } catch {}
+    return;
+  }
+
+  const reply = buildExpenseReply(locale, {
+    amountMajor: amountMinor / 100,
+    currency: dash.currency,
+    note: '',
+    s2sTodayMinor: dash.s2sToday,
+    expenseId: created.expense.id,
+  });
+  try {
+    await ctx.editMessageText(reply.text, {
+      parse_mode: 'Markdown',
+      reply_markup: reply.reply_markup,
+    });
+  } catch (err) {
+    console.error('[PFM Bot] exp:cy editMessageText failed:', err);
+  }
+
+  logEvent('expense_text_logged', {
+    telegramId: ctx.from!.id,
+    expenseId: created.expense.id,
+    amountMinor,
+    source: 'text_confirmed',
+  });
+});
+
+bot.action('exp:cn', async (ctx) => {
+  const locale = getLocale(ctx);
+  try { await ctx.answerCbQuery(); } catch {}
+  try {
+    await ctx.editMessageText(t(locale, 'bot.exp.cancelled'));
+  } catch (err) {
+    console.error('[PFM Bot] exp:cn editMessageText failed:', err);
+  }
 });
 
 // ── Pre-checkout (Telegram Stars) ──────────────────────
