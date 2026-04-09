@@ -259,16 +259,112 @@ bot.on(message('successful_payment'), async (ctx) => {
   }
 });
 
+// ── Star payment reconciliation ────────────────────────
+
+// Replays any star transactions that don't yet have a corresponding
+// PaymentEvent in our DB. Safety net for races where successful_payment
+// was missed (e.g. bot was being redeployed at the moment of payment).
+async function reconcileStarPayments(): Promise<void> {
+  try {
+    const url = `https://api.telegram.org/bot${BOT_TOKEN}/getStarTransactions?limit=50`;
+    const res = await fetch(url);
+    const data = (await res.json()) as {
+      ok: boolean;
+      result?: { transactions?: Array<{
+        id: string;
+        amount: number;
+        source?: {
+          type?: string;
+          user?: { id?: number };
+          invoice_payload?: string;
+        };
+      }> };
+    };
+
+    if (!data.ok) {
+      console.warn('[PFM Bot] reconcileStarPayments: getStarTransactions failed', data);
+      return;
+    }
+
+    const transactions = data.result?.transactions ?? [];
+    let replayed = 0;
+    let skipped = 0;
+
+    for (const tx of transactions) {
+      // Only incoming invoice payments (user -> bot) for PRO.
+      if (tx.source?.type !== 'user') continue;
+      if (!tx.source?.invoice_payload?.startsWith('pro_')) continue;
+
+      const telegramId = tx.source.user?.id;
+      const chargeId = tx.id;
+      const amount = tx.amount;
+      if (!telegramId || !chargeId || typeof amount !== 'number') continue;
+
+      try {
+        const r = await fetch(`${API_BASE_URL}/internal/activate-subscription`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Internal-Key': ADMIN_KEY,
+          },
+          body: JSON.stringify({
+            telegramId,
+            chargeId,
+            amount,
+            currency: 'XTR',
+            payload: tx.source.invoice_payload,
+          }),
+        });
+
+        if (!r.ok) {
+          console.warn('[PFM Bot] reconcileStarPayments: activate failed', chargeId, r.status);
+          continue;
+        }
+
+        const result = (await r.json().catch(() => ({}))) as { alreadyProcessed?: boolean };
+        if (result.alreadyProcessed) {
+          skipped++;
+        } else {
+          replayed++;
+          console.log('[PFM Bot] reconcileStarPayments: replayed', { chargeId, telegramId });
+        }
+      } catch (err) {
+        console.error('[PFM Bot] reconcileStarPayments: error replaying', chargeId, err);
+      }
+    }
+
+    console.log('[PFM Bot] reconcileStarPayments done', {
+      total: transactions.length,
+      replayed,
+      skipped,
+    });
+  } catch (err) {
+    console.error('[PFM Bot] reconcileStarPayments failed:', err);
+  }
+}
+
 // ── Launch ─────────────────────────────────────────────
 
+// NOTE: do NOT pass dropPendingUpdates: true here. If a successful_payment
+// arrives just before a redeploy, dropping it would lose the activation
+// silently. We rely on idempotency at the API layer + reconciliation below.
+//
 // Explicit allowedUpdates ensures we always receive payment-related updates
 // even if a previous bot instance had narrowed them via setWebhook/getUpdates.
 bot.launch({
-  dropPendingUpdates: true,
   allowedUpdates: ['message', 'callback_query', 'pre_checkout_query'],
 }).then(() => {
   console.log('[PFM Bot] Running (long polling)');
 });
+
+// Telegraf v4: bot.launch() resolves on STOP, not start. Log eagerly so we
+// can see in logs that the process reached the launch call.
+console.log('[PFM Bot] launching...');
+
+// Reconcile shortly after startup (give the API time to be ready), then
+// every hour as a safety net.
+setTimeout(() => { void reconcileStarPayments(); }, 10_000);
+setInterval(() => { void reconcileStarPayments(); }, 60 * 60 * 1000);
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));

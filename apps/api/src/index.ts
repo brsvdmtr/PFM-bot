@@ -1889,8 +1889,28 @@ internal.post('/activate-subscription', async (req, res) => {
       return;
     }
 
+    // Idempotency: if we've already recorded this charge, do nothing.
+    // This is what makes startup reconciliation safe to replay.
+    const existingEvent = await prisma.paymentEvent.findUnique({
+      where: { telegramPaymentChargeId: String(chargeId) },
+    });
+    if (existingEvent) {
+      console.log('[PFM API] activate-subscription: chargeId already processed', chargeId);
+      res.json({ ok: true, alreadyProcessed: true });
+      return;
+    }
+
     const now = new Date();
-    const periodEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+
+    // Extend if there's an active period, otherwise start fresh from now.
+    const existingSub = await prisma.subscription.findUnique({ where: { userId: user.id } });
+    const baseTime =
+      existingSub && existingSub.currentPeriodEnd > now
+        ? existingSub.currentPeriodEnd.getTime()
+        : now.getTime();
+    const periodEnd = new Date(baseTime + THIRTY_DAYS_MS);
+    const periodStart = existingSub ? existingSub.currentPeriodStart : now;
 
     const subscription = await prisma.subscription.upsert({
       where: { userId: user.id },
@@ -1898,15 +1918,15 @@ internal.post('/activate-subscription', async (req, res) => {
         userId: user.id,
         status: 'ACTIVE',
         starsPrice: amount,
-        telegramChargeId: chargeId,
+        telegramChargeId: String(chargeId),
         currentPeriodStart: now,
         currentPeriodEnd: periodEnd,
       },
       update: {
         status: 'ACTIVE',
         starsPrice: amount,
-        telegramChargeId: chargeId,
-        currentPeriodStart: now,
+        telegramChargeId: String(chargeId),
+        currentPeriodStart: periodStart,
         currentPeriodEnd: periodEnd,
         cancelledAt: null,
         cancelAtPeriodEnd: false,
@@ -1914,21 +1934,20 @@ internal.post('/activate-subscription', async (req, res) => {
     });
 
     // PaymentEvent has a unique constraint on telegramPaymentChargeId.
-    // If the same charge id arrives twice (e.g. retry / duplicate update),
-    // treat it as idempotent rather than failing the whole activation.
+    // Catch P2002 in case of a concurrent insert race.
     try {
       await prisma.paymentEvent.create({
         data: {
           userId: user.id,
           subscriptionId: subscription.id,
-          telegramPaymentChargeId: chargeId,
+          telegramPaymentChargeId: String(chargeId),
           totalAmount: amount,
           eventType: 'subscription_activated',
         },
       });
     } catch (eventErr: any) {
       if (eventErr?.code === 'P2002') {
-        console.warn('[PFM API] PaymentEvent already exists for chargeId', chargeId);
+        console.warn('[PFM API] PaymentEvent race for chargeId', chargeId);
       } else {
         throw eventErr;
       }
