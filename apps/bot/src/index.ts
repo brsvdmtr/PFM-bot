@@ -1,4 +1,5 @@
 import { Telegraf, Context } from 'telegraf';
+import { message } from 'telegraf/filters';
 import { detectLocale, formatNumber, t, type Locale } from '@pfm/shared';
 
 // ── Types ─────────────────────────────────────────────
@@ -207,43 +208,65 @@ bot.help(async (ctx) => {
 // ── Pre-checkout (Telegram Stars) ──────────────────────
 
 bot.on('pre_checkout_query', async (ctx) => {
-  await ctx.answerPreCheckoutQuery(true);
+  try {
+    await ctx.answerPreCheckoutQuery(true);
+  } catch (err) {
+    console.error('[PFM Bot] answerPreCheckoutQuery failed:', err);
+  }
 });
 
 // ── Successful payment ─────────────────────────────────
 
-bot.on('message', async (ctx, next) => {
-  const msg = ctx.message;
-  if ('successful_payment' in msg && msg.successful_payment) {
-    const locale = getLocale(ctx);
-    const payment = msg.successful_payment;
-    try {
-      await fetch(`${API_BASE_URL}/internal/activate-subscription`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Internal-Key': ADMIN_KEY,
-        },
-        body: JSON.stringify({
-          telegramId: ctx.from.id,
-          chargeId: payment.telegram_payment_charge_id,
-          amount: payment.total_amount,
-          currency: payment.currency,
-        }),
-      });
-      await ctx.reply(t(locale, 'bot.payActivated'));
-    } catch (err) {
-      console.error('[PFM Bot] Payment processing error:', err);
-      await ctx.reply(t(locale, 'bot.payError'));
+bot.on(message('successful_payment'), async (ctx) => {
+  const locale = getLocale(ctx);
+  const payment = ctx.message.successful_payment;
+
+  console.log('[PFM Bot] successful_payment received', {
+    telegramId: ctx.from.id,
+    chargeId: payment.telegram_payment_charge_id,
+    amount: payment.total_amount,
+    currency: payment.currency,
+    payload: payment.invoice_payload,
+  });
+
+  try {
+    const res = await fetch(`${API_BASE_URL}/internal/activate-subscription`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Internal-Key': ADMIN_KEY,
+      },
+      body: JSON.stringify({
+        telegramId: ctx.from.id,
+        chargeId: payment.telegram_payment_charge_id,
+        amount: payment.total_amount,
+        currency: payment.currency,
+        payload: payment.invoice_payload,
+      }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      console.error('[PFM Bot] activate-subscription failed:', res.status, body);
+      throw new Error(`activate-subscription HTTP ${res.status}`);
     }
-    return;
+
+    console.log('[PFM Bot] subscription activated for', ctx.from.id);
+    await ctx.reply(t(locale, 'bot.payActivated'));
+  } catch (err) {
+    console.error('[PFM Bot] Payment processing error:', err);
+    await ctx.reply(t(locale, 'bot.payError'));
   }
-  return next();
 });
 
 // ── Launch ─────────────────────────────────────────────
 
-bot.launch({ dropPendingUpdates: true }).then(() => {
+// Explicit allowedUpdates ensures we always receive payment-related updates
+// even if a previous bot instance had narrowed them via setWebhook/getUpdates.
+bot.launch({
+  dropPendingUpdates: true,
+  allowedUpdates: ['message', 'callback_query', 'pre_checkout_query'],
+}).then(() => {
   console.log('[PFM Bot] Running (long polling)');
 });
 

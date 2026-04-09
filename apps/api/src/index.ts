@@ -1874,47 +1874,72 @@ internal.post('/store-chat-id', async (req, res) => {
 
 internal.post('/activate-subscription', async (req, res) => {
   const { telegramId, chargeId, amount } = req.body;
+  console.log('[PFM API] /internal/activate-subscription', { telegramId, chargeId, amount });
 
-  const user = await prisma.user.findUnique({ where: { telegramId: String(telegramId) } });
-  if (!user) {
-    res.status(404).json({ error: 'User not found' });
+  if (!telegramId || !chargeId || typeof amount !== 'number') {
+    res.status(400).json({ error: 'telegramId, chargeId, amount required' });
     return;
   }
 
-  const now = new Date();
-  const periodEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+  try {
+    const user = await prisma.user.findUnique({ where: { telegramId: String(telegramId) } });
+    if (!user) {
+      console.error('[PFM API] activate-subscription: user not found', telegramId);
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
 
-  const subscription = await prisma.subscription.upsert({
-    where: { userId: user.id },
-    create: {
-      userId: user.id,
-      starsPrice: amount,
-      telegramChargeId: chargeId,
-      currentPeriodStart: now,
-      currentPeriodEnd: periodEnd,
-    },
-    update: {
-      status: 'ACTIVE',
-      starsPrice: amount,
-      telegramChargeId: chargeId,
-      currentPeriodStart: now,
-      currentPeriodEnd: periodEnd,
-      cancelledAt: null,
-      cancelAtPeriodEnd: false,
-    },
-  });
+    const now = new Date();
+    const periodEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
 
-  await prisma.paymentEvent.create({
-    data: {
-      userId: user.id,
-      subscriptionId: subscription.id,
-      telegramPaymentChargeId: chargeId,
-      totalAmount: amount,
-      eventType: 'subscription_activated',
-    },
-  });
+    const subscription = await prisma.subscription.upsert({
+      where: { userId: user.id },
+      create: {
+        userId: user.id,
+        status: 'ACTIVE',
+        starsPrice: amount,
+        telegramChargeId: chargeId,
+        currentPeriodStart: now,
+        currentPeriodEnd: periodEnd,
+      },
+      update: {
+        status: 'ACTIVE',
+        starsPrice: amount,
+        telegramChargeId: chargeId,
+        currentPeriodStart: now,
+        currentPeriodEnd: periodEnd,
+        cancelledAt: null,
+        cancelAtPeriodEnd: false,
+      },
+    });
 
-  res.json({ ok: true, subscription });
+    // PaymentEvent has a unique constraint on telegramPaymentChargeId.
+    // If the same charge id arrives twice (e.g. retry / duplicate update),
+    // treat it as idempotent rather than failing the whole activation.
+    try {
+      await prisma.paymentEvent.create({
+        data: {
+          userId: user.id,
+          subscriptionId: subscription.id,
+          telegramPaymentChargeId: chargeId,
+          totalAmount: amount,
+          eventType: 'subscription_activated',
+        },
+      });
+    } catch (eventErr: any) {
+      if (eventErr?.code === 'P2002') {
+        console.warn('[PFM API] PaymentEvent already exists for chargeId', chargeId);
+      } else {
+        throw eventErr;
+      }
+    }
+
+    console.log('[PFM API] subscription activated', { userId: user.id, periodEnd });
+    res.json({ ok: true, subscription });
+  } catch (err) {
+    console.error('[PFM API] activate-subscription failed:', err);
+    res.status(500).json({ error: 'Activation failed' });
+  }
 });
 
 app.use('/internal', internal);

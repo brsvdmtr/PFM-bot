@@ -2013,6 +2013,24 @@ function ProPaywall({ onBack, api }: { onBack: () => void; api: (path: string, o
     { icon: '🚀', title: t('pro.prioritySupport'), desc: t('pro.prioritySupportDesc') },
   ];
 
+  // Telegram fires the openInvoice 'paid' callback as soon as the user
+  // confirms the payment, but the actual subscription row is written by the
+  // bot in response to the successful_payment update — that can lag the
+  // callback by a moment. Poll /tg/me/plan a few times so the success screen
+  // only appears once the backend really has PRO active.
+  const verifyProActive = async (): Promise<boolean> => {
+    for (let i = 0; i < 6; i++) {
+      try {
+        const plan = await api('/tg/me/plan');
+        if (plan?.plan === 'PRO') return true;
+      } catch {
+        // ignore and retry
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    return false;
+  };
+
   const handleSubscribe = async () => {
     const tg = (window as any).Telegram?.WebApp;
     if (!tg?.openInvoice) {
@@ -2023,14 +2041,22 @@ function ProPaywall({ onBack, api }: { onBack: () => void; api: (path: string, o
     setErr('');
     try {
       const { invoiceUrl } = await api('/tg/billing/pro/checkout', { method: 'POST' });
-      tg.openInvoice(invoiceUrl, (status: string) => {
-        setLoading(false);
+      tg.openInvoice(invoiceUrl, async (status: string) => {
         if (status === 'paid') {
-          setPaid(true);
+          const ok = await verifyProActive();
+          setLoading(false);
+          if (ok) {
+            setPaid(true);
+          } else {
+            setErr(t('pro.payError'));
+          }
         } else if (status === 'failed') {
+          setLoading(false);
           setErr(t('pro.payError'));
+        } else {
+          // 'cancelled' — пользователь закрыл окно
+          setLoading(false);
         }
-        // 'cancelled' — просто закрыли, ничего не делаем
       });
     } catch {
       setLoading(false);
