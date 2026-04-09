@@ -2122,6 +2122,7 @@ function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPayd
   const [cashInput, setCashInput] = useState('');
   const [cashSaving, setCashSaving] = useState(false);
   const [cashDone, setCashDone] = useState(false);
+  const [disclaimerSheet, setDisclaimerSheet] = useState(false);
 
   useEffect(() => {
     Promise.all([api('/tg/me/settings'), api('/tg/me/plan'), api('/tg/me/locale').catch(() => null)]).then(([s, p, l]) => {
@@ -2177,6 +2178,40 @@ function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPayd
             <PrimaryBtn onClick={handleCashSave} disabled={cashSaving || cashDone}>
               {cashDone ? t('common.saved') : cashSaving ? t('common.saving') : t('settings.updateBalance')}
             </PrimaryBtn>
+          </div>
+        </div>
+      )}
+
+      {/* Disclaimer bottom sheet */}
+      {disclaimerSheet && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 200, display: 'flex', alignItems: 'flex-end' }} onClick={() => setDisclaimerSheet(false)}>
+          <div
+            style={{
+              background: C.bgSecondary,
+              borderRadius: '20px 20px 0 0',
+              padding: '24px 20px 0',
+              width: '100%',
+              maxHeight: '85vh',
+              boxSizing: 'border-box',
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            <p style={{ fontSize: 18, fontWeight: 700, color: C.text, marginBottom: 12 }}>{t('settings.disclaimer.sheetTitle')}</p>
+            <div style={{ overflowY: 'auto', flex: 1, marginBottom: 16, WebkitOverflowScrolling: 'touch' }}>
+              <p style={{ fontSize: 14, color: C.text, lineHeight: 1.55, marginBottom: 16, fontWeight: 500 }}>{t('settings.disclaimer.preview')}</p>
+              <p style={{ fontSize: 14, color: C.textSec, lineHeight: 1.55, marginBottom: 14 }}>{t('settings.disclaimer.p1')}</p>
+              <p style={{ fontSize: 14, color: C.textSec, lineHeight: 1.55, marginBottom: 14 }}>{t('settings.disclaimer.p2')}</p>
+              <p style={{ fontSize: 14, color: C.textSec, lineHeight: 1.55, marginBottom: 14 }}>{t('settings.disclaimer.p3')}</p>
+              <p style={{ fontSize: 14, color: C.textSec, lineHeight: 1.55, marginBottom: 14 }}>{t('settings.disclaimer.p4')}</p>
+              <p style={{ fontSize: 14, color: C.textSec, lineHeight: 1.55, marginBottom: 4 }}>{t('settings.disclaimer.p5')}</p>
+            </div>
+            <div style={{ paddingBottom: 'max(24px, env(safe-area-inset-bottom, 24px))' }}>
+              <PrimaryBtn onClick={() => setDisclaimerSheet(false)}>
+                {t('settings.disclaimer.close')}
+              </PrimaryBtn>
+            </div>
           </div>
         </div>
       )}
@@ -2268,6 +2303,22 @@ function Settings({ api, onOpenPro, onOpenIncomes, onOpenObligations, onOpenPayd
             </button>
           ))}
         </div>
+      </div>
+
+      {/* Legal */}
+      <p style={{ fontSize: 12, fontWeight: 600, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '1.5px', margin: '24px 0 10px' }}>{t('settings.sectionLegal')}</p>
+      <div
+        onClick={() => setDisclaimerSheet(true)}
+        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 10, padding: '14px 16px', cursor: 'pointer' }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ fontSize: 20 }}>ⓘ</span>
+          <div>
+            <p style={{ fontSize: 14, color: C.text }}>{t('settings.disclaimer.rowLabel')}</p>
+            <p style={{ fontSize: 12, color: C.textTertiary }}>{t('settings.disclaimer.rowDesc')}</p>
+          </div>
+        </div>
+        <span style={{ color: C.textMuted, fontSize: 18 }}>›</span>
       </div>
     </div>
   );
