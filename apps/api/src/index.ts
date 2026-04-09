@@ -1748,6 +1748,342 @@ tg.get('/debts/strategy', async (req: AuthenticatedRequest, res) => {
   res.json({ ...strategy, accelerationHint });
 });
 
+// ── Free Cash Recommendation ──────────────────────────────
+//
+// Flow: user enters a windfall (premium, bonus, gift) → we recommend where
+// to park it (EF / debt / split) → user tweaks → apply in one atomic tx.
+// Domain logic lives in domain/finance/freeCashRecommendation.ts.
+
+type FreeCashContextInput = {
+  userId: string;
+  amountMinor: number;
+};
+
+async function buildFreeCashContext(params: FreeCashContextInput) {
+  const { userId, amountMinor } = params;
+  const [ef, obligations, incomes, debts, plan, user] = await Promise.all([
+    prisma.emergencyFund.findUnique({ where: { userId } }),
+    prisma.obligation.findMany({ where: { userId, isActive: true } }),
+    prisma.income.findMany({ where: { userId, isActive: true } }),
+    prisma.debt.findMany({ where: { userId }, orderBy: { apr: 'desc' } }),
+    prisma.emergencyFundPlan.findUnique({ where: { userId } }),
+    prisma.user.findUnique({ where: { id: userId } }),
+  ]);
+
+  // EF balance: from buckets if any, else stored legacy value (or 0 if no EF)
+  let efCurrentMinor = 0;
+  let efTargetMinor = 0;
+  if (ef) {
+    const buckets = await prisma.savingsBucket.findMany({
+      where: { emergencyFundId: ef.id, isArchived: false },
+    });
+    efCurrentMinor = buckets.length > 0
+      ? await getEFCurrentFromBuckets(userId, ef.id)
+      : ef.currentAmount;
+
+    const { computeTargetAmount } = await import('./domain/finance/efPlan');
+    const totalObligations = obligations.reduce((s, o) => s + o.amount, 0);
+    const monthlyIncome = incomes.reduce((s, i) => {
+      const payCount = Array.isArray(i.paydays) ? (i.paydays as number[]).length : 1;
+      return s + i.amount * payCount;
+    }, 0);
+    const targetMode = (plan?.targetMode ?? 'BY_SALARY') as 'BY_SALARY' | 'BY_EXPENSES' | 'MANUAL';
+    const baseMonthlyAmount = plan?.baseMonthlyAmount ?? monthlyIncome;
+    const targetMonths = plan?.targetMonths ?? ef.targetMonths;
+    efTargetMinor = computeTargetAmount(
+      targetMode,
+      baseMonthlyAmount,
+      targetMonths,
+      plan?.manualTargetAmount ?? null,
+      totalObligations,
+    );
+  }
+
+  const monthlyEssentialsMinor = obligations.reduce((s, o) => s + o.amount, 0);
+  const currency = user?.primaryCurrency ?? 'RUB';
+
+  return {
+    input: {
+      amountMinor,
+      efCurrentMinor,
+      efTargetMinor,
+      monthlyEssentialsMinor,
+      debts: debts.map((d) => ({
+        id: d.id,
+        title: d.title,
+        balance: d.balance,
+        apr: d.apr,
+        minPayment: d.minPayment,
+        isFocusDebt: d.isFocusDebt,
+        isPaidOff: d.isPaidOff,
+      })),
+    },
+    ef,
+    currency,
+  };
+}
+
+tg.post('/free-cash/preview', async (req: AuthenticatedRequest, res) => {
+  const userId = req.userId!;
+  const { amountMinor, mode, splitEfShare } = req.body as {
+    amountMinor?: number;
+    mode?: 'EMERGENCY_FUND' | 'DEBT_PREPAY' | 'SPLIT';
+    splitEfShare?: number;
+  };
+
+  if (typeof amountMinor !== 'number' || !Number.isFinite(amountMinor) || amountMinor <= 0) {
+    res.status(400).json({ error: 'amountMinor must be a positive number' });
+    return;
+  }
+  if (mode !== undefined && !['EMERGENCY_FUND', 'DEBT_PREPAY', 'SPLIT'].includes(mode)) {
+    res.status(400).json({ error: 'Invalid mode' });
+    return;
+  }
+  if (splitEfShare !== undefined && (typeof splitEfShare !== 'number' || splitEfShare < 0 || splitEfShare > 1)) {
+    res.status(400).json({ error: 'splitEfShare must be 0..1' });
+    return;
+  }
+
+  const { input, currency } = await buildFreeCashContext({ userId, amountMinor: Math.round(amountMinor) });
+  const { recommendFreeCash } = await import('./domain/finance/freeCashRecommendation');
+
+  const recommendation = recommendFreeCash(input, {
+    mode,
+    splitEfShare,
+  });
+
+  res.json({
+    ...recommendation,
+    currency,
+    // Echo snapshot so UI can display EF state without another call
+    snapshot: {
+      efCurrentMinor: input.efCurrentMinor,
+      efTargetMinor: input.efTargetMinor,
+      monthlyEssentialsMinor: input.monthlyEssentialsMinor,
+    },
+  });
+});
+
+tg.post('/free-cash/apply', async (req: AuthenticatedRequest, res) => {
+  const userId = req.userId!;
+  const { amountMinor, mode, splitEfShare, note } = req.body as {
+    amountMinor?: number;
+    mode?: 'EMERGENCY_FUND' | 'DEBT_PREPAY' | 'SPLIT';
+    splitEfShare?: number;
+    note?: string;
+  };
+
+  if (typeof amountMinor !== 'number' || !Number.isFinite(amountMinor) || amountMinor <= 0) {
+    res.status(400).json({ error: 'amountMinor must be a positive number' });
+    return;
+  }
+  if (!mode || !['EMERGENCY_FUND', 'DEBT_PREPAY', 'SPLIT'].includes(mode)) {
+    res.status(400).json({ error: 'mode is required (EMERGENCY_FUND | DEBT_PREPAY | SPLIT)' });
+    return;
+  }
+  if (splitEfShare !== undefined && (typeof splitEfShare !== 'number' || splitEfShare < 0 || splitEfShare > 1)) {
+    res.status(400).json({ error: 'splitEfShare must be 0..1' });
+    return;
+  }
+
+  // Recompute recommendation server-side — never trust client for money math.
+  const { input, ef, currency } = await buildFreeCashContext({ userId, amountMinor: Math.round(amountMinor) });
+  const { recommendFreeCash } = await import('./domain/finance/freeCashRecommendation');
+  const recommendation = recommendFreeCash(input, {
+    mode,
+    splitEfShare,
+  });
+
+  if (recommendation.belowThreshold) {
+    res.status(400).json({ error: 'Amount below significant threshold — use /tg/ef/entries or /tg/incomes directly' });
+    return;
+  }
+
+  const { primaryEffect } = recommendation;
+  const toEf = primaryEffect.toEmergencyFundMinor;
+  const toDebt = primaryEffect.toDebtMinor;
+  const focusDebtId = primaryEffect.focusDebtId;
+
+  // Load active period (needed for DebtPaymentEvent FK)
+  const activePeriod = await prisma.period.findFirst({ where: { userId, status: 'ACTIVE' } });
+
+  // Validate: debt payment requires active period
+  if (toDebt > 0 && !activePeriod) {
+    res.status(400).json({ error: 'No active period — cannot record debt payment' });
+    return;
+  }
+  // Validate: EF deposit requires an EF record
+  if (toEf > 0 && !ef) {
+    res.status(400).json({ error: 'Emergency fund not set up' });
+    return;
+  }
+
+  // For EF deposit, pick target bucket (first non-archived), or null for legacy path
+  let targetBucket: { id: string; currentAmount: number } | null = null;
+  if (toEf > 0 && ef) {
+    const bucket = await prisma.savingsBucket.findFirst({
+      where: { emergencyFundId: ef.id, isArchived: false, countsTowardEmergencyFund: true },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, currentAmount: true },
+    });
+    targetBucket = bucket ?? null;
+  }
+
+  // Atomic transaction: create all records + update balances together
+  const result = await prisma.$transaction(async (tx) => {
+    let efEntryId: string | null = null;
+    let debtEventId: string | null = null;
+
+    // ── EF side ──
+    if (toEf > 0 && ef) {
+      const efEntry = await tx.emergencyFundEntry.create({
+        data: {
+          userId,
+          emergencyFundId: ef.id,
+          bucketId: targetBucket?.id ?? null,
+          periodId: activePeriod?.id ?? null,
+          type: 'DEPOSIT',
+          amount: toEf,
+          affectsCurrentBudget: false, // free cash is new money, not a reallocation
+          note: note ?? 'Free cash',
+        },
+      });
+      efEntryId = efEntry.id;
+
+      if (targetBucket) {
+        await tx.savingsBucket.update({
+          where: { id: targetBucket.id },
+          data: { currentAmount: targetBucket.currentAmount + toEf },
+        });
+      } else {
+        // Legacy path: no buckets → update ef.currentAmount directly
+        await tx.emergencyFund.update({
+          where: { id: ef.id },
+          data: { currentAmount: ef.currentAmount + toEf },
+        });
+      }
+    }
+
+    // ── Debt side ──
+    if (toDebt > 0 && focusDebtId && activePeriod) {
+      const debt = await tx.debt.findFirst({ where: { id: focusDebtId, userId } });
+      if (!debt) throw new Error('Focus debt disappeared mid-transaction');
+
+      const newBalance = Math.max(0, debt.balance - toDebt);
+      await tx.debt.update({
+        where: { id: focusDebtId },
+        data: {
+          balance: newBalance,
+          isPaidOff: newBalance === 0,
+          paidOffAt: newBalance === 0 ? new Date() : null,
+          isFocusDebt: newBalance === 0 ? false : debt.isFocusDebt,
+        },
+      });
+
+      const debtEvent = await tx.debtPaymentEvent.create({
+        data: {
+          userId,
+          debtId: focusDebtId,
+          periodId: activePeriod.id,
+          amountMinor: toDebt,
+          kind: 'EXTRA_PRINCIPAL_PAYMENT',
+          source: 'MANUAL',
+          note: note ?? 'Free cash',
+        },
+      });
+      debtEventId = debtEvent.id;
+    }
+
+    // ── History record ──
+    const historyRecord = await tx.freeCashEvent.create({
+      data: {
+        userId,
+        periodId: activePeriod?.id ?? null,
+        amountMinor: Math.round(amountMinor),
+        currency: currency as any,
+        recommendedMode: recommendation.defaultMode as any,
+        reasonCode: recommendation.reasonCode as any,
+        chosenMode: recommendation.mode as any,
+        splitEfShare: recommendation.splitEfShare,
+        toEfMinor: toEf,
+        toDebtMinor: toDebt,
+        focusDebtId: focusDebtId ?? null,
+        efCurrentMinor: input.efCurrentMinor,
+        efTargetMinor: input.efTargetMinor,
+        monthlyEssentialsMinor: input.monthlyEssentialsMinor,
+        note: note ?? null,
+      },
+    });
+
+    return { efEntryId, debtEventId, historyId: historyRecord.id };
+  });
+
+  // Post-commit side effects (non-blocking):
+  // - Reassign focus debt if the old focus was paid off
+  // - Sync EF legacy balance from buckets
+  // - Trigger period recalculate
+  if (toDebt > 0 && focusDebtId) {
+    const updated = await prisma.debt.findUnique({ where: { id: focusDebtId } });
+    if (updated?.isPaidOff) {
+      const remaining = await prisma.debt.findMany({
+        where: { userId, isPaidOff: false },
+        orderBy: { apr: 'desc' },
+      });
+      if (remaining.length > 0) {
+        const newFocusId = determineFocusDebt(
+          remaining.map((d) => ({ id: d.id, title: d.title, balance: d.balance, apr: d.apr, minPayment: d.minPayment, type: d.type })),
+        );
+        if (newFocusId) {
+          await prisma.debt.updateMany({ where: { userId }, data: { isFocusDebt: false } });
+          await prisma.debt.update({ where: { id: newFocusId }, data: { isFocusDebt: true } });
+        }
+      }
+    }
+  }
+  if (toEf > 0 && ef && targetBucket) {
+    try { await syncEFBalance(userId, ef.id); } catch { /* non-blocking */ }
+  }
+  try { await triggerRecalculate(userId); } catch { /* non-blocking */ }
+
+  res.status(201).json({
+    ok: true,
+    applied: {
+      toEmergencyFundMinor: toEf,
+      toDebtMinor: toDebt,
+      mode: recommendation.mode,
+      focusDebtId: focusDebtId ?? null,
+    },
+    historyId: result.historyId,
+  });
+});
+
+// ── Analytics (simple stdout logger) ──────────────────────────
+//
+// MVP: we just pipe events to stdout as JSON so they're picked up by
+// Docker logs / journalctl. Later we can swap for a real analytics sink
+// without changing the frontend.
+
+tg.post('/events', async (req: AuthenticatedRequest, res) => {
+  const userId = req.userId!;
+  const { event, props } = req.body as { event?: string; props?: Record<string, unknown> };
+
+  if (!event || typeof event !== 'string' || event.length > 100) {
+    res.status(400).json({ error: 'event is required (string, max 100 chars)' });
+    return;
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(JSON.stringify({
+    type: 'analytics_event',
+    event,
+    userId,
+    ts: new Date().toISOString(),
+    props: props ?? {},
+  }));
+
+  res.json({ ok: true });
+});
+
 // ── Expenses (history) ─────────────────────────────────
 
 tg.get('/expenses', async (req: AuthenticatedRequest, res) => {

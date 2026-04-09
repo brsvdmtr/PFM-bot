@@ -110,7 +110,7 @@ export interface DebtStrategy {
   };
 }
 
-function simulatePayoff(
+export function simulatePayoff(
   balance: number,
   apr: number,
   monthlyPayment: number,

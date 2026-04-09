@@ -97,6 +97,7 @@ model User {
   efEntries          EmergencyFundEntry[]
   efPlan             EmergencyFundPlan?
   savingsBuckets     SavingsBucket[]
+  freeCashEvents     FreeCashEvent[]
 }
 
 model UserProfile {
@@ -435,4 +436,58 @@ model PaymentEvent {
   createdAt               DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ── Free Cash Recommendation history ──────────────────────
+//
+// Every time a user applies a "free cash" windfall (bonus, premium, gift)
+// we record the system's recommendation and the user's actual choice, so we
+// can later tune thresholds (protectiveThresholdMonths, highAprThreshold)
+// from real data. See apps/api/src/domain/finance/freeCashRecommendation.ts.
+
+enum FreeCashMode {
+  EMERGENCY_FUND
+  DEBT_PREPAY
+  SPLIT
+}
+
+enum FreeCashReason {
+  NO_SIGNIFICANT_AMOUNT
+  NO_DEBT
+  EF_PROTECTIVE
+  EF_FULLY_FUNDED
+  HIGH_APR_DEBT
+  BALANCED_SPLIT
+}
+
+model FreeCashEvent {
+  id               String          @id @default(cuid())
+  userId           String
+  periodId         String?         // active period when the event was created (nullable: may be missing)
+  amountMinor      Int             // total windfall (kopecks)
+  currency         Currency        @default(RUB)
+
+  // Recommendation snapshot (what the engine said at the time)
+  recommendedMode  FreeCashMode
+  reasonCode       FreeCashReason
+
+  // Actual user choice (may differ from recommendation)
+  chosenMode       FreeCashMode
+  splitEfShare     Float           @default(0.5) // 0..1, only meaningful for SPLIT
+  toEfMinor        Int             // kopecks applied to EF
+  toDebtMinor      Int             // kopecks applied to debt
+  focusDebtId      String?         // the debt that received the prepay (null if EF-only)
+
+  // Snapshot of inputs for later analysis (not foreign keys, just values)
+  efCurrentMinor   Int             // EF balance at decision time
+  efTargetMinor    Int             // EF target at decision time
+  monthlyEssentialsMinor Int       // monthly obligations at decision time
+
+  note             String?
+  createdAt        DateTime        @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([periodId])
 }

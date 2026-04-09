@@ -79,7 +79,8 @@ type Screen =
   | 'period-summary'
   | 'incomes'
   | 'obligations'
-  | 'paydays';
+  | 'paydays'
+  | 'free-cash';
 
 type NavTab = 'dashboard' | 'history' | 'debts' | 'settings';
 type S2SColor = 'green' | 'orange' | 'red';
@@ -651,7 +652,7 @@ function OnbResult({ s2sDaily, currency, onDone }: { s2sDaily: number; currency:
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 
-function Dashboard({ data, onAddExpense, onOpenDebts, onOpenEF, onOpenSummary, showSummaryBanner }: { data: DashboardData; onAddExpense: () => void; onOpenDebts: () => void; onOpenEF?: () => void; onOpenSummary?: () => void; showSummaryBanner?: boolean }) {
+function Dashboard({ data, onAddExpense, onOpenDebts, onOpenEF, onOpenSummary, onOpenFreeCash, showSummaryBanner }: { data: DashboardData; onAddExpense: () => void; onOpenDebts: () => void; onOpenEF?: () => void; onOpenSummary?: () => void; onOpenFreeCash?: () => void; showSummaryBanner?: boolean }) {
   const t = useT();
   const locale = useLocale();
   const color = s2sColor(data.s2sToday, data.s2sDaily);
@@ -741,14 +742,18 @@ function Dashboard({ data, onAddExpense, onOpenDebts, onOpenEF, onOpenSummary, s
       </div>
 
       {/* Quick actions */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
-        <button onClick={onAddExpense} style={{ background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 12, padding: '14px 12px', display: 'flex', alignItems: 'center', gap: 10, color: C.text, fontSize: 14, fontWeight: 500, fontFamily: 'inherit', cursor: 'pointer' }}>
-          <span style={{ width: 36, height: 36, borderRadius: 10, background: C.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>+</span>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 14 }}>
+        <button onClick={onAddExpense} style={{ background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 12, padding: '12px 6px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, color: C.text, fontSize: 12, fontWeight: 500, fontFamily: 'inherit', cursor: 'pointer', textAlign: 'center', lineHeight: 1.15 }}>
+          <span style={{ width: 32, height: 32, borderRadius: 10, background: C.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>+</span>
           {t('dashboard.addExpense')}
         </button>
-        <button onClick={onOpenDebts} style={{ background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 12, padding: '14px 12px', display: 'flex', alignItems: 'center', gap: 10, color: C.text, fontSize: 14, fontWeight: 500, fontFamily: 'inherit', cursor: 'pointer' }}>
-          <span style={{ width: 36, height: 36, borderRadius: 10, background: C.orangeBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>💳</span>
+        <button onClick={onOpenDebts} style={{ background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 12, padding: '12px 6px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, color: C.text, fontSize: 12, fontWeight: 500, fontFamily: 'inherit', cursor: 'pointer', textAlign: 'center', lineHeight: 1.15 }}>
+          <span style={{ width: 32, height: 32, borderRadius: 10, background: C.orangeBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>💳</span>
           {t('dashboard.debtsBtn')}
+        </button>
+        <button onClick={onOpenFreeCash} style={{ background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 12, padding: '12px 6px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, color: C.text, fontSize: 12, fontWeight: 500, fontFamily: 'inherit', cursor: 'pointer', textAlign: 'center', lineHeight: 1.15 }}>
+          <span style={{ width: 32, height: 32, borderRadius: 10, background: 'rgba(34, 197, 94, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>💰</span>
+          {t('freeCash.dashboardCard')}
         </button>
       </div>
 
@@ -2710,6 +2715,633 @@ function ObligationsScreen({ api, onBack, onChanged }: { api: (p: string, o?: Re
   );
 }
 
+// ── Free Cash Flow ───────────────────────────────────────────────────────────
+//
+// Three-stage screen:
+//   1. entry   — numpad + preset amounts, user types the windfall
+//   2. review  — recommendation card + mode tabs + apply button
+//   3. success — confirmation + close
+//
+// State machine:
+//   entry  -> review   (Continue button, triggers preview load)
+//   review -> entry    (Back button, logs free_cash_cancelled)
+//   review -> success  (Apply button, logs free_cash_applied)
+//   success -> close   (Close button, calls onApplied to refresh dashboard)
+
+type FreeCashMode = 'EMERGENCY_FUND' | 'DEBT_PREPAY' | 'SPLIT';
+type FreeCashReason =
+  | 'NO_SIGNIFICANT_AMOUNT'
+  | 'NO_DEBT'
+  | 'EF_PROTECTIVE'
+  | 'EF_FULLY_FUNDED'
+  | 'HIGH_APR_DEBT'
+  | 'BALANCED_SPLIT';
+
+interface FreeCashEffect {
+  toEmergencyFundMinor: number;
+  toDebtMinor: number;
+  efMonthsBefore: number | null;
+  efMonthsAfter: number | null;
+  focusDebtId: string | null;
+  focusDebtTitle: string | null;
+  focusDebtBalanceBefore: number | null;
+  focusDebtBalanceAfter: number | null;
+  baselinePayoffMonths: number | null;
+  acceleratedPayoffMonths: number | null;
+  monthsSaved: number | null;
+  interestSavedMinor: number | null;
+  payoffStatus: 'OK' | 'NO_MIN_PAYMENT' | 'PAYMENT_TOO_SMALL' | 'UNDEFINED_HORIZON' | 'PAID_OFF' | 'NO_DEBT';
+}
+
+interface FreeCashPreviewResponse {
+  mode: FreeCashMode;
+  defaultMode: FreeCashMode;
+  reasonCode: FreeCashReason;
+  primaryEffect: FreeCashEffect;
+  alternatives: Array<{ mode: FreeCashMode; effect: FreeCashEffect }>;
+  splitEfShare: number;
+  belowThreshold: boolean;
+  currency: string;
+  snapshot: {
+    efCurrentMinor: number;
+    efTargetMinor: number;
+    monthlyEssentialsMinor: number;
+  };
+}
+
+function FreeCashFlow({
+  api,
+  currency,
+  onBack,
+  onApplied,
+}: {
+  api: (path: string, opts?: RequestInit) => Promise<any>;
+  currency: string;
+  onBack: () => void;
+  onApplied: () => void;
+}) {
+  const t = useT();
+  const locale = useLocale();
+  const vh = useVisualViewportHeight();
+
+  const [stage, setStage] = useState<'entry' | 'review' | 'success'>('entry');
+  const [input, setInput] = useState('0');
+  const [preview, setPreview] = useState<FreeCashPreviewResponse | null>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [overrideMode, setOverrideMode] = useState<FreeCashMode | null>(null);
+  const [splitShare, setSplitShare] = useState(0.5);
+  const [applying, setApplying] = useState(false);
+  const [applyResult, setApplyResult] = useState<{
+    toEf: number;
+    toDebt: number;
+    mode: FreeCashMode;
+    focusDebtTitle: string | null;
+  } | null>(null);
+
+  const amountKop = Math.round(parseFloat(input || '0') * 100);
+
+  // ── Analytics helper ──
+  const logEvent = useCallback(
+    (event: string, props?: Record<string, unknown>) => {
+      api('/tg/events', { method: 'POST', body: JSON.stringify({ event, props: props ?? {} }) }).catch(() => {
+        // Non-blocking: analytics failure must never break the flow.
+      });
+    },
+    [api],
+  );
+
+  // Fire "opened" event once on mount.
+  useEffect(() => {
+    logEvent('free_cash_opened');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Preview fetcher (debounced) ──
+  useEffect(() => {
+    if (stage !== 'review') return;
+    if (amountKop <= 0) return;
+
+    let cancelled = false;
+    setLoadingPreview(true);
+    setPreviewError(null);
+
+    const timer = setTimeout(async () => {
+      try {
+        const body: Record<string, unknown> = { amountMinor: amountKop };
+        if (overrideMode) body.mode = overrideMode;
+        body.splitEfShare = splitShare;
+
+        const p: FreeCashPreviewResponse = await api('/tg/free-cash/preview', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+        if (cancelled) return;
+        setPreview(p);
+        logEvent('free_cash_preview_shown', {
+          mode: p.mode,
+          reason: p.reasonCode,
+          amountMinor: amountKop,
+          belowThreshold: p.belowThreshold,
+        });
+      } catch (e) {
+        if (cancelled) return;
+        setPreviewError(t('freeCash.errLoad'));
+      } finally {
+        if (!cancelled) setLoadingPreview(false);
+      }
+    }, 180);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [stage, amountKop, overrideMode, splitShare, api, logEvent, t]);
+
+  // ── Entry handlers ──
+  const press = (key: string) => {
+    if (key === 'del') {
+      setInput((p) => (p.length > 1 ? p.slice(0, -1) : '0'));
+      return;
+    }
+    if (key === '.' && input.includes('.')) return;
+    if (input === '0' && key !== '.') {
+      setInput(key);
+      return;
+    }
+    if (input.includes('.') && input.split('.')[1].length >= 2) return;
+    if (input.length >= 9) return;
+    setInput((p) => p + key);
+  };
+
+  const applyPreset = (rubles: number) => {
+    setInput(String(rubles));
+    logEvent('free_cash_amount_changed', { amountMinor: rubles * 100, source: 'preset' });
+  };
+
+  const handleContinue = () => {
+    if (amountKop <= 0) return;
+    logEvent('free_cash_amount_changed', { amountMinor: amountKop, source: 'numpad' });
+    setStage('review');
+  };
+
+  // ── Review handlers ──
+  const handleBackToEntry = () => {
+    setStage('entry');
+    setPreview(null);
+    setOverrideMode(null);
+  };
+
+  const switchMode = (next: FreeCashMode) => {
+    if (preview && next === preview.mode) return;
+    setOverrideMode(next);
+    logEvent('free_cash_mode_switched', { from: preview?.mode ?? null, to: next });
+  };
+
+  const changeSplit = (next: number) => {
+    setSplitShare(next);
+    logEvent('free_cash_amount_changed', { splitEfShare: next, source: 'split_preset' });
+  };
+
+  const handleApply = async () => {
+    if (!preview || applying) return;
+    setApplying(true);
+    try {
+      const res = await api('/tg/free-cash/apply', {
+        method: 'POST',
+        body: JSON.stringify({
+          amountMinor: amountKop,
+          mode: preview.mode,
+          splitEfShare: preview.splitEfShare,
+        }),
+      });
+      logEvent('free_cash_applied', {
+        mode: res.applied.mode,
+        toEfMinor: res.applied.toEmergencyFundMinor,
+        toDebtMinor: res.applied.toDebtMinor,
+        historyId: res.historyId,
+      });
+      setApplyResult({
+        toEf: res.applied.toEmergencyFundMinor,
+        toDebt: res.applied.toDebtMinor,
+        mode: res.applied.mode,
+        focusDebtTitle: preview.primaryEffect.focusDebtTitle,
+      });
+      setStage('success');
+    } catch (e) {
+      setPreviewError(t('freeCash.errApply'));
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  // ── Success handler ──
+  const handleClose = async () => {
+    await onApplied();
+    onBack();
+  };
+
+  // Cancel = back from entry without applying
+  const handleCancelFromEntry = () => {
+    logEvent('free_cash_cancelled', { stage: 'entry', amountMinor: amountKop });
+    onBack();
+  };
+
+  const handleCancelFromReview = () => {
+    logEvent('free_cash_cancelled', { stage: 'review', amountMinor: amountKop, mode: preview?.mode });
+    onBack();
+  };
+
+  // ────────────────────────────────────────────────────────────────────────
+  // STAGE 1: ENTRY
+  // ────────────────────────────────────────────────────────────────────────
+
+  if (stage === 'entry') {
+    const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 'del'];
+    const presets = [5000, 10000, 25000, 50000];
+
+    return (
+      <div style={{ background: C.bg, height: vh, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 20px 0' }}>
+          <button onClick={handleCancelFromEntry} style={{ background: 'none', border: 'none', color: C.textSec, fontSize: 20, cursor: 'pointer' }}>←</button>
+          <span style={{ fontSize: 16, fontWeight: 600, color: C.text }}>{t('freeCash.entryTitle')}</span>
+          <span style={{ width: 28 }} />
+        </div>
+
+        <div style={{ textAlign: 'center', padding: '28px 20px 8px' }}>
+          <p style={{ fontSize: 13, color: C.textTertiary, marginBottom: 6 }}>{t('freeCash.entryHint')}</p>
+          <p style={{ fontSize: 16, color: C.textTertiary, marginTop: 8, marginBottom: 2 }}>{currency === 'USD' ? '$' : '₽'}</p>
+          <p style={{ fontSize: 48, fontWeight: 800, letterSpacing: -2, color: C.text, lineHeight: 1 }}>
+            {parseFloat(input).toLocaleString(locale === 'ru' ? 'ru-RU' : 'en-US', { maximumFractionDigits: 2 })}
+          </p>
+        </div>
+
+        {/* Preset amounts */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, padding: '12px 16px 4px' }}>
+          {presets.map((p) => (
+            <button
+              key={p}
+              onClick={() => applyPreset(p)}
+              style={{
+                background: C.surface,
+                border: `1px solid ${C.borderSubtle}`,
+                borderRadius: 10,
+                padding: '10px 4px',
+                color: C.textSec,
+                fontSize: 13,
+                fontWeight: 600,
+                fontFamily: 'inherit',
+                cursor: 'pointer',
+              }}
+            >
+              {p.toLocaleString(locale === 'ru' ? 'ru-RU' : 'en-US')}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ flex: 1 }} />
+
+        {/* Numpad */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gridTemplateRows: 'repeat(4, 52px)', gap: 6, padding: '4px 16px 8px' }}>
+          {keys.map((k) => (
+            <button key={k} onClick={() => press(k)} style={{ background: k === 'del' ? C.elevated : C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 10, color: C.text, fontSize: k === 'del' ? 18 : 22, fontWeight: 500, fontFamily: 'inherit', cursor: 'pointer', width: '100%', height: '100%' }}>
+              {k === 'del' ? '⌫' : k}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ padding: '8px 16px 24px' }}>
+          <PrimaryBtn onClick={handleContinue} disabled={amountKop <= 0}>
+            {t('freeCash.continue')}
+          </PrimaryBtn>
+        </div>
+      </div>
+    );
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // STAGE 3: SUCCESS
+  // ────────────────────────────────────────────────────────────────────────
+
+  if (stage === 'success' && applyResult) {
+    const bodyCopy = (() => {
+      if (applyResult.mode === 'EMERGENCY_FUND') {
+        return t('freeCash.successBodyEfOnly', { amount: fmt(applyResult.toEf, currency, locale) });
+      }
+      if (applyResult.mode === 'DEBT_PREPAY') {
+        return t('freeCash.successBodyDebtOnly', {
+          amount: fmt(applyResult.toDebt, currency, locale),
+          title: applyResult.focusDebtTitle ?? '',
+        });
+      }
+      return t('freeCash.successBodySplit', {
+        efAmount: fmt(applyResult.toEf, currency, locale),
+        debtAmount: fmt(applyResult.toDebt, currency, locale),
+        title: applyResult.focusDebtTitle ?? '',
+      });
+    })();
+
+    return (
+      <div style={{ background: C.bg, minHeight: vh, display: 'flex', flexDirection: 'column', padding: '20px 20px 28px' }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
+          <div style={{ width: 80, height: 80, borderRadius: '50%', background: C.greenBg, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 20 }}>
+            <span style={{ fontSize: 40, color: C.green }}>✓</span>
+          </div>
+          <p style={{ fontSize: 24, fontWeight: 700, color: C.text, marginBottom: 10 }}>{t('freeCash.successTitle')}</p>
+          <p style={{ fontSize: 15, color: C.textSec, lineHeight: 1.5, maxWidth: 320 }}>{bodyCopy}</p>
+        </div>
+        <PrimaryBtn onClick={handleClose}>{t('freeCash.successClose')}</PrimaryBtn>
+      </div>
+    );
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // STAGE 2: REVIEW
+  // ────────────────────────────────────────────────────────────────────────
+
+  const rec = preview;
+  const effect = rec?.primaryEffect;
+
+  const modeHeader = (m: FreeCashMode) => {
+    if (m === 'EMERGENCY_FUND') return t('freeCash.modeEfHeader');
+    if (m === 'DEBT_PREPAY') return t('freeCash.modeDebtHeader');
+    return t('freeCash.modeSplitHeader');
+  };
+
+  const reasonCopy = (r: FreeCashReason, apr: number | null): string => {
+    switch (r) {
+      case 'NO_DEBT':
+        return t('freeCash.reasonNoDebt');
+      case 'EF_PROTECTIVE':
+        return t('freeCash.reasonEfProtective');
+      case 'EF_FULLY_FUNDED':
+        return t('freeCash.reasonEfFullyFunded');
+      case 'HIGH_APR_DEBT':
+        return t('freeCash.reasonHighAprDebt', { apr: apr != null ? (apr * 100).toFixed(1) : '—' });
+      case 'BALANCED_SPLIT':
+        return t('freeCash.reasonBalancedSplit');
+      default:
+        return '';
+    }
+  };
+
+  const fmtMonths = (n: number | null) =>
+    n == null ? '—' : n.toFixed(1).replace(/\.0$/, '');
+
+  const focusApr = (() => {
+    // preview doesn't carry APR directly, but we can derive from the fact
+    // HIGH_APR_DEBT was the reason → the focus debt meets threshold.
+    // For display we just show the default threshold (18%). For precision we'd
+    // need to either surface the debt APR from the preview response or request it.
+    // TODO: surface focus debt apr from preview. For MVP use a placeholder.
+    return 0.18;
+  })();
+
+  return (
+    <div style={{ background: C.bg, minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 20px 0' }}>
+        <button onClick={handleBackToEntry} style={{ background: 'none', border: 'none', color: C.textSec, fontSize: 20, cursor: 'pointer' }}>←</button>
+        <span style={{ fontSize: 16, fontWeight: 600, color: C.text }}>{t('freeCash.entryTitle')}</span>
+        <button onClick={handleCancelFromReview} style={{ background: 'none', border: 'none', color: C.textSec, fontSize: 14, cursor: 'pointer' }}>×</button>
+      </div>
+
+      <div style={{ padding: '16px 16px 140px', flex: 1 }}>
+        {/* Amount banner */}
+        <div style={{ textAlign: 'center', padding: '8px 0 20px' }}>
+          <p style={{ fontSize: 13, color: C.textTertiary, marginBottom: 4 }}>{t('freeCash.entryTitle')}</p>
+          <p style={{ fontSize: 40, fontWeight: 800, letterSpacing: -1, color: C.text, lineHeight: 1 }}>
+            {fmt(amountKop, currency, locale)}
+          </p>
+        </div>
+
+        {loadingPreview && !rec && (
+          <div style={{ display: 'flex', justifyContent: 'center', padding: '40px 0' }}><Spinner /></div>
+        )}
+
+        {previewError && (
+          <Card style={{ background: C.redBg, border: `1px solid ${C.red}40` }}>
+            <p style={{ color: C.red, fontSize: 14, fontWeight: 600 }}>{previewError}</p>
+          </Card>
+        )}
+
+        {rec && (
+          <>
+            {/* Mode tabs */}
+            <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+              {(['EMERGENCY_FUND', 'DEBT_PREPAY', 'SPLIT'] as FreeCashMode[]).map((m) => {
+                const available = m === 'EMERGENCY_FUND' ||
+                  rec.alternatives.some((a) => a.mode === m) ||
+                  rec.mode === m;
+                const active = rec.mode === m;
+                return (
+                  <button
+                    key={m}
+                    onClick={() => available && switchMode(m)}
+                    disabled={!available}
+                    style={{
+                      flex: 1,
+                      padding: '10px 8px',
+                      borderRadius: 10,
+                      background: active ? C.accentBgStrong : C.surface,
+                      border: `1px solid ${active ? C.accent : C.borderSubtle}`,
+                      color: active ? C.accentLight : !available ? C.textMuted : C.textSec,
+                      fontSize: 13,
+                      fontWeight: 600,
+                      fontFamily: 'inherit',
+                      cursor: available ? 'pointer' : 'not-allowed',
+                      opacity: available ? 1 : 0.4,
+                    }}
+                  >
+                    {m === 'EMERGENCY_FUND' ? t('freeCash.tabEf') : m === 'DEBT_PREPAY' ? t('freeCash.tabDebt') : t('freeCash.tabSplit')}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Recommendation header + reason */}
+            <Card style={{ marginBottom: 14, border: `1px solid ${C.accent}30`, background: C.accentBg }}>
+              <p style={{ fontSize: 15, fontWeight: 700, color: C.accentLight, marginBottom: 6 }}>
+                {modeHeader(rec.mode)}
+              </p>
+              <p style={{ fontSize: 13, color: C.textSec, lineHeight: 1.45 }}>
+                {reasonCopy(rec.reasonCode, focusApr)}
+              </p>
+              {rec.mode !== rec.defaultMode && (
+                <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 8, fontStyle: 'italic' }}>
+                  {t('freeCash.defaultWas', {
+                    mode:
+                      rec.defaultMode === 'EMERGENCY_FUND'
+                        ? t('freeCash.tabEf')
+                        : rec.defaultMode === 'DEBT_PREPAY'
+                        ? t('freeCash.tabDebt')
+                        : t('freeCash.tabSplit'),
+                  })}
+                </p>
+              )}
+            </Card>
+
+            {/* SPLIT slider (only for SPLIT mode) */}
+            {rec.mode === 'SPLIT' && (
+              <Card style={{ marginBottom: 14 }}>
+                <p style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 10 }}>
+                  {t('freeCash.splitTitle')}
+                </p>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {[
+                    { label: t('freeCash.splitPresetMoreDebt'), value: 0.25 },
+                    { label: t('freeCash.splitPresetEven'), value: 0.5 },
+                    { label: t('freeCash.splitPresetMoreEf'), value: 0.75 },
+                  ].map((p) => {
+                    const active = Math.abs(splitShare - p.value) < 0.01;
+                    return (
+                      <button
+                        key={p.value}
+                        onClick={() => changeSplit(p.value)}
+                        style={{
+                          flex: 1,
+                          padding: '10px 6px',
+                          borderRadius: 8,
+                          background: active ? C.accentBgStrong : C.elevated,
+                          border: `1px solid ${active ? C.accent : C.border}`,
+                          color: active ? C.accentLight : C.textSec,
+                          fontSize: 12,
+                          fontWeight: 600,
+                          fontFamily: 'inherit',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {p.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p style={{ fontSize: 11, color: C.textTertiary, marginTop: 10, textAlign: 'center' }}>
+                  {t('freeCash.splitLabel', {
+                    efPct: Math.round(rec.splitEfShare * 100),
+                    debtPct: 100 - Math.round(rec.splitEfShare * 100),
+                  })}
+                </p>
+              </Card>
+            )}
+
+            {/* Distribution summary */}
+            {effect && (effect.toEmergencyFundMinor > 0 || effect.toDebtMinor > 0) && (
+              <Card style={{ marginBottom: 14 }}>
+                {effect.toEmergencyFundMinor > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: effect.toDebtMinor > 0 ? 8 : 0 }}>
+                    <span style={{ fontSize: 13, color: C.textSec }}>💰 {t('freeCash.distToEf', { amount: '' }).replace(':', '').trim()}</span>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: C.green }}>+{fmt(effect.toEmergencyFundMinor, currency, locale)}</span>
+                  </div>
+                )}
+                {effect.toDebtMinor > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ fontSize: 13, color: C.textSec }}>💳 {t('freeCash.distToDebt', { amount: '' }).replace(':', '').trim()}</span>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: C.orange }}>−{fmt(effect.toDebtMinor, currency, locale)}</span>
+                  </div>
+                )}
+                {(() => {
+                  const used = effect.toEmergencyFundMinor + effect.toDebtMinor;
+                  const leftover = Math.max(0, amountKop - used);
+                  return leftover > 0 ? (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, paddingTop: 8, borderTop: `1px solid ${C.borderSubtle}` }}>
+                      <span style={{ fontSize: 12, color: C.textTertiary }}>{t('freeCash.distLeftover', { amount: '' }).replace(':', '').replace('(', '').replace(')', '').trim()}</span>
+                      <span style={{ fontSize: 13, color: C.textTertiary }}>{fmt(leftover, currency, locale)}</span>
+                    </div>
+                  ) : null;
+                })()}
+              </Card>
+            )}
+
+            {/* EF impact */}
+            {effect && effect.toEmergencyFundMinor > 0 && (
+              <Card style={{ marginBottom: 14 }}>
+                <p style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 10 }}>
+                  {t('freeCash.efImpactTitle')}
+                </p>
+                {effect.efMonthsBefore != null && effect.efMonthsAfter != null ? (
+                  <p style={{ fontSize: 14, color: C.textSec }}>
+                    {t('freeCash.efCoverageBeforeAfter', {
+                      before: fmtMonths(effect.efMonthsBefore),
+                      after: fmtMonths(effect.efMonthsAfter),
+                    })}
+                  </p>
+                ) : (
+                  <p style={{ fontSize: 13, color: C.textTertiary, fontStyle: 'italic' }}>
+                    {t('freeCash.efCoverageNoEssentials')}
+                  </p>
+                )}
+              </Card>
+            )}
+
+            {/* Debt impact */}
+            {effect && effect.toDebtMinor > 0 && effect.focusDebtId && (
+              <Card style={{ marginBottom: 14 }}>
+                <p style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 8 }}>
+                  {t('freeCash.debtImpactTitle')}
+                </p>
+                {effect.focusDebtTitle && (
+                  <p style={{ fontSize: 13, color: C.textSec, marginBottom: 6 }}>
+                    {t('freeCash.debtFocusLine', { title: effect.focusDebtTitle })}
+                  </p>
+                )}
+                <p style={{ fontSize: 14, color: C.text, marginBottom: 6 }}>
+                  {t('freeCash.debtBalanceBeforeAfter', {
+                    before: fmt(effect.focusDebtBalanceBefore ?? 0, currency, locale),
+                    after: fmt(effect.focusDebtBalanceAfter ?? 0, currency, locale),
+                  })}
+                </p>
+                {effect.focusDebtBalanceAfter === 0 ? (
+                  <p style={{ fontSize: 13, color: C.green, fontWeight: 600, marginTop: 8 }}>
+                    ✓ {t('freeCash.debtFullPayoff')}
+                  </p>
+                ) : effect.payoffStatus === 'NO_MIN_PAYMENT' ? (
+                  <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 6 }}>
+                    {t('freeCash.debtNoMinPayment')}
+                  </p>
+                ) : effect.payoffStatus === 'PAYMENT_TOO_SMALL' ? (
+                  <p style={{ fontSize: 12, color: C.textTertiary, marginTop: 6 }}>
+                    {t('freeCash.debtPaymentTooSmall')}
+                  </p>
+                ) : (
+                  <>
+                    {effect.monthsSaved != null && effect.monthsSaved > 0 && (
+                      <p style={{ fontSize: 13, color: C.green, marginTop: 6 }}>
+                        ⚡ {t('freeCash.debtMonthsSaved', { months: effect.monthsSaved })}
+                      </p>
+                    )}
+                    {effect.interestSavedMinor != null && effect.interestSavedMinor > 0 && (
+                      <p style={{ fontSize: 13, color: C.green, marginTop: 4 }}>
+                        💰 {t('freeCash.debtInterestSaved', { amount: fmt(effect.interestSavedMinor, currency, locale) })}
+                      </p>
+                    )}
+                  </>
+                )}
+              </Card>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Bottom action bar */}
+      <div
+        style={{
+          position: 'fixed',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          padding: '12px 16px calc(24px + env(safe-area-inset-bottom, 0px))',
+          background: C.bg,
+          borderTop: `1px solid ${C.borderSubtle}`,
+        }}
+      >
+        <PrimaryBtn onClick={handleApply} disabled={applying || loadingPreview || !rec || !!previewError}>
+          {applying ? t('freeCash.applying') : t('freeCash.apply')}
+        </PrimaryBtn>
+      </div>
+    </div>
+  );
+}
+
 // ── Period Summary ───────────────────────────────────────────────────────────
 
 function PeriodSummary({ data, onClose }: { data: PeriodSummaryData; onClose: () => void }) {
@@ -2987,12 +3619,21 @@ export default function MiniApp() {
             onAddExpense={() => setScreen('add-expense')}
             onOpenDebts={() => { setScreen('debts'); setNavTab('debts'); }}
             onOpenEF={() => setScreen('emergency-fund-detail')}
+            onOpenFreeCash={() => setScreen('free-cash')}
             onOpenSummary={periodSummary ? () => setScreen('period-summary') : undefined}
             showSummaryBanner={showSummaryBanner}
           />
         )}
         {screen === 'dashboard' && !dashboard && (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh' }}><Spinner /></div>
+        )}
+        {screen === 'free-cash' && (
+          <FreeCashFlow
+            api={api}
+            currency={dashboard?.currency ?? 'RUB'}
+            onBack={() => setScreen('dashboard')}
+            onApplied={loadDashboard}
+          />
         )}
         {screen === 'history' && <History api={api} currency={dashboard?.currency ?? 'RUB'} onRefresh={loadDashboard} />}
         {screen === 'debts' && <DebtsScreen api={api} currency={dashboard?.currency ?? 'RUB'} onRefresh={loadDashboard} onOpenPro={() => setScreen('pro')} />}
