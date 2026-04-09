@@ -15,9 +15,13 @@ services:
       retries: 5
 
   api:
+    image: ghcr.io/brsvdmtr/pfm-api:${IMAGE_TAG:-latest}
+    # `build:` is kept so `docker compose build` still works locally /
+    # as an emergency fallback on the server.
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+    pull_policy: always
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
@@ -34,9 +38,11 @@ services:
       - "127.0.0.1:3002:3002"
 
   bot:
+    image: ghcr.io/brsvdmtr/pfm-bot:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: apps/bot/Dockerfile
+    pull_policy: always
     restart: unless-stopped
     environment:
       BOT_TOKEN: ${BOT_TOKEN}
@@ -48,9 +54,11 @@ services:
       - api
 
   web:
+    image: ghcr.io/brsvdmtr/pfm-web:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+    pull_policy: always
     restart: unless-stopped
     environment:
       NEXT_PUBLIC_API_URL: https://mytodaylimit.ru/api

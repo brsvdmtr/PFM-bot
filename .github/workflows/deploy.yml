@@ -1,4 +1,4 @@
-name: Deploy to Timeweb
+name: Build & Deploy
 
 on:
   push:
@@ -9,11 +9,63 @@ concurrency:
   group: deploy-prod
   cancel-in-progress: false
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: brsvdmtr
+
 jobs:
+  # ── 1) Build all three images on GitHub-hosted runners (fast) ──────────────
+  build:
+    name: Build & push images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - service: api
+            dockerfile: apps/api/Dockerfile
+          - service: bot
+            dockerfile: apps/bot/Dockerfile
+          - service: web
+            dockerfile: apps/web/Dockerfile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/pfm-${{ matrix.service }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/pfm-${{ matrix.service }}:${{ github.sha }}
+          cache-from: type=gha,scope=pfm-${{ matrix.service }}
+          cache-to: type=gha,scope=pfm-${{ matrix.service }},mode=max
+
+  # ── 2) Deploy: SSH to server and pull the freshly pushed images ─────────────
   deploy:
     name: SSH deploy
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
+    needs: build
     steps:
       - name: Configure SSH
         run: |
@@ -30,12 +82,9 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           GITHUB_SHA: ${{ github.sha }}
         run: |
-          # ServerAliveInterval/CountMax keep the SSH connection alive during
-          # long silent phases of `docker compose build` on a small server.
-          # Without these, `docker compose build --no-cache` can go 5+ minutes
-          # without sending anything to the client and the ssh session dies
-          # with "client_loop: send disconnect: Broken pipe", leaving the
-          # server mid-deploy (images built but containers not restarted).
+          # Images are already built in the `build` job; server only needs to
+          # `git pull` for config changes (compose + deploy.sh), log in to GHCR,
+          # and `docker compose pull && up -d`. No compute on the 2GB server.
           ssh -i ~/.ssh/id_ed25519 \
               -o IdentitiesOnly=yes \
               -o ServerAliveInterval=30 \

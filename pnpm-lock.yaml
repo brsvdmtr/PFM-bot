@@ -16,6 +16,9 @@ importers:
       '@pfm/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@prisma/client':
+        specifier: ^6.5.0
+        version: 6.19.2(prisma@6.19.2(typescript@5.9.3))(typescript@5.9.3)
       cors:
         specifier: ^2.8.5
         version: 2.8.6
@@ -31,6 +34,9 @@ importers:
       node-cron:
         specifier: ^4.2.1
         version: 4.2.1
+      prisma:
+        specifier: ^6.5.0
+        version: 6.19.2(typescript@5.9.3)
     devDependencies:
       '@types/cors':
         specifier: ^2.8.17
@@ -121,13 +127,13 @@ importers:
       '@prisma/client':
         specifier: ^6.5.0
         version: 6.19.2(prisma@6.19.2(typescript@5.9.3))(typescript@5.9.3)
+      prisma:
+        specifier: ^6.5.0
+        version: 6.19.2(typescript@5.9.3)
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.15
-      prisma:
-        specifier: ^6.5.0
-        version: 6.19.2(typescript@5.9.3)
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
