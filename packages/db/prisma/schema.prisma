@@ -12,6 +12,14 @@ datasource db {
 enum Currency {
   RUB
   USD
+  EUR
+  GBP
+  CHF
+  CNY
+  JPY
+  AED
+  TRY
+  USDT
 }
 
 enum DebtType {

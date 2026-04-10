@@ -233,7 +233,7 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
       where: { id: userId },
       include: {
         debts: { where: { isPaidOff: false }, orderBy: { apr: 'desc' } },
-        emergencyFund: true,
+        emergencyFund: { include: { buckets: { where: { isArchived: false } } } },
         obligations: { where: { isActive: true } },
       },
     }),
@@ -397,8 +397,18 @@ tg.get('/dashboard', async (req: AuthenticatedRequest, res) => {
     }),
     // ── Emergency fund ──
     emergencyFund: user.emergencyFund
-      ? { currentAmount: user.emergencyFund.currentAmount,
-          targetAmount:  user.obligations.reduce((s, o) => s + o.amount, 0) * user.emergencyFund.targetMonths }
+      ? {
+          currentAmount: user.emergencyFund.currentAmount,
+          targetAmount:  user.obligations.reduce((s, o) => s + o.amount, 0) * user.emergencyFund.targetMonths,
+          baseCurrency: user.emergencyFund.currency,
+          progressPct: (() => {
+            const ta = user.obligations.reduce((s, o) => s + o.amount, 0) * user.emergencyFund!.targetMonths;
+            return ta > 0 ? Math.min(100, Math.round((user.emergencyFund!.currentAmount / ta) * 100)) : user.emergencyFund!.currentAmount > 0 ? 100 : 0;
+          })(),
+          bucketsCount: (user.emergencyFund as any).buckets?.length ?? 0,
+          foreignBucketsCount: (user.emergencyFund as any).buckets?.filter((b: any) => b.currency !== user.emergencyFund!.currency).length ?? 0,
+          excludedBucketsCount: (user.emergencyFund as any).buckets?.filter((b: any) => !b.countsTowardEmergencyFund).length ?? 0,
+        }
       : null,
     currency: activePeriod.currency,
     // ── Payday / cash anchor display fields ──
@@ -864,20 +874,35 @@ tg.post('/periods/recalculate', async (req: AuthenticatedRequest, res) => {
 
 // ── Emergency Fund Management ─────────────────────────────
 
-// Helper: compute EF current amount from included active buckets
-async function getEFCurrentFromBuckets(userId: string, efId: string): Promise<number> {
+// Helper: compute EF current amount from included active buckets in baseCurrency only
+async function getEFCurrentFromBuckets(userId: string, efId: string, baseCurrency?: string): Promise<number> {
+  const where: any = { userId, emergencyFundId: efId, countsTowardEmergencyFund: true, isArchived: false };
+  if (baseCurrency) where.currency = baseCurrency;
   const result = await prisma.savingsBucket.aggregate({
-    where: { userId, emergencyFundId: efId, countsTowardEmergencyFund: true, isArchived: false },
+    where,
     _sum: { currentAmount: true },
   });
   return result._sum.currentAmount ?? 0;
 }
 
-// Helper: sync EF.currentAmount from buckets
+// Helper: sync EF.currentAmount from buckets (only baseCurrency counted)
 async function syncEFBalance(userId: string, efId: string): Promise<number> {
-  const amt = await getEFCurrentFromBuckets(userId, efId);
+  const ef = await prisma.emergencyFund.findUnique({ where: { id: efId }, select: { currency: true } });
+  const amt = await getEFCurrentFromBuckets(userId, efId, ef?.currency ?? 'RUB');
   await prisma.emergencyFund.update({ where: { id: efId }, data: { currentAmount: amt } });
   return amt;
+}
+
+// Helper: capture before/after s2sDaily around a recalculate
+async function computeRecalcDiff(userId: string): Promise<{
+  s2sDailyBefore: number; s2sDailyAfter: number; changed: boolean; reason: string;
+}> {
+  const periodBefore = await prisma.period.findFirst({ where: { userId, status: 'ACTIVE' }, select: { s2sDaily: true } });
+  const s2sDailyBefore = periodBefore?.s2sDaily ?? 0;
+  await triggerRecalculate(userId);
+  const periodAfter = await prisma.period.findFirst({ where: { userId, status: 'ACTIVE' }, select: { s2sDaily: true } });
+  const s2sDailyAfter = periodAfter?.s2sDaily ?? 0;
+  return { s2sDailyBefore, s2sDailyAfter, changed: s2sDailyBefore !== s2sDailyAfter, reason: 'EF_UPDATED' };
 }
 
 tg.get('/ef', async (req: AuthenticatedRequest, res) => {
@@ -893,7 +918,7 @@ tg.get('/ef', async (req: AuthenticatedRequest, res) => {
 
   // Compute current amount from buckets (or fall back to stored value if no buckets yet)
   const buckets = await prisma.savingsBucket.findMany({ where: { emergencyFundId: ef.id, isArchived: false } });
-  const currentAmount = buckets.length > 0 ? await getEFCurrentFromBuckets(userId, ef.id) : ef.currentAmount;
+  const currentAmount = buckets.length > 0 ? await getEFCurrentFromBuckets(userId, ef.id, ef.currency) : ef.currentAmount;
 
   // Compute target based on plan mode
   const { computeTargetAmount } = await import('./domain/finance/efPlan');
@@ -953,30 +978,37 @@ tg.get('/ef/buckets', async (req: AuthenticatedRequest, res) => {
 
 tg.post('/ef/buckets', async (req: AuthenticatedRequest, res) => {
   const userId = req.userId!;
-  const { name, type, currentAmount = 0, countsTowardEmergencyFund = true } = req.body;
+  const { name, type, currentAmount = 0, countsTowardEmergencyFund = true, currency } = req.body;
   if (!name?.trim()) { res.status(400).json({ error: 'name required' }); return; }
   const validTypes = ['SAVINGS_ACCOUNT', 'DEPOSIT', 'CASH', 'CRYPTO', 'BROKERAGE', 'OTHER'];
   if (!validTypes.includes(type)) { res.status(400).json({ error: 'Invalid bucket type' }); return; }
+  if (typeof currentAmount === 'number' && currentAmount < 0) { res.status(400).json({ error: 'Amount must be >= 0' }); return; }
+
+  const validCurrencies = ['RUB', 'USD', 'EUR', 'GBP', 'CHF', 'CNY', 'JPY', 'AED', 'TRY', 'USDT'];
+  const bucketCurrency = currency && validCurrencies.includes(currency) ? currency : 'RUB';
 
   const ef = await prisma.emergencyFund.findUnique({ where: { userId } });
   if (!ef) { res.status(404).json({ error: 'EF not found. Complete onboarding first.' }); return; }
 
-  // Crypto defaults to not counting toward EF
-  const countsForEF = type === 'CRYPTO' ? (countsTowardEmergencyFund === true ? true : false) : countsTowardEmergencyFund !== false;
+  // If currency differs from EF baseCurrency, don't count toward EF by default
+  const isForeignCurrency = bucketCurrency !== ef.currency;
+  const countsForEF = isForeignCurrency ? false
+    : type === 'CRYPTO' ? (countsTowardEmergencyFund === true)
+    : countsTowardEmergencyFund !== false;
 
   const bucket = await prisma.savingsBucket.create({
     data: {
       userId, emergencyFundId: ef.id,
       name: name.trim(), type: type as any,
+      currency: bucketCurrency as any,
       currentAmount: Math.max(0, Math.round(currentAmount)),
       countsTowardEmergencyFund: countsForEF,
     },
   });
 
-  // Sync EF total from buckets
   await syncEFBalance(userId, ef.id);
-
-  res.status(201).json(bucket);
+  const recalcDiff = await computeRecalcDiff(userId);
+  res.status(201).json({ bucket, recalcDiff });
 });
 
 tg.patch('/ef/buckets/:id', async (req: AuthenticatedRequest, res) => {
@@ -986,13 +1018,36 @@ tg.patch('/ef/buckets/:id', async (req: AuthenticatedRequest, res) => {
   if (!bucket) { res.status(404).json({ error: 'Bucket not found' }); return; }
 
   const data: Record<string, any> = {};
-  if (req.body.name !== undefined) data.name = req.body.name.trim();
+  if (req.body.name !== undefined) data.name = String(req.body.name).trim();
   if (req.body.countsTowardEmergencyFund !== undefined) data.countsTowardEmergencyFund = req.body.countsTowardEmergencyFund === true;
   if (req.body.isArchived !== undefined) data.isArchived = req.body.isArchived === true;
+  if (req.body.type !== undefined) {
+    const validTypes = ['SAVINGS_ACCOUNT', 'DEPOSIT', 'CASH', 'CRYPTO', 'BROKERAGE', 'OTHER'];
+    if (validTypes.includes(req.body.type)) data.type = req.body.type;
+  }
+  if (req.body.currency !== undefined) {
+    const validCurrencies = ['RUB', 'USD', 'EUR', 'GBP', 'CHF', 'CNY', 'JPY', 'AED', 'TRY', 'USDT'];
+    if (validCurrencies.includes(req.body.currency)) data.currency = req.body.currency;
+  }
+  if (req.body.currentAmount !== undefined) {
+    data.currentAmount = Math.max(0, Math.round(req.body.currentAmount));
+  }
 
   const updated = await prisma.savingsBucket.update({ where: { id }, data });
   await syncEFBalance(userId, bucket.emergencyFundId);
-  res.json(updated);
+  const recalcDiff = await computeRecalcDiff(userId);
+  res.json({ bucket: updated, recalcDiff });
+});
+
+tg.delete('/ef/buckets/:id', async (req: AuthenticatedRequest, res) => {
+  const userId = req.userId!;
+  const id = req.params.id as string;
+  const bucket = await prisma.savingsBucket.findFirst({ where: { id, userId } });
+  if (!bucket) { res.status(404).json({ error: 'Bucket not found' }); return; }
+  await prisma.savingsBucket.update({ where: { id }, data: { isArchived: true } });
+  await syncEFBalance(userId, bucket.emergencyFundId);
+  const recalcDiff = await computeRecalcDiff(userId);
+  res.json({ ok: true, recalcDiff });
 });
 
 // ── Entries (operations on buckets) ──

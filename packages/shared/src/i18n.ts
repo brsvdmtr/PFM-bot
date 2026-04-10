@@ -283,14 +283,22 @@ const ru = {
     goalHeader: 'Цель: сколько месяцев',
     monthsSuffix: '{n} мес.',
     newBucket: 'Новое накопление',
+    editBucket: 'Редактировать',
+    deleteBucket: 'Удалить накопление',
+    deleteBucketConfirm: 'Удалить «{name}»? Данные об этом источнике будут скрыты.',
     bucketNamePh: 'Название (напр. Вклад Тинькофф)',
-    bucketAmountPh: 'Текущий баланс ₽',
+    bucketAmountPh: 'Текущий баланс',
+    bucketCurrency: 'Валюта',
     cryptoWarning: 'Крипта волатильна и по умолчанию не считается надёжной частью подушки',
+    foreignCurrencyNote: 'Есть накопления в других валютах: {n} источников. Они не учитываются в прогрессе подушки в {currency}.',
+    excludedNote: '{n} источников не учитываются в подушке.',
     countToward: 'Учитывать в подушке',
     bucketsLocation: 'Где лежат деньги',
+    bucketsEmpty: 'Добавь, где ты хранишь деньги для подушки',
     inEf: ' · в подушке',
     notInEf: ' · не в подушке',
     addBucket: '+ Добавить накопление',
+    dailyLimitChanged: 'Дневной лимит изменился: {before} → {after}',
     planTitle: 'План достижения цели',
     feasibilityRealistic: 'Цель достижима',
     feasibilityTight: 'Напряжённо, но возможно',
@@ -847,14 +855,22 @@ const en = {
     goalHeader: 'Goal: how many months',
     monthsSuffix: '{n} mo',
     newBucket: 'New bucket',
+    editBucket: 'Edit',
+    deleteBucket: 'Delete bucket',
+    deleteBucketConfirm: 'Delete "{name}"? This bucket will be hidden.',
     bucketNamePh: 'Name (e.g. Ally Savings)',
     bucketAmountPh: 'Current balance',
+    bucketCurrency: 'Currency',
     cryptoWarning: 'Crypto is volatile and by default not counted as a reliable part of the fund',
+    foreignCurrencyNote: 'Savings in other currencies: {n} buckets. They don\'t count toward the {currency} fund progress.',
+    excludedNote: '{n} buckets not counted toward fund.',
     countToward: 'Count toward fund',
     bucketsLocation: 'Where money sits',
+    bucketsEmpty: 'Add where you keep your emergency fund money',
     inEf: ' · in fund',
     notInEf: ' · not in fund',
     addBucket: '+ Add bucket',
+    dailyLimitChanged: 'Daily limit changed: {before} → {after}',
     planTitle: 'Goal plan',
     feasibilityRealistic: 'Goal is realistic',
     feasibilityTight: 'Tight, but possible',
@@ -1182,16 +1198,31 @@ export function tArray(locale: Locale, path: string): readonly string[] {
 
 // ── Locale-aware formatters ─────────────────────────────────────────────────
 
+/** Currency symbol map for display. */
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  RUB: '₽', USD: '$', EUR: '€', GBP: '£', CHF: 'CHF', CNY: '¥',
+  JPY: '¥', AED: 'AED', TRY: '₺', USDT: 'USDT',
+};
+
+/** Currencies where the symbol goes before the number (prefix style). */
+const PREFIX_CURRENCIES = new Set(['USD', 'EUR', 'GBP']);
+
 /** Format an amount in minor units (kopecks/cents) to a display string. */
 export function formatMoney(amountMinor: number, currency: 'RUB' | 'USD' | string, locale: Locale = 'en'): string {
   const major = amountMinor / 100;
   const intlLocale = locale === 'ru' ? 'ru-RU' : 'en-US';
-  if (currency === 'USD') {
-    return `$${major.toLocaleString(intlLocale, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+  const formatted = major.toLocaleString(intlLocale, { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  const sym = CURRENCY_SYMBOLS[currency] ?? currency;
+  if (PREFIX_CURRENCIES.has(currency)) {
+    return `${sym}${formatted}`;
   }
-  // Default to RUB-style: number then symbol
-  const sym = currency === 'RUB' ? '₽' : currency;
-  return `${major.toLocaleString(intlLocale, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} ${sym}`;
+  return `${formatted} ${sym}`;
+}
+
+/** Short currency label for UI selectors. */
+export function currencyLabel(code: string): string {
+  const sym = CURRENCY_SYMBOLS[code];
+  return sym && sym !== code ? `${code} (${sym})` : code;
 }
 
 /** Format an integer count using locale conventions (thousand separators). */

@@ -1171,14 +1171,17 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
   const [planData, setPlanData] = useState<EFPlanData | null>(null);
   const [entries, setEntries] = useState<EFEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [mode, setMode] = useState<'view' | 'deposit' | 'withdraw' | 'edit-goal' | 'add-bucket'>('view');
+  const [mode, setMode] = useState<'view' | 'deposit' | 'withdraw' | 'edit-goal' | 'add-bucket' | 'edit-bucket'>('view');
   const [selectedBucket, setSelectedBucket] = useState<EFBucket | null>(null);
   const [amount, setAmount] = useState('');
   const [affectsBudget, setAffectsBudget] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [targetMonths, setTargetMonths] = useState(3);
-  const [newBucket, setNewBucket] = useState({ name: '', type: 'SAVINGS_ACCOUNT', amount: '', countsForEF: true });
+  const [newBucket, setNewBucket] = useState({ name: '', type: 'SAVINGS_ACCOUNT', amount: '', currency: 'RUB', countsForEF: true });
+  const [editBucket, setEditBucket] = useState({ id: '', name: '', type: 'SAVINGS_ACCOUNT', amount: '', currency: 'RUB', countsForEF: true });
+  const [deletingBucketId, setDeletingBucketId] = useState<string | null>(null);
+  const [toast, setToast] = useState('');
   const [customMode, setCustomMode] = useState(false);
   const [customAmount, setCustomAmount] = useState('');
   const [customFreq, setCustomFreq] = useState<'MONTHLY' | 'BIWEEKLY' | 'WEEKLY'>('MONTHLY');
@@ -1249,21 +1252,64 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
     setSaving(false);
   };
 
+  const showRecalcToast = (recalcDiff: any) => {
+    if (recalcDiff?.changed) {
+      const before = fmt(recalcDiff.s2sDailyBefore, currency, locale);
+      const after = fmt(recalcDiff.s2sDailyAfter, currency, locale);
+      setToast(t('ef.dailyLimitChanged', { before, after }));
+      setTimeout(() => setToast(''), 4000);
+    }
+  };
+
   const handleAddBucket = async () => {
     if (!newBucket.name.trim()) { setError(t('validation.requiredName')); return; }
     setSaving(true); setError('');
     try {
-      await api('/tg/ef/buckets', {
+      const res = await api('/tg/ef/buckets', {
         method: 'POST',
         body: JSON.stringify({
           name: newBucket.name.trim(),
           type: newBucket.type,
+          currency: newBucket.currency,
           currentAmount: Math.round((parseFloat(newBucket.amount) || 0) * 100),
           countsTowardEmergencyFund: newBucket.countsForEF,
         }),
       });
-      setNewBucket({ name: '', type: 'SAVINGS_ACCOUNT', amount: '', countsForEF: true });
+      showRecalcToast(res?.recalcDiff);
+      setNewBucket({ name: '', type: 'SAVINGS_ACCOUNT', amount: '', currency: 'RUB', countsForEF: true });
       setMode('view');
+      await Promise.all([load(), onRefresh()]);
+    } catch (err: any) { setError(err?.message || t('common.error')); }
+    setSaving(false);
+  };
+
+  const handleEditBucket = async () => {
+    if (!editBucket.name.trim()) { setError(t('validation.requiredName')); return; }
+    setSaving(true); setError('');
+    try {
+      const res = await api(`/tg/ef/buckets/${editBucket.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: editBucket.name.trim(),
+          type: editBucket.type,
+          currency: editBucket.currency,
+          currentAmount: Math.round((parseFloat(editBucket.amount) || 0) * 100),
+          countsTowardEmergencyFund: editBucket.countsForEF,
+        }),
+      });
+      showRecalcToast(res?.recalcDiff);
+      setMode('view');
+      await Promise.all([load(), onRefresh()]);
+    } catch (err: any) { setError(err?.message || t('common.error')); }
+    setSaving(false);
+  };
+
+  const handleDeleteBucket = async (id: string) => {
+    setSaving(true);
+    try {
+      const res = await api(`/tg/ef/buckets/${id}`, { method: 'DELETE' });
+      showRecalcToast(res?.recalcDiff);
+      setDeletingBucketId(null);
       await Promise.all([load(), onRefresh()]);
     } catch (err: any) { setError(err?.message || t('common.error')); }
     setSaving(false);
@@ -1279,7 +1325,12 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
   ];
   const bucketTypeLabel = (type: string) => bucketTypes.find((bt) => bt.v === type)?.l ?? type;
 
+  const currencyOptions = ['RUB', 'USD', 'EUR', 'GBP', 'CHF', 'CNY', 'JPY', 'AED', 'TRY', 'USDT'];
+
   const currency = ef?.currency ?? 'RUB';
+  const activeBuckets = buckets.filter((b) => !b.isArchived);
+  const foreignBucketsCount = activeBuckets.filter((b) => b.currency !== currency).length;
+  const excludedBucketsCount = activeBuckets.filter((b) => !b.countsTowardEmergencyFund).length;
 
   if (loading) return <div style={{ background: C.bg, minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spinner /></div>;
   if (!ef) return (
@@ -1414,6 +1465,15 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
           <select value={newBucket.type} onChange={(e) => setNewBucket({ ...newBucket, type: e.target.value })} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.textSec, fontSize: 13, fontFamily: 'inherit', marginBottom: 10, outline: 'none' }}>
             {bucketTypes.map((bt) => <option key={bt.v} value={bt.v}>{bt.l}</option>)}
           </select>
+          <div style={{ marginBottom: 10 }}>
+            <label style={{ display: 'block', fontSize: 12, color: C.textTertiary, marginBottom: 4 }}>{t('ef.bucketCurrency')}</label>
+            <select value={newBucket.currency} onChange={(e) => {
+              const c = e.target.value;
+              setNewBucket({ ...newBucket, currency: c, countsForEF: c === currency });
+            }} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.textSec, fontSize: 13, fontFamily: 'inherit', outline: 'none' }}>
+              {currencyOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
           <input type="number" value={newBucket.amount} onChange={(e) => setNewBucket({ ...newBucket, amount: e.target.value })} placeholder={t('ef.bucketAmountPh')} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
           {newBucket.type === 'CRYPTO' && (
             <p style={{ fontSize: 11, color: C.orange, marginBottom: 10, padding: '8px 12px', background: `${C.orange}15`, borderRadius: 8 }}>
@@ -1434,38 +1494,120 @@ function EmergencyFundScreen({ api, onBack, onRefresh }: { api: (path: string, o
         </Card>
       )}
 
+      {/* Edit bucket form */}
+      {mode === 'edit-bucket' && (
+        <Card>
+          <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 12 }}>{t('ef.editBucket')}</p>
+          <input value={editBucket.name} onChange={(e) => setEditBucket({ ...editBucket, name: e.target.value })} placeholder={t('ef.bucketNamePh')} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
+          <select value={editBucket.type} onChange={(e) => setEditBucket({ ...editBucket, type: e.target.value })} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.textSec, fontSize: 13, fontFamily: 'inherit', marginBottom: 10, outline: 'none' }}>
+            {bucketTypes.map((bt) => <option key={bt.v} value={bt.v}>{bt.l}</option>)}
+          </select>
+          <div style={{ marginBottom: 10 }}>
+            <label style={{ display: 'block', fontSize: 12, color: C.textTertiary, marginBottom: 4 }}>{t('ef.bucketCurrency')}</label>
+            <select value={editBucket.currency} onChange={(e) => {
+              const c = e.target.value;
+              setEditBucket({ ...editBucket, currency: c, countsForEF: c === currency });
+            }} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.textSec, fontSize: 13, fontFamily: 'inherit', outline: 'none' }}>
+              {currencyOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <input type="number" value={editBucket.amount} onChange={(e) => setEditBucket({ ...editBucket, amount: e.target.value })} placeholder={t('ef.bucketAmountPh')} style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px', color: C.text, fontSize: 14, fontFamily: 'inherit', marginBottom: 10, outline: 'none', boxSizing: 'border-box' }} />
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+            <span style={{ fontSize: 13, color: C.text }}>{t('ef.countToward')}</span>
+            <div onClick={() => setEditBucket({ ...editBucket, countsForEF: !editBucket.countsForEF })} style={{ width: 40, height: 24, background: editBucket.countsForEF ? C.accent : C.elevated, border: `1px solid ${C.border}`, borderRadius: 12, position: 'relative', cursor: 'pointer', transition: 'background 0.2s', flexShrink: 0 }}>
+              <div style={{ width: 20, height: 20, background: '#fff', borderRadius: '50%', position: 'absolute', top: 1, left: editBucket.countsForEF ? 18 : 1, transition: 'left 0.2s' }} />
+            </div>
+          </div>
+          {error && <p style={{ fontSize: 13, color: C.red, marginBottom: 10 }}>⚠ {error}</p>}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <PrimaryBtn onClick={handleEditBucket} disabled={saving || !editBucket.name.trim()} style={{ flex: 1 }}>{saving ? '...' : t('common.save')}</PrimaryBtn>
+            <button onClick={() => { setMode('view'); setError(''); }} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>{t('common.cancel')}</button>
+          </div>
+          <button onClick={() => setDeletingBucketId(editBucket.id)} style={{ width: '100%', marginTop: 10, padding: '11px 0', background: 'transparent', border: `1px solid ${C.red}40`, borderRadius: 10, color: C.red, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}>
+            {t('ef.deleteBucket')}
+          </button>
+        </Card>
+      )}
+
+      {/* Delete confirmation overlay */}
+      {deletingBucketId && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <Card style={{ maxWidth: 340, width: '100%' }}>
+            <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 12 }}>{t('ef.deleteBucket')}</p>
+            <p style={{ fontSize: 13, color: C.textSec, marginBottom: 16 }}>
+              {t('ef.deleteBucketConfirm', { name: activeBuckets.find(b => b.id === deletingBucketId)?.name ?? '' })}
+            </p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => { handleDeleteBucket(deletingBucketId); setMode('view'); }} disabled={saving} style={{ flex: 1, padding: '12px 0', background: C.red, border: 'none', borderRadius: 10, color: '#fff', fontSize: 14, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}>{saving ? '...' : t('common.delete')}</button>
+              <button onClick={() => setDeletingBucketId(null)} style={{ flex: 1, padding: '12px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>{t('common.cancel')}</button>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* Toast notification */}
+      {toast && (
+        <div style={{ position: 'fixed', top: 20, left: '50%', transform: 'translateX(-50%)', background: C.accentBgStrong, border: `1px solid ${C.accent}`, borderRadius: 12, padding: '10px 20px', color: C.text, fontSize: 13, fontWeight: 600, zIndex: 1001, maxWidth: 'calc(100vw - 40px)', textAlign: 'center' }}>
+          {toast}
+        </div>
+      )}
+
       {/* Buckets list */}
-      {mode === 'view' && buckets.filter((b) => !b.isArchived).length > 0 && (
+      {mode === 'view' && activeBuckets.length > 0 && (
         <>
           <p style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 10 }}>{t('ef.bucketsLocation')}</p>
-          {buckets.filter((b) => !b.isArchived).map((b) => (
+          {activeBuckets.map((b) => (
             <Card key={b.id} style={{ padding: '12px 14px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div>
+                <div style={{ flex: 1, minWidth: 0 }}>
                   <p style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{b.name}</p>
                   <p style={{ fontSize: 11, color: C.textTertiary, marginTop: 2 }}>
-                    {bucketTypeLabel(b.type)}
+                    {bucketTypeLabel(b.type)}{b.currency !== currency ? ` · ${b.currency}` : ''}
                     {b.countsTowardEmergencyFund ? t('ef.inEf') : t('ef.notInEf')}
                   </p>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 15, fontWeight: 600, color: C.text }}>{fmt(b.currentAmount, currency, locale)}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                  <span style={{ fontSize: 15, fontWeight: 600, color: C.text }}>{fmt(b.currentAmount, b.currency, locale)}</span>
                   <button onClick={() => { setSelectedBucket(b); setMode('deposit'); setAmount(''); setError(''); }} style={{ background: C.accentBg, border: 'none', borderRadius: 6, padding: '4px 8px', color: C.accentLight, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>+</button>
+                  <button onClick={() => {
+                    setEditBucket({ id: b.id, name: b.name, type: b.type, amount: String(b.currentAmount / 100), currency: b.currency, countsForEF: b.countsTowardEmergencyFund });
+                    setMode('edit-bucket'); setError('');
+                  }} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: '4px 8px', color: C.textSec, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>
+                    {t('ef.editBucket')}
+                  </button>
                 </div>
               </div>
             </Card>
           ))}
-          <button onClick={() => { setMode('add-bucket'); setError(''); setNewBucket({ name: '', type: 'SAVINGS_ACCOUNT', amount: '', countsForEF: true }); }} style={{ width: '100%', padding: '12px 0', background: 'transparent', border: `1px dashed ${C.border}`, borderRadius: 10, color: C.accent, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer', marginBottom: 16 }}>
+
+          {/* Foreign currency info block */}
+          {foreignBucketsCount > 0 && (
+            <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 8, padding: '8px 12px', background: C.elevated, borderRadius: 8 }}>
+              {t('ef.foreignCurrencyNote', { n: foreignBucketsCount, currency })}
+            </p>
+          )}
+
+          {/* Excluded buckets info block */}
+          {excludedBucketsCount > 0 && (
+            <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 8, padding: '8px 12px', background: C.elevated, borderRadius: 8 }}>
+              {t('ef.excludedNote', { n: excludedBucketsCount })}
+            </p>
+          )}
+
+          <button onClick={() => { setMode('add-bucket'); setError(''); setNewBucket({ name: '', type: 'SAVINGS_ACCOUNT', amount: '', currency: 'RUB', countsForEF: true }); }} style={{ width: '100%', padding: '12px 0', background: 'transparent', border: `1px dashed ${C.border}`, borderRadius: 10, color: C.accent, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer', marginBottom: 16 }}>
             {t('ef.addBucket')}
           </button>
         </>
       )}
 
-      {/* No buckets yet — CTA */}
-      {mode === 'view' && buckets.filter((b) => !b.isArchived).length === 0 && (
-        <button onClick={() => { setMode('add-bucket'); setError(''); setNewBucket({ name: '', type: 'SAVINGS_ACCOUNT', amount: '', countsForEF: true }); }} style={{ width: '100%', padding: '16px 0', background: 'transparent', border: `1px dashed ${C.border}`, borderRadius: 10, color: C.accent, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer', marginBottom: 16 }}>
-          {t('ef.addBucket')}
-        </button>
+      {/* No buckets yet — CTA with helpful text */}
+      {mode === 'view' && activeBuckets.length === 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <p style={{ fontSize: 13, color: C.textTertiary, textAlign: 'center', marginBottom: 10 }}>{t('ef.bucketsEmpty')}</p>
+          <button onClick={() => { setMode('add-bucket'); setError(''); setNewBucket({ name: '', type: 'SAVINGS_ACCOUNT', amount: '', currency: 'RUB', countsForEF: true }); }} style={{ width: '100%', padding: '16px 0', background: 'transparent', border: `1px dashed ${C.border}`, borderRadius: 10, color: C.accent, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>
+            {t('ef.addBucket')}
+          </button>
+        </div>
       )}
 
       {/* Plan scenarios */}
