@@ -257,6 +257,9 @@ const ru = {
     title: 'История',
     currentPeriod: 'Текущий период',
     empty: 'Расходов пока нет',
+    editTitle: 'Редактировать расход',
+    editSaved: 'Расход обновлён',
+    deleteConfirm: 'Удалить этот расход?',
   },
   ef: {
     title: 'Подушка безопасности',
@@ -829,6 +832,9 @@ const en = {
     title: 'History',
     currentPeriod: 'Current period',
     empty: 'No expenses yet',
+    editTitle: 'Edit expense',
+    editSaved: 'Expense updated',
+    deleteConfirm: 'Delete this expense?',
   },
   ef: {
     title: 'Emergency fund',

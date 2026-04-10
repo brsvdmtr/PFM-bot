@@ -1058,6 +1058,13 @@ function History({ api, currency, onRefresh }: { api: (path: string, opts?: Requ
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
+  const [editAmount, setEditAmount] = useState('');
+  const [editNote, setEditNote] = useState('');
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState('');
+  const [toast, setToast] = useState('');
 
   const load = useCallback(() => {
     setLoading(true);
@@ -1071,6 +1078,7 @@ function History({ api, currency, onRefresh }: { api: (path: string, opts?: Requ
     try {
       await api(`/tg/expenses/${id}`, { method: 'DELETE' });
       setExpenses((prev) => prev.filter((e) => e.id !== id));
+      setConfirmDeleteId(null);
       await onRefresh();
     } catch {
       // ignore
@@ -1079,11 +1087,103 @@ function History({ api, currency, onRefresh }: { api: (path: string, opts?: Requ
     }
   };
 
+  const openEdit = (e: Expense) => {
+    setEditingExpense(e);
+    setEditAmount(String(e.amount / 100));
+    setEditNote(e.note || '');
+    setEditError('');
+  };
+
+  const handleEditSave = async () => {
+    if (!editingExpense) return;
+    const n = parseFloat(editAmount);
+    if (isNaN(n) || n <= 0) { setEditError(t('validation.invalidAmount')); return; }
+    setEditSaving(true); setEditError('');
+    try {
+      const res = await api(`/tg/expenses/${editingExpense.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          amount: Math.round(n * 100),
+          note: editNote.trim() || null,
+        }),
+      });
+      if (res?.expense) {
+        setExpenses((prev) => prev.map((e) => e.id === editingExpense.id
+          ? { ...e, amount: res.expense.amount, note: res.expense.note }
+          : e
+        ));
+      }
+      setEditingExpense(null);
+      setToast(t('history.editSaved'));
+      setTimeout(() => setToast(''), 3000);
+      await onRefresh();
+    } catch (err: any) {
+      if (err?.message?.includes('404') || err?.message?.includes('not found')) {
+        setEditError(t('common.error'));
+        load(); // refresh list — expense may have been deleted
+      } else {
+        setEditError(err?.message || t('common.error'));
+      }
+    }
+    setEditSaving(false);
+  };
+
   const groups = groupByDay(expenses);
   const total = expenses.reduce((s, e) => s + e.amount, 0);
 
   return (
     <div style={{ background: C.bg, minHeight: '100vh', padding: '20px 16px', paddingBottom: 'calc(90px + env(safe-area-inset-bottom, 0px))' }}>
+      {/* Toast */}
+      {toast && (
+        <div style={{ position: 'fixed', top: 20, left: '50%', transform: 'translateX(-50%)', background: C.green + '25', border: `1px solid ${C.green}50`, borderRadius: 12, padding: '10px 20px', color: C.green, fontSize: 13, fontWeight: 600, zIndex: 1001, maxWidth: 'calc(100vw - 40px)', textAlign: 'center' }}>
+          {toast}
+        </div>
+      )}
+
+      {/* Delete confirmation overlay */}
+      {confirmDeleteId && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <Card style={{ maxWidth: 340, width: '100%' }}>
+            <p style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 16 }}>{t('history.deleteConfirm')}</p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => handleDelete(confirmDeleteId)} disabled={deletingId === confirmDeleteId} style={{ flex: 1, padding: '12px 0', background: C.red, border: 'none', borderRadius: 10, color: '#fff', fontSize: 14, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer', opacity: deletingId === confirmDeleteId ? 0.5 : 1 }}>
+                {deletingId === confirmDeleteId ? '...' : t('common.delete')}
+              </button>
+              <button onClick={() => setConfirmDeleteId(null)} style={{ flex: 1, padding: '12px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>{t('common.cancel')}</button>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* Edit expense overlay */}
+      {editingExpense && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <Card style={{ maxWidth: 380, width: '100%' }}>
+            <p style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 16 }}>{t('history.editTitle')}</p>
+            <input
+              type="number" inputMode="decimal" value={editAmount}
+              onChange={(e) => setEditAmount(e.target.value)}
+              placeholder={t('addExpense.title')} autoFocus
+              style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 10, padding: '14px 16px', fontSize: 22, fontWeight: 700, color: C.text, fontFamily: 'inherit', outline: 'none', marginBottom: 12, boxSizing: 'border-box', textAlign: 'center' }}
+            />
+            <input
+              type="text" value={editNote}
+              onChange={(e) => setEditNote(e.target.value)}
+              placeholder={t('addExpense.notePh')}
+              maxLength={200}
+              style={{ width: '100%', background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 10, padding: '12px 16px', fontSize: 14, color: C.text, fontFamily: 'inherit', outline: 'none', marginBottom: 14, boxSizing: 'border-box' }}
+            />
+            {editError && <p style={{ fontSize: 13, color: C.red, marginBottom: 10 }}>⚠ {editError}</p>}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <PrimaryBtn onClick={handleEditSave} disabled={editSaving || !editAmount} style={{ flex: 1 }}>
+                {editSaving ? '...' : t('common.save')}
+              </PrimaryBtn>
+              <button onClick={() => setEditingExpense(null)} style={{ flex: 0.5, padding: '13px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>{t('common.cancel')}</button>
+            </div>
+          </Card>
+        </div>
+      )}
+
       <p style={{ fontSize: 22, fontWeight: 700, marginBottom: 16, color: C.text }}>{t('history.title')}</p>
 
       <div style={{ background: C.surface, border: `1px solid ${C.borderSubtle}`, borderRadius: 10, padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -1108,16 +1208,19 @@ function History({ api, currency, onRefresh }: { api: (path: string, opts?: Requ
           </div>
           {g.items.map((e) => (
             <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `1px solid ${C.borderSubtle}` }}>
-              <div style={{ width: 40, height: 40, borderRadius: 12, background: C.elevated, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>💳</div>
-              <div style={{ flex: 1 }}>
-                <p style={{ fontSize: 14, fontWeight: 500, color: C.text, marginBottom: 2 }}>{e.note || t('addExpense.defaultNote')}</p>
+              <div
+                onClick={() => openEdit(e)}
+                style={{ width: 40, height: 40, borderRadius: 12, background: C.elevated, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, cursor: 'pointer', flexShrink: 0 }}
+              >💳</div>
+              <div style={{ flex: 1, cursor: 'pointer', minWidth: 0 }} onClick={() => openEdit(e)}>
+                <p style={{ fontSize: 14, fontWeight: 500, color: C.text, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.note || t('addExpense.defaultNote')}</p>
                 <p style={{ fontSize: 12, color: C.textTertiary }}>{new Date(e.spentAt).toLocaleTimeString(locale === 'ru' ? 'ru-RU' : 'en-US', { hour: '2-digit', minute: '2-digit' })}</p>
               </div>
-              <span style={{ fontSize: 15, fontWeight: 600, color: C.red, marginRight: 8 }}>-{fmt(e.amount, currency, locale)}</span>
+              <span onClick={() => openEdit(e)} style={{ fontSize: 15, fontWeight: 600, color: C.red, marginRight: 8, cursor: 'pointer', flexShrink: 0 }}>-{fmt(e.amount, currency, locale)}</span>
               <button
-                onClick={() => handleDelete(e.id)}
+                onClick={() => setConfirmDeleteId(e.id)}
                 disabled={deletingId === e.id}
-                style={{ background: C.redBg, border: 'none', borderRadius: 8, padding: '6px 10px', color: C.red, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', opacity: deletingId === e.id ? 0.5 : 1 }}
+                style={{ background: C.redBg, border: 'none', borderRadius: 8, padding: '6px 10px', color: C.red, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', opacity: deletingId === e.id ? 0.5 : 1, flexShrink: 0 }}
               >
                 ✕
               </button>

@@ -474,6 +474,42 @@ tg.get('/expenses/today', async (req: AuthenticatedRequest, res) => {
   res.json(expenses);
 });
 
+// Edit expense (amount and/or note only; spentAt, periodId immutable)
+tg.patch('/expenses/:id', async (req: AuthenticatedRequest, res) => {
+  const userId = req.userId!;
+  const id = req.params.id as string;
+  const expense = await prisma.expense.findFirst({ where: { id, userId } });
+  if (!expense) { res.status(404).json({ error: 'Expense not found' }); return; }
+
+  const data: Record<string, any> = {};
+  let changed = false;
+
+  if (req.body.amount !== undefined) {
+    const amt = Math.round(req.body.amount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      res.status(400).json({ error: 'amount must be a positive integer' });
+      return;
+    }
+    data.amount = amt;
+    changed = true;
+  }
+
+  if (req.body.note !== undefined) {
+    const note = typeof req.body.note === 'string' ? req.body.note.trim().slice(0, 200) : null;
+    data.note = note || null;
+    changed = true;
+  }
+
+  if (!changed) {
+    res.status(400).json({ error: 'Nothing to update. Send amount and/or note.' });
+    return;
+  }
+
+  const updated = await prisma.expense.update({ where: { id }, data });
+  // No Period recalc needed — s2s / periodSpent are derived live from Expense aggregates
+  res.json({ ok: true, expense: updated });
+});
+
 // Delete expense
 tg.delete('/expenses/:id', async (req: AuthenticatedRequest, res) => {
   const id = req.params.id as string;
