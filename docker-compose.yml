@@ -69,5 +69,9 @@ services:
     ports:
       - "127.0.0.1:3003:3003"
 
+networks:
+  default:
+    enable_ipv6: true
+
 volumes:
   postgres_data:
