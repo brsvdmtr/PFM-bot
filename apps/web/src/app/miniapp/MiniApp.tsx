@@ -246,6 +246,12 @@ function debtTypeLabel(type: string, locale: Locale = 'en') {
   return tr(locale, `debtTypes.${type}`) || type;
 }
 
+/** Format a percentage value with locale-appropriate decimal separator (comma for ru). */
+function fmtPct(value: number, locale: Locale = 'en') {
+  const s = value.toFixed(1);
+  return locale === 'ru' ? s.replace('.', ',') : s;
+}
+
 // ── Sub-components ───────────────────────────────────────────────────────────
 
 function Spinner() {
@@ -925,7 +931,7 @@ function Dashboard({ data, onAddExpense, onOpenDebts, onOpenEF, onOpenSummary, o
                   {d.title}
                 </p>
                 <p style={{ fontSize: 12, color: C.textTertiary }}>
-                  {t('dashboard.aprLine', { pct: (d.apr * 100).toFixed(1) })}{d.isFocusDebt ? t('dashboard.focusSuffix') : ''}
+                  {t('dashboard.aprLine', { pct: fmtPct(d.apr * 100, locale) })}{d.isFocusDebt ? t('dashboard.focusSuffix') : ''}
                 </p>
               </div>
               <div style={{ textAlign: 'right' }}>
@@ -1824,7 +1830,7 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
                     {d.isFocusDebt && <span style={{ width: 8, height: 8, borderRadius: '50%', background: C.accent, display: 'inline-block', boxShadow: `0 0 8px ${C.accentGlow}` }} />}
                     {d.title}
                   </p>
-                  <p style={{ fontSize: 12, color: C.textTertiary }}>{t('debts.typeWithApr', { type: debtTypeLabel(d.type, locale), pct: (d.apr * 100).toFixed(1) })}</p>
+                  <p style={{ fontSize: 12, color: C.textTertiary }}>{t('debts.typeWithApr', { type: debtTypeLabel(d.type, locale), pct: fmtPct(d.apr * 100, locale) })}</p>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   {d.isFocusDebt && <span style={{ fontSize: 10, background: C.accentBg, color: C.accentLight, padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>{t('onboarding.focusBadge')}</span>}
@@ -3215,7 +3221,7 @@ function FreeCashFlow({
       case 'EF_FULLY_FUNDED':
         return t('freeCash.reasonEfFullyFunded');
       case 'HIGH_APR_DEBT':
-        return t('freeCash.reasonHighAprDebt', { apr: apr != null ? (apr * 100).toFixed(1) : '—' });
+        return t('freeCash.reasonHighAprDebt', { apr: apr != null ? fmtPct(apr * 100, locale) : '—' });
       case 'BALANCED_SPLIT':
         return t('freeCash.reasonBalancedSplit');
       default:
