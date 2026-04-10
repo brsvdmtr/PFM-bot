@@ -44,14 +44,17 @@ services:
       dockerfile: apps/bot/Dockerfile
     pull_policy: always
     restart: unless-stopped
+    # Host networking gives the bot access to the host's IPv6 stack, which is
+    # needed when IPv4 to api.telegram.org is unreachable (observed on Timeweb
+    # after hardware maintenance). The bot only makes outgoing connections to
+    # Telegram + the local API server, so bridge isolation is not required.
+    network_mode: host
     environment:
       BOT_TOKEN: ${BOT_TOKEN}
       MINI_APP_URL: ${MINI_APP_URL}
-      API_BASE_URL: http://api:3002
+      API_BASE_URL: http://localhost:3002
       ADMIN_KEY: ${ADMIN_KEY}
       NODE_ENV: production
-    depends_on:
-      - api
 
   web:
     image: ghcr.io/brsvdmtr/pfm-web:${IMAGE_TAG:-latest}
