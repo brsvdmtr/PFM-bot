@@ -1849,6 +1849,9 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
   const [paymentSaving, setPaymentSaving] = useState(false);
   const [paymentError, setPaymentError] = useState('');
 
+  // Delete confirmation state
+  const [confirmDeleteDebtId, setConfirmDeleteDebtId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
   // Edit debt state
   const [editDebt, setEditDebt] = useState<Debt | null>(null);
   const [editForm, setEditForm] = useState({ title: '', type: 'CREDIT_CARD', balance: '', apr: '', minPayment: '', dueDay: '' });
@@ -1911,8 +1914,19 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
   };
 
   const handleDelete = async (id: string) => {
-    await api(`/tg/debts/${id}`, { method: 'DELETE' });
-    await Promise.all([load(), onRefresh()]);
+    setDeleting(true);
+    try {
+      await api(`/tg/debts/${id}`, { method: 'DELETE' });
+      setConfirmDeleteDebtId(null);
+      setToast(t('debts.debtDeleted'));
+      setTimeout(() => setToast(''), 2500);
+      await Promise.all([load(), onRefresh()]);
+    } catch {
+      setConfirmDeleteDebtId(null);
+      setToast(t('debts.deleteError'));
+      setTimeout(() => setToast(''), 3500);
+    }
+    setDeleting(false);
   };
 
   const handlePayment = async () => {
@@ -2030,6 +2044,36 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
 
   return (
     <div style={{ background: C.bg, minHeight: '100vh', padding: '20px 16px', paddingBottom: 'calc(90px + env(safe-area-inset-bottom, 0px))' }}>
+      {/* Delete debt confirmation */}
+      {confirmDeleteDebtId && (
+        <div onClick={() => { if (!deleting) setConfirmDeleteDebtId(null); }} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <div onClick={(e) => e.stopPropagation()}>
+          <Card style={{ maxWidth: 340, width: '100%' }}>
+            <p style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 8 }}>{t('debts.deleteTitle')}</p>
+            <p style={{ fontSize: 13, color: C.textSec, marginBottom: 20, lineHeight: 1.5 }}>
+              {t('debts.deleteBody', { name: debts.find(d => d.id === confirmDeleteDebtId)?.title ?? '' })}
+            </p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                onClick={() => handleDelete(confirmDeleteDebtId)}
+                disabled={deleting}
+                style={{ flex: 1, padding: '12px 0', background: C.red, border: 'none', borderRadius: 10, color: '#fff', fontSize: 14, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer', opacity: deleting ? 0.5 : 1 }}
+              >
+                {deleting ? '...' : t('common.delete')}
+              </button>
+              <button
+                onClick={() => setConfirmDeleteDebtId(null)}
+                disabled={deleting}
+                style={{ flex: 1, padding: '12px 0', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 10, color: C.textSec, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}
+              >
+                {t('common.cancel')}
+              </button>
+            </div>
+          </Card>
+          </div>
+        </div>
+      )}
+
       <p style={{ fontSize: 22, fontWeight: 700, marginBottom: 16, color: C.text }}>{t('debts.title')}</p>
 
       {loading && <div style={{ textAlign: 'center', paddingTop: 40 }}><Spinner /></div>}
@@ -2080,7 +2124,7 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   {d.isFocusDebt && <span style={{ fontSize: 10, background: C.accentBg, color: C.accentLight, padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>{t('onboarding.focusBadge')}</span>}
                   <button onClick={() => openEdit(d)} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: '4px 8px', color: C.textSec, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>✎</button>
-                  <button onClick={() => handleDelete(d.id)} style={{ background: C.redBg, border: 'none', borderRadius: 6, padding: '4px 8px', color: C.red, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>✕</button>
+                  <button onClick={() => setConfirmDeleteDebtId(d.id)} style={{ background: C.redBg, border: 'none', borderRadius: 6, padding: '4px 8px', color: C.red, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>✕</button>
                 </div>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
@@ -2382,11 +2426,14 @@ function DebtsScreen({ api, currency, onRefresh, onOpenPro }: { api: (path: stri
       )}
 
       {/* Toast */}
-      {toast && (
-        <div style={{ position: 'fixed', top: 60, left: '50%', transform: 'translateX(-50%)', background: C.green, color: '#000', padding: '10px 20px', borderRadius: 10, fontSize: 14, fontWeight: 600, zIndex: 300, boxShadow: '0 4px 12px rgba(0,0,0,0.3)' }}>
-          {toast}
-        </div>
-      )}
+      {toast && (() => {
+        const isError = toast === t('debts.deleteError');
+        return (
+          <div style={{ position: 'fixed', top: 60, left: '50%', transform: 'translateX(-50%)', background: isError ? C.red : C.green, color: isError ? '#fff' : '#000', padding: '10px 20px', borderRadius: 10, fontSize: 14, fontWeight: 600, zIndex: 1001, boxShadow: '0 4px 12px rgba(0,0,0,0.3)', maxWidth: 'calc(100vw - 40px)', textAlign: 'center' as const }}>
+            {toast}
+          </div>
+        );
+      })()}
     </div>
   );
 }

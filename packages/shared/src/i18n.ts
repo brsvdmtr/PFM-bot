@@ -383,6 +383,10 @@ const ru = {
     debtUpdated: 'Кредит обновлён',
     debtPaidOff: 'Долг полностью погашен!',
     extraRecorded: 'Досрочное погашение учтено',
+    deleteTitle: 'Удалить долг?',
+    deleteBody: 'Долг «{name}» будет удалён из списка, а расчёты пересчитаются. Это действие нельзя отменить.',
+    debtDeleted: 'Долг удалён',
+    deleteError: 'Не удалось удалить долг. Попробуй ещё раз.',
   },
   pro: {
     weeklyDigest: 'Еженедельный дайджест',
@@ -958,6 +962,10 @@ const en = {
     debtUpdated: 'Debt updated',
     debtPaidOff: 'Debt fully paid off!',
     extraRecorded: 'Extra payment recorded',
+    deleteTitle: 'Delete debt?',
+    deleteBody: '"{name}" will be removed and calculations will be updated. This cannot be undone.',
+    debtDeleted: 'Debt deleted',
+    deleteError: 'Failed to delete debt. Please try again.',
   },
   pro: {
     weeklyDigest: 'Weekly digest',
